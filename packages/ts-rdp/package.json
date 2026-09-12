@@ -1,0 +1,32 @@
+{
+  "name": "ts-rdp",
+  "version": "0.1.0",
+  "description": "Remote Desktop Protocol (RDP) client implemented in pure TypeScript - TLS + NLA/CredSSP/NTLMv2, bitmap updates, input injection.",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "test": "tsc -p tsconfig.test.json && node --test --test-timeout=15000 dist-test/test/*.test.js"
+  },
+  "keywords": [
+    "rdp",
+    "remote-desktop",
+    "mstsc",
+    "credssp",
+    "ntlm",
+    "typescript"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "typescript": "^5.6.3"
+  }
+}

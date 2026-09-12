@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist-test",
+    "rootDir": ".",
+    "noEmitOnError": true,
+    "types": ["node"],
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "baseUrl": ".",
+    "paths": {
+      "vscode": ["test/vscodeStub.ts"]
+    },
+    "preserveSymlinks": true
+  },
+  "include": ["src/**/*.ts", "test/*.ts"]
+}

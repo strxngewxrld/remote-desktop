@@ -1,0 +1,362 @@
+{
+  "name": "vscode-rdp",
+  "displayName": "Remote Desktop (RDP)",
+  "description": "Vollwertige RDP-Sitzungen direkt in VS Code - mit eigener TypeScript-Implementierung des Protokolls, inklusive NLA.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "rdp",
+    "remote desktop",
+    "mstsc",
+    "windows",
+    "terminal server"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "rdp-explorer",
+          "title": "Remote Desktop",
+          "icon": "media/rdp-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "rdp-explorer": [
+        {
+          "id": "rdpConnections",
+          "name": "Verbindungen",
+          "icon": "media/rdp-icon.svg"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "rdpConnections",
+        "contents": "Noch keine Verbindung gespeichert.\n[Verbindung hinzufügen](command:rdp.addConnection)\n[Einmalig verbinden](command:rdp.connect)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "rdp.connect",
+        "title": "RDP: Verbinden mit…",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "rdp.addConnection",
+        "title": "RDP: Verbindung hinzufügen",
+        "icon": "$(add)"
+      },
+      {
+        "command": "rdp.connectSaved",
+        "title": "RDP: Gespeicherte Verbindung öffnen",
+        "icon": "$(play)"
+      },
+      {
+        "command": "rdp.editConnection",
+        "title": "RDP: Verbindung bearbeiten",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "rdp.deleteConnection",
+        "title": "RDP: Verbindung löschen",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "rdp.refreshConnections",
+        "title": "RDP: Liste aktualisieren",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "rdp.disconnect",
+        "title": "RDP: Sitzung trennen"
+      },
+      {
+        "command": "rdp.sendCtrlAltDel",
+        "title": "RDP: Strg+Alt+Entf senden"
+      },
+      {
+        "command": "rdp.toggleScaling",
+        "title": "RDP: Skalierung umschalten"
+      },
+      {
+        "command": "rdp.refreshScreen",
+        "title": "RDP: Bildschirm neu anfordern"
+      },
+      {
+        "command": "rdp.clearCredentials",
+        "title": "RDP: Gespeichertes Passwort löschen"
+      },
+      {
+        "command": "rdp.showLog",
+        "title": "RDP: Protokoll anzeigen"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "rdp.addConnection",
+          "when": "view == rdpConnections",
+          "group": "navigation@1"
+        },
+        {
+          "command": "rdp.refreshConnections",
+          "when": "view == rdpConnections",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "rdp.connectSaved",
+          "when": "view == rdpConnections && viewItem == rdpConnection",
+          "group": "inline@1"
+        },
+        {
+          "command": "rdp.editConnection",
+          "when": "view == rdpConnections && viewItem == rdpConnection",
+          "group": "1_modify@1"
+        },
+        {
+          "command": "rdp.clearCredentials",
+          "when": "view == rdpConnections && viewItem == rdpConnection",
+          "group": "1_modify@2"
+        },
+        {
+          "command": "rdp.deleteConnection",
+          "when": "view == rdpConnections && viewItem == rdpConnection",
+          "group": "9_danger@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "rdp.connectSaved",
+          "when": "false"
+        },
+        {
+          "command": "rdp.editConnection",
+          "when": "false"
+        },
+        {
+          "command": "rdp.deleteConnection",
+          "when": "false"
+        },
+        {
+          "command": "rdp.refreshConnections",
+          "when": "false"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "rdp.sendCtrlAltDel",
+        "key": "ctrl+alt+end",
+        "mac": "ctrl+alt+end",
+        "when": "rdp.sessionFocused"
+      }
+    ],
+    "configuration": {
+      "title": "Remote Desktop (RDP)",
+      "properties": {
+        "rdp.connections": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "Gespeicherte Verbindungen. Passwörter werden **nicht** hier abgelegt, sondern im sicheren Speicher von VS Code.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "host"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Anzeigename"
+              },
+              "host": {
+                "type": "string",
+                "description": "Hostname oder IP-Adresse"
+              },
+              "port": {
+                "type": "number",
+                "default": 3389
+              },
+              "username": {
+                "type": "string"
+              },
+              "domain": {
+                "type": "string"
+              },
+              "width": {
+                "type": "number",
+                "description": "Leer lassen für automatische Größe"
+              },
+              "height": {
+                "type": "number"
+              },
+              "colorDepth": {
+                "type": "number",
+                "enum": [
+                  15,
+                  16,
+                  24,
+                  32
+                ],
+                "default": 32
+              },
+              "keyboardLayout": {
+                "type": "string",
+                "description": "z.B. de-DE, en-US oder eine Layout-ID wie 0x407"
+              }
+            }
+          }
+        },
+        "rdp.defaultKeyboardLayout": {
+          "type": "string",
+          "default": "de-DE",
+          "enum": [
+            "de-DE",
+            "de-CH",
+            "en-US",
+            "en-GB",
+            "fr-FR",
+            "es-ES",
+            "it-IT",
+            "pt-BR",
+            "nl-NL",
+            "sv-SE",
+            "pl-PL",
+            "ru-RU",
+            "ja-JP"
+          ],
+          "description": "Tastaturlayout, das dem Server gemeldet wird."
+        },
+        "rdp.defaultColorDepth": {
+          "type": "number",
+          "default": 32,
+          "enum": [
+            15,
+            16,
+            24,
+            32
+          ],
+          "markdownDescription": "Angeforderte Farbtiefe. **32** ist der Standard; der planare Codec wird unterstützt. Niedrigere Werte sind nur für Server sinnvoll, die 32 Bit ablehnen. Der Server darf die Farbtiefe ohnehin vorgeben – seine Angabe gewinnt."
+        },
+        "rdp.scaling": {
+          "type": "string",
+          "default": "fit",
+          "enum": [
+            "fit",
+            "none"
+          ],
+          "enumDescriptions": [
+            "Bild an die Panelgröße anpassen",
+            "Originalgröße mit Bildlaufleisten"
+          ],
+          "description": "Darstellung der Remote-Oberfläche."
+        },
+        "rdp.smoothScaling": {
+          "type": "boolean",
+          "default": false,
+          "description": "Bild beim Skalieren glätten. Aus wirkt bei Text meist schärfer."
+        },
+        "rdp.certificateTrust": {
+          "type": "string",
+          "default": "trust-on-first-use",
+          "enum": [
+            "trust-on-first-use",
+            "always-ask",
+            "ignore"
+          ],
+          "enumDescriptions": [
+            "Beim ersten Verbinden nachfragen und den Fingerabdruck merken",
+            "Bei jeder Verbindung nachfragen",
+            "Zertifikate ohne Prüfung akzeptieren (nicht empfohlen)"
+          ],
+          "description": "Umgang mit den meist selbstsignierten Zertifikaten von RDP-Servern."
+        },
+        "rdp.performance.disableWallpaper": {
+          "type": "boolean",
+          "default": true,
+          "description": "Desktophintergrund in der Sitzung abschalten."
+        },
+        "rdp.performance.disableThemes": {
+          "type": "boolean",
+          "default": false,
+          "description": "Visuelle Stile abschalten."
+        },
+        "rdp.performance.disableMenuAnimations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Menüanimationen abschalten."
+        },
+        "rdp.performance.disableFullWindowDrag": {
+          "type": "boolean",
+          "default": true,
+          "description": "Fensterinhalt beim Ziehen nicht anzeigen."
+        },
+        "rdp.performance.enableFontSmoothing": {
+          "type": "boolean",
+          "default": true,
+          "description": "Schriftglättung (ClearType) aktivieren."
+        },
+        "rdp.logLevel": {
+          "type": "string",
+          "default": "info",
+          "enum": [
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
+          "description": "Detailgrad der Protokollausgabe im Ausgabekanal."
+        },
+        "rdp.connectTimeout": {
+          "type": "number",
+          "default": 15000,
+          "description": "Zeitlimit für den Verbindungsaufbau in Millisekunden."
+        },
+        "rdp.highDpi": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auf hochauflösenden Bildschirmen die volle Pixeldichte anfordern. Schärferes Bild, aber deutlich mehr Datenvolumen und kleinere Schrift in der Sitzung."
+        },
+        "rdp.graphicsPipeline": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Die **Graphics Pipeline** (MS-RDPEGFX) anfordern. Windows Server 2019+ liefert Bildschirminhalte ausschließlich auf diesem Weg; ohne die Pipeline bleibt das Bild dort schwarz. Ältere Server nutzen weiterhin den klassischen Weg."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "package": "npx @vscode/vsce package --no-dependencies",
+    "test": "tsc -p tsconfig.test.json && node --test --test-timeout=30000 dist-test/test/*.test.js",
+    "test:vscode": "tsc -p tsconfig.integration.json && vscode-test"
+  },
+  "dependencies": {
+    "ts-rdp": "*"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.7.5",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
+    "esbuild": "^0.28.2",
+    "mocha": "^12.0.1",
+    "typescript": "^5.6.3"
+  }
+}

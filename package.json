@@ -1,0 +1,19 @@
+{
+  "name": "remote-desktop-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "description": "RDP in VS Code: eigene TypeScript-RDP-Library + VS Code Extension",
+  "workspaces": [
+    "packages/ts-rdp",
+    "packages/vscode-rdp"
+  ],
+  "scripts": {
+    "build": "npm run build -w ts-rdp && npm run build -w vscode-rdp",
+    "test": "npm run test -w ts-rdp && npm run test -w vscode-rdp",
+    "package": "npm run package -w vscode-rdp",
+    "test:vscode": "npm run test:vscode -w vscode-rdp"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
