@@ -380,6 +380,29 @@ export class EgfxSession {
         this.cacheToSurface(pdu);
         break;
 
+      case egfx.RDPGFX_CMDID_EVICTCACHEENTRY:
+        this.evictCacheEntry(pdu);
+        break;
+
+      case egfx.RDPGFX_CMDID_CACHEIMPORTREPLY:
+        // 3.3.5.17: der Client "MUST copy the number of entries specified in
+        // the importedEntriesCount field from the Persistent Bitmap Cache
+        // [...] to the assigned slots in the Bitmap Cache". Ein solcher
+        // Speicher wird hier nicht gefuehrt, und genau deshalb bietet
+        // buildCacheImportOffer null Eintraege an (2.2.2.16). Ein Server, der
+        // trotzdem Slots zuweist, wuerde uns auf Bildinhalte verweisen, die es
+        // hier nie gab - das muss auffallen, statt spaeter als leerer Slot zu
+        // erscheinen.
+        if (pdu.cacheSlots.length > 0) {
+          this.meldeEinmal(
+            'cacheimport-reply',
+            `Graphics Pipeline: CACHEIMPORTREPLY weist ${pdu.cacheSlots.length} Slot(s) aus einem ` +
+              'dauerhaften Bitmapcache zu, den diese Sitzung nicht fuehrt (es wurden null Eintraege ' +
+              'angeboten). Diese Slots bleiben leer.',
+          );
+        }
+        break;
+
       case egfx.RDPGFX_CMDID_STARTFRAME:
         // Alles bis zum ENDFRAME gehoert zusammen und wird gebuendelt gezeigt,
         // damit kein halb gezeichnetes Bild aufblitzt.
@@ -439,8 +462,17 @@ export class EgfxSession {
         // (progressive_delete_surface_context).
         break;
 
-      default:
-        this.opts.log.debug(`Graphics Pipeline: unbehandelte Nachricht 0x${pdu.cmdId.toString(16)}`);
+      default: {
+        // Seit EVICTCACHEENTRY und CACHEIMPORTREPLY hier behandelt werden, ist
+        // jede Nachricht, die der Parser typisiert, auch abgedeckt - der
+        // Compiler leitet fuer `pdu` deshalb `never` her. Der Zweig bleibt
+        // trotzdem stehen: er faengt die naechste neu typisierte Nachricht auf,
+        // und der Typwechsel unten erzwingt dann, dass jemand sie einsortiert.
+        const unbehandelt: never = pdu;
+        this.opts.log.debug(
+          `Graphics Pipeline: unbehandelte Nachricht 0x${(unbehandelt as egfx.EgfxPdu).cmdId.toString(16)}`,
+        );
+      }
     }
   }
 
@@ -545,8 +577,19 @@ export class EgfxSession {
             `${pdu.destPts.map((q) => `(${q.x}, ${q.y})`).join(' ')}`,
         );
         return;
-      case egfx.RDPGFX_CMDID_EVICTCACHEENTRY:
-        this.opts.log.debug(`EGFX: ${name} Slot ${pdu.cacheSlot}`);
+      case egfx.RDPGFX_CMDID_EVICTCACHEENTRY: {
+        // Auf info: der Befehl kam im Mitschnitt vom 12.09. kein einziges Mal
+        // vor. Taucht er auf, aendert das die Lebensdauer jedes Cacheeintrags
+        // und gehoert deshalb ohne Stufenwechsel ins Protokoll.
+        const e = this.cache.get(pdu.cacheSlot);
+        this.opts.log.info(
+          `EGFX: ${name} Slot ${pdu.cacheSlot} - hier ${e ? `mit ${e.width}x${e.height} belegt` : 'nicht belegt'}; ` +
+            `danach ${this.cache.size - (e ? 1 : 0)} Eintrag/Eintraege im Cache`,
+        );
+        return;
+      }
+      case egfx.RDPGFX_CMDID_CACHEIMPORTREPLY:
+        this.opts.log.info(`EGFX: ${name}, ${pdu.cacheSlots.length} zugewiesene(r) Slot(s)`);
         return;
 
       default:
@@ -987,6 +1030,28 @@ export class EgfxSession {
         right: punkt.x + eintrag.width,
         bottom: punkt.y + eintrag.height,
       });
+    }
+  }
+
+  /**
+   * RDPGFX_EVICT_CACHE_ENTRY_PDU (2.2.2.8), Verarbeitung nach 3.3.5.8.
+   *
+   * "the entry in the Bitmap Cache [...] present in the slot identified by the
+   * cacheSlot field MUST be removed from the cache." Das war bisher nicht
+   * umgesetzt: der Eintrag blieb liegen. Folgenlos war das nur, solange kein
+   * Server den Befehl schickt - im Mitschnitt vom 12.09. kommt er kein einziges
+   * Mal. Sobald er kommt, waere ein spaeteres CACHETOSURFACE auf denselben Slot
+   * mit veraltetem Inhalt bedient worden, ohne dass irgendetwas es gemeldet
+   * haette. FreeRDP gibt den Eintrag hier frei (gdi_EvictCacheEntry).
+   */
+  private evictCacheEntry(pdu: egfx.EgfxEvictCacheEntry): void {
+    if (!this.cache.delete(pdu.cacheSlot)) {
+      this.meldeEinmal(
+        'evict-unbekannt',
+        `Graphics Pipeline: EVICTCACHEENTRY auf Slot ${pdu.cacheSlot}, der hier nicht belegt ist. ` +
+          'Entweder ging ein SURFACETOCACHE verloren, oder Server und Client zaehlen die Slots ' +
+          'verschieden.',
+      );
     }
   }
 

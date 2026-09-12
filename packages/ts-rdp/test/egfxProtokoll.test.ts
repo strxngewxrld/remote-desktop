@@ -483,11 +483,21 @@ describe('Graphics Pipeline - Kodierkontext und Kachelhistorie (MS-RDPEGFX 3.3.1
 // Kopierpfade: Inhalt, nicht nur Gueltigkeit
 // --------------------------------------------------------------------------
 
+function evictCacheEntry(cacheSlot: number): Buffer {
+  return pdu(egfx.RDPGFX_CMDID_EVICTCACHEENTRY, new BinaryWriter().uint16le(cacheSlot).uint16le(0).toBuffer());
+}
+
 function solidFill(surfaceId: number, farbe: number[], rects: number[][]): Buffer {
   const [b, g, r, a] = farbe;
   const w = new BinaryWriter().uint16le(surfaceId).uint8(b).uint8(g).uint8(r).uint8(a).uint16le(rects.length);
   for (const [left, top, right, bottom] of rects) w.uint16le(left).uint16le(top).uint16le(right).uint16le(bottom);
   return pdu(egfx.RDPGFX_CMDID_SOLIDFILL, w.toBuffer());
+}
+
+function cacheImportReply(slots: number[]): Buffer {
+  const w = new BinaryWriter().uint16le(slots.length);
+  for (const s of slots) w.uint16le(s);
+  return pdu(egfx.RDPGFX_CMDID_CACHEIMPORTREPLY, w.toBuffer());
 }
 
 /**
@@ -703,6 +713,49 @@ describe('Graphics Pipeline - Cache-Rundlauf an echter ClearCodec-Nutzlast', () 
       }
     }
     assert.equal(abweichend, 0, `${abweichend} Farbkanaele stimmen nach der ueberlappenden Kopie nicht`);
+  });
+});
+
+/**
+ * Cacheverwaltung: EVICTCACHEENTRY und CACHEIMPORTREPLY.
+ *
+ * MS-RDPEGFX 3.3.5.8: "the entry in the Bitmap Cache [...] present in the slot
+ * identified by the cacheSlot field MUST be removed from the cache." Das war
+ * nicht umgesetzt - der Befehl fiel in den Sammelzweig und blieb folgenlos.
+ */
+describe('Graphics Pipeline - Cacheverwaltung (MS-RDPEGFX 3.3.5.8 und 3.3.5.17)', () => {
+  test('EVICTCACHEENTRY raeumt den Slot wirklich - ein spaeterer Zugriff findet ihn leer', () => {
+    const m = baueSitzung();
+    m.sitzung.handle(createSurface(1, 64, 64, egfx.PIXEL_FORMAT_XRGB_8888));
+    m.sitzung.handle(unkomprimiert(1, [0, 0, 64, 64], 0x20));
+    m.sitzung.handle(surfaceToCache(1, 5, [0, 0, 16, 16]));
+    m.sitzung.handle(evictCacheEntry(5));
+    assert.match(m.auf('info'), /EVICTCACHEENTRY Slot 5 - hier mit 16x16 belegt; danach 0 Eintrag/);
+
+    // Mit dem alten Code blieb der Eintrag liegen und wurde hier klaglos
+    // gezeichnet; jetzt meldet sich der leere Slot.
+    m.sitzung.handle(cacheToSurface(5, 1, [[0, 0]]));
+    assert.match(m.auf('warn'), /Slot 5, den diese Sitzung nie gefuellt hat/);
+  });
+
+  test('EVICTCACHEENTRY auf einen unbelegten Slot meldet sich genau einmal', () => {
+    const m = baueSitzung();
+    for (let i = 0; i < 4; i++) m.sitzung.handle(evictCacheEntry(77));
+    assert.equal(m.zeilen.filter((z) => z.stufe === 'warn').length, 1);
+    assert.match(m.auf('warn'), /EVICTCACHEENTRY auf Slot 77, der hier nicht belegt ist/);
+  });
+
+  test('CACHEIMPORTREPLY mit zugewiesenen Slots faellt auf - wir fuehren keinen dauerhaften Cache', () => {
+    const m = baueSitzung();
+    m.sitzung.handle(cacheImportReply([1, 2, 3]));
+    assert.match(m.auf('info'), /CACHEIMPORTREPLY, 3 zugewiesene\(r\) Slot\(s\)/);
+    assert.match(m.auf('warn'), /weist 3 Slot\(s\) aus einem dauerhaften Bitmapcache zu/);
+  });
+
+  test('CACHEIMPORTREPLY ohne Slots ist der Normalfall und warnt nicht', () => {
+    const m = baueSitzung();
+    m.sitzung.handle(cacheImportReply([]));
+    assert.equal(m.zeilen.filter((z) => z.stufe === 'warn').length, 0);
   });
 });
 
