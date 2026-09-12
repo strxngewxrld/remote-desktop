@@ -100,7 +100,7 @@ export { planarDecompress, PlanarError } from './codec/planar.js';
 export type { PlanarOptions } from './codec/planar.js';
 export { ZgfxDecompressor, ZgfxError, zgfxWrapUncompressed } from './codec/zgfx.js';
 export * as egfx from './protocol/egfx.js';
-export { EgfxSession, DEFAULT_EGFX_CAPS } from './protocol/egfxSession.js';
+export { EgfxSession, DEFAULT_EGFX_CAPS, AVC420_EGFX_CAPS } from './protocol/egfxSession.js';
 export type { EgfxVideoFrame } from './protocol/egfxSession.js';
 export { parseAvc420, parseAvc444, parseAvc444V2 } from './codec/avcMeta.js';
 export { ClearCodecDecoder } from './codec/clear.js';
