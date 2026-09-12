@@ -26,6 +26,7 @@ import {
   probeServerCertificate,
 } from 'ts-rdp';
 import { RdpConnection, secretKey } from './connections.js';
+import { BandbreitenProfilName, berechnePerformanceFlags, istProfilName } from './bandbreite.js';
 import { CertificateTrustStore, TrustPolicy } from './trust.js';
 import { resolveKeyboardLayout } from './keyboardLayouts.js';
 import { renderWebview } from './webview.js';
@@ -255,14 +256,18 @@ export class RdpSession {
     };
   }
 
+  /**
+   * Die TS_PERF_*-Flags des Client Info PDU.
+   *
+   * Das Bandbreitenprofil der Verbindung (bereits mit der Ordnervererbung
+   * aufgeloest) gewinnt; ohne Profil greift `rdp.defaultBandwidthProfile`, und
+   * ohne beides bleibt es bei den einzelnen `rdp.performance.*`-Schaltern.
+   */
   private performanceFlags(config: vscode.WorkspaceConfiguration): number {
-    let flags = 0;
-    if (config.get<boolean>('performance.disableWallpaper', true)) flags |= 0x00000001;
-    if (config.get<boolean>('performance.disableFullWindowDrag', true)) flags |= 0x00000002;
-    if (config.get<boolean>('performance.disableMenuAnimations', true)) flags |= 0x00000004;
-    if (config.get<boolean>('performance.disableThemes', false)) flags |= 0x00000008;
-    if (config.get<boolean>('performance.enableFontSmoothing', true)) flags |= 0x00000080;
-    return flags;
+    const global = config.get<string>('defaultBandwidthProfile', '');
+    const profil: BandbreitenProfilName | undefined =
+      this.connection.bandwidthProfile ?? (istProfilName(global) ? global : undefined);
+    return berechnePerformanceFlags(profil, (schluessel, standard) => config.get(schluessel, standard));
   }
 
   private async resolveCredentials(): Promise<{ username: string; password: string; shouldSave: boolean } | undefined> {

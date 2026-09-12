@@ -157,6 +157,7 @@ export interface QuickPickOptions {
   ignoreFocusOut?: boolean;
   canPickMany?: boolean;
   matchOnDescription?: boolean;
+  matchOnDetail?: boolean;
 }
 
 export interface InputBoxOptions {
@@ -172,6 +173,23 @@ export interface InputBoxOptions {
 export interface MessageOptions {
   modal?: boolean;
   detail?: string;
+}
+
+export interface OpenDialogOptions {
+  title?: string;
+  openLabel?: string;
+  canSelectMany?: boolean;
+  canSelectFiles?: boolean;
+  canSelectFolders?: boolean;
+  defaultUri?: Uri;
+  filters?: Record<string, string[]>;
+}
+
+export interface SaveDialogOptions {
+  title?: string;
+  saveLabel?: string;
+  defaultUri?: Uri;
+  filters?: Record<string, string[]>;
 }
 
 export interface ConfigurationChangeEvent {
@@ -254,6 +272,11 @@ export const notizen = {
   /** Abgefragte Eingabefelder und Listen - fuer Tests, die den Dialogweg pruefen. */
   eingabefelder: [] as InputBoxOptions[],
   auswahllisten: [] as { eintraege: readonly QuickPickItem[]; optionen?: QuickPickOptions }[],
+  /** Geoeffnete Datei-Dialoge. */
+  oeffnenDialoge: [] as OpenDialogOptions[],
+  speichernDialoge: [] as SaveDialogOptions[],
+  /** Was ueber `workspace.fs.writeFile` geschrieben wurde. */
+  geschriebeneDateien: [] as { pfad: string; inhalt: Uint8Array }[],
 };
 
 /**
@@ -268,7 +291,17 @@ export const antworten = {
   auswahlen: [] as (number | undefined)[],
   /** Rueckgaben fuer `showInformationMessage`/`showWarningMessage`/`showErrorMessage`. */
   meldungen: [] as (string | undefined)[],
+  /** Rueckgaben fuer `showOpenDialog`. */
+  dateiauswahlen: [] as (Uri[] | undefined)[],
+  /** Rueckgaben fuer `showSaveDialog`. */
+  speicherziele: [] as (Uri | undefined)[],
 };
+
+/**
+ * Ein Dateisystem im Arbeitsspeicher fuer `workspace.fs`. Tests legen den
+ * Inhalt hier ab, statt echte Dateien anzulegen.
+ */
+export const dateien = new Map<string, Uint8Array>();
 
 /** Die Einstellungen, vollstaendig als "abschnitt.schluessel". */
 export const einstellungen = new Map<string, unknown>();
@@ -288,10 +321,16 @@ export function zuruecksetzen(): void {
   notizen.schreibzugriffe.length = 0;
   notizen.eingabefelder.length = 0;
   notizen.auswahllisten.length = 0;
+  notizen.oeffnenDialoge.length = 0;
+  notizen.speichernDialoge.length = 0;
+  notizen.geschriebeneDateien.length = 0;
   antworten.eingaben.length = 0;
   antworten.auswahlen.length = 0;
   antworten.meldungen.length = 0;
+  antworten.dateiauswahlen.length = 0;
+  antworten.speicherziele.length = 0;
   einstellungen.clear();
+  dateien.clear();
 }
 
 // ------------------------------------------------------------------ Webview
@@ -531,7 +570,27 @@ export class WorkspaceConfiguration {
   }
 }
 
+/**
+ * `workspace.fs` gegen die Map `dateien`. Mehr als Lesen und Schreiben braucht
+ * src/ nicht, und mehr nachzubauen waere nur Beiwerk.
+ */
+export const fs = {
+  readFile(uri: Uri): Thenable<Uint8Array> {
+    const inhalt = dateien.get(uri.fsPath);
+    if (!inhalt) return Promise.reject(new Error(`Datei nicht gefunden: ${uri.fsPath}`));
+    return Promise.resolve(inhalt);
+  },
+
+  writeFile(uri: Uri, inhalt: Uint8Array): Thenable<void> {
+    dateien.set(uri.fsPath, inhalt);
+    notizen.geschriebeneDateien.push({ pfad: uri.fsPath, inhalt });
+    return Promise.resolve();
+  },
+};
+
 export const workspace = {
+  fs,
+
   getConfiguration(abschnitt = ''): WorkspaceConfiguration {
     return new WorkspaceConfiguration(abschnitt);
   },
@@ -658,6 +717,16 @@ export const window = {
       }
     }
     return Promise.resolve(wert);
+  },
+
+  showOpenDialog(optionen: OpenDialogOptions = {}): Thenable<Uri[] | undefined> {
+    notizen.oeffnenDialoge.push(optionen);
+    return Promise.resolve(antworten.dateiauswahlen.shift());
+  },
+
+  showSaveDialog(optionen: SaveDialogOptions = {}): Thenable<Uri | undefined> {
+    notizen.speichernDialoge.push(optionen);
+    return Promise.resolve(antworten.speicherziele.shift());
   },
 
   showQuickPick<T extends QuickPickItem>(
