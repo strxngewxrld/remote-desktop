@@ -24,6 +24,30 @@ export type { RdpClientOptions, RdpClientEvents, RdpDiagnostics } from './client
 export { buildClientCapabilities } from './protocol/caps.js';
 export type { CapabilityProfile } from './protocol/caps.js';
 
+// Virtuelle Kanaele: Anmeldung, Chunking und der dynamische Aufsatz darauf.
+export {
+  buildChannelChunks,
+  parseChannelChunk,
+  ChannelReassembler,
+  CHANNEL_CHUNK_LENGTH,
+  CHANNEL_FLAG_FIRST,
+  CHANNEL_FLAG_LAST,
+  CHANNEL_FLAG_SHOW_PROTOCOL,
+  DEFAULT_CHUNK_SIZE,
+  MAX_CHUNK_SIZE,
+  begrenzeChunkGroesse,
+  parseVirtualChannelCapability,
+} from './protocol/virtualChannel.js';
+export type { ChannelChunk } from './protocol/virtualChannel.js';
+export {
+  CHANNEL_OPTION_INITIALIZED,
+  CHANNEL_OPTION_ENCRYPT_RDP,
+  CHANNEL_OPTION_COMPRESS_RDP,
+  CHANNEL_OPTION_SHOW_PROTOCOL,
+} from './protocol/gcc.js';
+export type { ChannelDef } from './protocol/gcc.js';
+export * as dvc from './protocol/dvc.js';
+
 export { RdpError, RdpProtocolError, RdpAuthError, ERROR_INFO_CODES, NEG_FAILURE_CODES } from './core/errors.js';
 export { createLogger, nullLogger } from './core/log.js';
 export type { Logger, LogLevel, LogSink } from './core/log.js';

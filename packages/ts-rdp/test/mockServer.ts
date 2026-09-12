@@ -81,6 +81,11 @@ export interface MockServerOptions {
    * (Standard 3, wie aktuelle Windows-Server).
    */
   dvcVersion?: number;
+  /**
+   * VCChunkSize im Virtual Channel Capability Set des Demand Active PDU.
+   * Ohne Angabe gilt CHANNEL_CHUNK_LENGTH (1600).
+   */
+  vcChunkSize?: number;
 }
 
 export interface ReceivedInput {
@@ -100,6 +105,13 @@ export interface DvcCreateResponse {
   status: number;
   /** Name, unter dem der Server den Kanal eroeffnet hat. */
   name: string;
+}
+
+/** Zusammengesetzte Nachricht, die der Client auf einem statischen Kanal geschickt hat. */
+export interface StaticChannelData {
+  channelId: number;
+  name: string;
+  data: Buffer;
 }
 
 /** Nutzdaten, die der Client auf einem dynamischen Kanal geschickt hat. */
@@ -140,6 +152,10 @@ export class MockRdpServer extends EventEmitter {
   /** MCS-Kanal-ID von drdynvc, sofern der Client den Kanal angemeldet hat. */
   private dynvcChannelId?: number;
   private dynvcReassembler = new ChannelReassembler();
+  /** Zusammensetzer je statischem Kanal ausser drdynvc. */
+  private readonly statischeZusammensetzer = new Map<number, ChannelReassembler>();
+  /** Jeder empfangene Block eines statischen Kanals, ungefiltert. */
+  readonly statischeBloecke: Array<{ channelId: number; length: number }> = [];
   /** Offene DATA_FIRST-Folgen je DVC-Kanal. */
   private readonly dvcFragmente = new Map<number, { erwartet: number; teile: Buffer[] }>();
 
@@ -199,6 +215,41 @@ export class MockRdpServer extends EventEmitter {
     this.sendDynvc(dvc.buildData(id, zgfxWrapUncompressed(payload)));
   }
 
+  /**
+   * Schickt Nutzdaten auf einem statischen virtuellen Kanal - in Bloecken der
+   * Groesse, die der Server selbst im Capability Set genannt hat.
+   */
+  sendStaticChannelData(name: string, payload: Buffer): void {
+    const id = this.virtualChannelIds.get(name);
+    if (id === undefined) throw new Error(`Statischer Kanal "${name}" ist nicht angemeldet`);
+    for (const chunk of buildChannelChunks(payload, this.opts.vcChunkSize ?? 1600)) {
+      this.write(tpkt(mcs.buildSendDataIndication(USER_ID, id, chunk)));
+    }
+  }
+
+  /** Name eines statischen Kanals, sonst die ID als Zeichenkette. */
+  private statischerName(channelId: number): string {
+    for (const [name, id] of this.virtualChannelIds) if (id === channelId) return name;
+    return String(channelId);
+  }
+
+  /** Bloecke eines statischen Kanals zu ganzen Nachrichten zusammensetzen. */
+  private handleStatischenKanal(channelId: number, payload: Buffer): void {
+    // Jeden einzelnen Block mitschreiben: nur so laesst sich pruefen, dass der
+    // Client die ausgehandelte Chunkgrenze einhaelt.
+    this.statischeBloecke.push({ channelId, length: payload.length });
+    let zusammensetzer = this.statischeZusammensetzer.get(channelId);
+    if (!zusammensetzer) {
+      zusammensetzer = new ChannelReassembler();
+      this.statischeZusammensetzer.set(channelId, zusammensetzer);
+    }
+    const vollstaendig = zusammensetzer.push(parseChannelChunk(payload));
+    if (!vollstaendig) return;
+    const name = this.statischerName(channelId);
+    this.empfangeneReihenfolge.push(`static:${name}`);
+    this.emit('staticChannelData', { channelId, name, data: vollstaendig } as StaticChannelData);
+  }
+
   /** Schickt eine fertige DVC-Nachricht als Bloecke des statischen Kanals. */
   private sendDynvc(message: Buffer): void {
     if (this.dynvcChannelId === undefined) return;
@@ -224,6 +275,8 @@ export class MockRdpServer extends EventEmitter {
     this.dynamicChannelIds.clear();
     this.dynvcChannelId = undefined;
     this.dynvcReassembler = new ChannelReassembler();
+    this.statischeZusammensetzer.clear();
+    this.statischeBloecke.length = 0;
     this.dvcFragmente.clear();
     socket.on('data', (chunk) => {
       this.buffer = Buffer.concat([this.buffer, chunk]);
@@ -333,7 +386,9 @@ export class MockRdpServer extends EventEmitter {
         if (request) {
           this.clientChannels.add(request.channelId);
           if (request.channelId === this.dynvcChannelId) this.handleDynvcFromClient(request.payload);
-          else this.handleClientPdu(request.payload);
+          else if (request.channelId !== this.ioChannel) {
+            this.handleStatischenKanal(request.channelId, request.payload);
+          } else this.handleClientPdu(request.payload);
         }
         return;
       }
@@ -597,12 +652,15 @@ export class MockRdpServer extends EventEmitter {
 
   private sendDemandActive(): void {
     const caps = serializeCapabilities(
-      buildClientCapabilities({
-        width: this.opts.width,
-        height: this.opts.height,
-        colorDepth: this.opts.colorDepth ?? 32,
-        keyboardLayout: 0x409,
-      }),
+      buildClientCapabilities(
+        {
+          width: this.opts.width,
+          height: this.opts.height,
+          colorDepth: this.opts.colorDepth ?? 32,
+          keyboardLayout: 0x409,
+        },
+        this.opts.vcChunkSize ? { virtualChannelChunkSize: this.opts.vcChunkSize } : {},
+      ),
     );
     // Das General Capability Set steht an erster Stelle; refreshRectSupport
     // liegt 20 Byte hinter dem 4 Byte langen Kopf.
