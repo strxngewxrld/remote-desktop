@@ -24,6 +24,8 @@ import {
   SYNC_SCROLL_LOCK,
   lookupScancode,
   probeServerCertificate,
+  CLIPRDR_CHANNEL_DEF,
+  CLIPRDR_CHANNEL_NAME,
 } from 'ts-rdp';
 import type { RdpDiagnostics } from 'ts-rdp';
 import { RdpConnection, secretKey } from './connections.js';
@@ -31,12 +33,20 @@ import { BandbreitenProfilName, berechnePerformanceFlags, istProfilName } from '
 import { CertificateTrustStore, TrustPolicy } from './trust.js';
 import { resolveKeyboardLayout } from './keyboardLayouts.js';
 import { renderWebview } from './webview.js';
+import {
+  Zwischenablagebruecke,
+  leseEinstellungen as leseZwischenablageEinstellungen,
+  type ZwischenablageEinstellungen,
+  type ZwischenablageSpeicher,
+} from './zwischenablage.js';
 
 /** Ein Rastschritt des Mausrads, wie ihn Windows erwartet. */
 const WHEEL_STEP = 120;
 
 /** Befehl, der das Diagnose-Overlay ein- und ausblendet. */
 export const DIAGNOSE_BEFEHL = 'rdp.toggleDiagnostics';
+/** Befehl, der das Rueckfallfeld der Zwischenablage ein- und ausblendet. */
+export const ZWISCHENABLAGE_BEFEHL = 'rdp.toggleClipboardPanel';
 /** Schluessel im globalen Speicher - der Zustand soll die Sitzung ueberdauern. */
 export const DIAGNOSE_ZUSTAND_SCHLUESSEL = 'rdp.diagnose.sichtbar';
 /** Taktrate des Overlays. Bewusst nicht pro Bild: einmal je Sekunde genuegt. */
@@ -242,6 +252,11 @@ export class RdpSession {
   private verbindungSteht = false;
   private watchdogTimers: NodeJS.Timeout[] = [];
 
+  // --- Zwischenablage (MS-RDPECLIP). Fehlt der Kanal, bleibt alles undefined
+  //     und die Sitzung verhaelt sich wie vor dieser Erweiterung.
+  private zwischenablage?: Zwischenablagebruecke;
+  private zwischenablageFeldSichtbar = false;
+
   /**
    * Alle offenen Sitzungen. Der Diagnose-Befehl wirkt auf alle zugleich: sein
    * Zustand ist global gespeichert, und zwei Sitzungen mit verschiedener
@@ -250,6 +265,8 @@ export class RdpSession {
   private static readonly offeneSitzungen = new Set<RdpSession>();
   /** Lebt genau so lange, wie mindestens eine Sitzung offen ist. */
   private static diagnoseBefehl?: vscode.Disposable;
+  /** Ebenso fuer das Rueckfallfeld der Zwischenablage. */
+  private static zwischenablageBefehl?: vscode.Disposable;
 
   // --- Diagnose. Alle Zaehler bleiben stehen, solange das Overlay aus ist.
   private diagnoseSichtbar = false;
@@ -332,6 +349,18 @@ export class RdpSession {
         RdpSession.schalteDiagnoseUm(session.context),
       );
     }
+    if (RdpSession.offeneSitzungen.size === 0 && !RdpSession.zwischenablageBefehl) {
+      // Anders als das Diagnose-Overlay wirkt dieser Befehl nur auf die
+      // sichtbare Sitzung: das Feld gehoert zu genau einer Verbindung.
+      RdpSession.zwischenablageBefehl = vscode.commands.registerCommand(ZWISCHENABLAGE_BEFEHL, () => {
+        for (const sitzung of RdpSession.offeneSitzungen) {
+          if (sitzung.panel.active || RdpSession.offeneSitzungen.size === 1) {
+            sitzung.schalteZwischenablagefeldUm();
+            return;
+          }
+        }
+      });
+    }
     RdpSession.offeneSitzungen.add(session);
   }
 
@@ -340,6 +369,8 @@ export class RdpSession {
     if (RdpSession.offeneSitzungen.size === 0) {
       RdpSession.diagnoseBefehl?.dispose();
       RdpSession.diagnoseBefehl = undefined;
+      RdpSession.zwischenablageBefehl?.dispose();
+      RdpSession.zwischenablageBefehl = undefined;
     }
   }
 
@@ -356,6 +387,15 @@ export class RdpSession {
       this.panel.onDidChangeViewState(() => {
         vscode.commands.executeCommand('setContext', 'rdp.sessionFocused', this.panel.active);
         if (this.panel.active) this.updateStatusBar();
+        // Die lokale Zwischenablage wird nur mitgelesen, solange die Sitzung
+        // sichtbar ist. Im Hintergrund waere es unnoetiges Mitlesen fremder
+        // Inhalte - und der Server bekaeme Text, den niemand fuer ihn kopiert hat.
+        if (this.panel.visible) {
+          void this.zwischenablage?.pruefeLokal();
+          this.zwischenablage?.starteAbfrage();
+        } else {
+          this.zwischenablage?.stoppeAbfrage();
+        }
       }),
       this.panel.webview.onDidReceiveMessage((message) => this.handleWebviewMessage(message)),
     );
@@ -415,6 +455,15 @@ export class RdpSession {
       case 'focus':
         vscode.commands.executeCommand('setContext', 'rdp.sessionFocused', !!message.focused);
         break;
+      case 'clipboardSend':
+        // Rueckfallebene: der Anwender hat Text ins Feld gelegt.
+        await this.zwischenablage?.ausRueckfallfeld(String(message.text ?? ''));
+        break;
+      case 'clipboardPanel':
+        // Das Webview meldet zurueck, ob das Feld offen ist - damit der Befehl
+        // beim naechsten Mal in die richtige Richtung schaltet.
+        this.zwischenablageFeldSichtbar = !!message.sichtbar;
+        break;
     }
   }
 
@@ -432,6 +481,9 @@ export class RdpSession {
 
     try {
       const size = this.resolveResolution(ready, config);
+      const zwischenablageEinstellungen = leseZwischenablageEinstellungen((schluessel, vorgabe) =>
+        config.get(schluessel, vorgabe),
+      );
 
       // Zertifikat vor der Anmeldung pruefen - bei NLA gehen die Zugangsdaten
       // sonst an einen moeglicherweise untergeschobenen Server.
@@ -469,6 +521,10 @@ export class RdpSession {
           this.connection.keyboardLayout ?? config.get<string>('defaultKeyboardLayout'),
         ),
         clientName: 'VS Code',
+        // Der Kanal wird nur angemeldet, wenn die Zwischenablage ueberhaupt
+        // erlaubt ist. Ein Server, der ihn nicht eroeffnet, aendert nichts:
+        // dann bleibt getStaticChannelId('cliprdr') undefined.
+        extraStaticChannels: zwischenablageEinstellungen.aktiv ? [CLIPRDR_CHANNEL_DEF] : undefined,
         enableGraphicsPipeline: config.get<boolean>('graphicsPipeline', true),
         connectTimeout: config.get<number>('connectTimeout', 15000),
         performanceFlags: this.performanceFlags(config),
@@ -590,6 +646,7 @@ export class RdpSession {
       this.setState('waiting', 'Verbunden', 'Warte auf den Bildschirminhalt des Servers…');
       this.updateStatusBar();
       this.log(`Verbunden mit ${this.connection.host} (${client.width}x${client.height})`);
+      this.starteZwischenablage(client);
       this.startWatchdog(client);
     });
 
@@ -641,10 +698,84 @@ export class RdpSession {
 
     client.on('close', (reason?: string) => {
       this.log(`Verbindung geschlossen${reason ? ': ' + reason : ''}`);
+      // Der naechste Verbindungsaufbau faengt mit einem neuen CLIPRDR-Handshake
+      // an; Reste des alten wuerden ihn durcheinanderbringen.
+      this.zwischenablage?.zuruecksetzen();
       this.setState('closed', 'Sitzung beendet', reason ?? 'Die Verbindung wurde geschlossen.', 'Erneut verbinden');
       this.updateStatusBar();
     });
 
+  }
+
+  // ------------------------------------------------------- Zwischenablage
+
+  /**
+   * Die Zwischenablage an die stehende Verbindung haengen.
+   *
+   * Rueckfallebene: Hat der Server den Kanal `cliprdr` nicht eroeffnet, bleibt
+   * es bei einem Protokolleintrag. Keine Meldung, kein Fehler - die Sitzung
+   * verhaelt sich dann genau wie ohne diese Erweiterung.
+   */
+  private starteZwischenablage(client: RdpClient): void {
+    this.zwischenablage?.dispose();
+    this.zwischenablage = undefined;
+
+    const config = vscode.workspace.getConfiguration('rdp');
+    const einstellungen = leseZwischenablageEinstellungen((schluessel, vorgabe) => config.get(schluessel, vorgabe));
+    this.sendeZwischenablageKonfiguration(einstellungen);
+    if (!einstellungen.aktiv) {
+      this.log('Zwischenablage: in den Einstellungen abgeschaltet');
+      return;
+    }
+    if (client.getStaticChannelId(CLIPRDR_CHANNEL_NAME) === undefined) {
+      this.log('Zwischenablage: der Server hat den Kanal cliprdr nicht eröffnet – sie bleibt aus');
+      return;
+    }
+
+    const bruecke = new Zwischenablagebruecke({
+      einstellungen,
+      send: (daten) => {
+        try {
+          client.sendVirtualChannel(CLIPRDR_CHANNEL_NAME, daten);
+        } catch (err) {
+          // Etwa, wenn die Verbindung genau jetzt weggebrochen ist.
+          this.log(`Zwischenablage: Senden fehlgeschlagen – ${(err as Error).message}`);
+        }
+      },
+      speicher: vsCodeZwischenablage,
+      anWebview: (nachricht) => this.post(nachricht),
+      log: (nachricht) => this.log(nachricht),
+    });
+    this.zwischenablage = bruecke;
+
+    client.on('staticChannelData', (e: { name: string; data: Buffer }) => {
+      if (e.name === CLIPRDR_CHANNEL_NAME) bruecke.verarbeite(e.data);
+    });
+
+    this.log(
+      `Zwischenablage: Kanal cliprdr bereit (Richtung ${einstellungen.richtung}, ` +
+        `Grenze ${Math.round(einstellungen.maxBytes / 1024)} KiB)`,
+    );
+    if (this.panel.visible) {
+      void bruecke.pruefeLokal();
+      bruecke.starteAbfrage();
+    }
+  }
+
+  /** Das Rueckfallfeld im Webview ein- oder ausblenden. */
+  private schalteZwischenablagefeldUm(): void {
+    this.zwischenablageFeldSichtbar = !this.zwischenablageFeldSichtbar;
+    this.post({ type: 'clipboardPanel', sichtbar: this.zwischenablageFeldSichtbar });
+  }
+
+  /** Richtung und Schalterzustand ans Webview geben, damit es die Knöpfe sperrt. */
+  private sendeZwischenablageKonfiguration(einstellungen: ZwischenablageEinstellungen): void {
+    const config = vscode.workspace.getConfiguration('rdp');
+    this.post({
+      type: 'clipboardConfig',
+      aktiv: einstellungen.aktiv,
+      richtung: config.get<string>('clipboard.direction', 'both'),
+    });
   }
 
   /**
@@ -905,6 +1036,12 @@ export class RdpSession {
       scaling: config.get<string>('scaling', 'fit'),
       smooth: config.get<boolean>('smoothScaling', false),
     });
+    // Richtung und Groessengrenze stecken in der Bruecke; sie greifen erst bei
+    // der naechsten Verbindung. Die Knopfsperre im Webview laesst sich dagegen
+    // sofort nachziehen.
+    this.sendeZwischenablageKonfiguration(
+      leseZwischenablageEinstellungen((schluessel, vorgabe) => config.get(schluessel, vorgabe)),
+    );
   }
 
   toggleScaling(): void {
@@ -964,6 +1101,8 @@ export class RdpSession {
       this.diagnoseTimer = undefined;
     }
     RdpSession.vergissSitzung(this);
+    this.zwischenablage?.dispose();
+    this.zwischenablage = undefined;
     this.client?.disconnect();
     this.client = undefined;
     this.statusBar.hide();
@@ -975,6 +1114,18 @@ export class RdpSession {
 
   onDispose?: () => void;
 }
+
+/**
+ * Die Zwischenablage von VS Code als `ZwischenablageSpeicher`.
+ *
+ * Der grosse Vorteil gegenueber dem Weg ueber das Webview: der Extension-Host
+ * braucht keine Benutzergeste. Sie ist deshalb der Normalweg, und das Textfeld
+ * springt nur ein, wenn hier etwas schiefgeht.
+ */
+const vsCodeZwischenablage: ZwischenablageSpeicher = {
+  lesen: () => Promise.resolve(vscode.env.clipboard.readText()),
+  schreiben: (text) => Promise.resolve(vscode.env.clipboard.writeText(text)),
+};
 
 /** Node liefert Fingerabdruecke ohne Doppelpunkte - Darstellung angleichen. */
 function formatFingerprint(value: string | undefined): string | undefined {
