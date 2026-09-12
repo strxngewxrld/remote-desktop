@@ -14,6 +14,9 @@
   const overlayAction = document.getElementById('overlay-action');
   const spinner = document.getElementById('spinner');
   const hint = document.getElementById('hint');
+  const diagnose = document.getElementById('diagnose');
+  const diagnoseTitel = document.getElementById('diagnose-titel');
+  const diagnoseWerte = document.getElementById('diagnose-werte');
 
   let desktopWidth = canvas.width;
   let desktopHeight = canvas.height;
@@ -25,6 +28,20 @@
   let binaryWorks = true;
   /** Ab dieser Nutzlast lohnt der Umweg ueber Objekteigenschaften nicht mehr. */
   const OBJEKTWEG_GRENZE = 256 * 1024;
+
+  /**
+   * Zaehler des Diagnose-Overlays.
+   *
+   * Sie laufen nur, solange `diagAn` gesetzt ist. Im Zeichenpfad steht deshalb
+   * nur eine Abfrage - was gemessen wird, wird erst beim Anzeigen gerechnet.
+   */
+  let diagAn = false;
+  let diagUpdates = 0;
+  let diagKacheln = 0;
+  let diagBytes = 0;
+  let diagLetztesBild = 0;
+  /** Stand beim letzten Anzeigen - daraus ergeben sich die Raten. */
+  let diagVorher = null;
 
   // ---------------------------------------------------------------- Hilfen
 
@@ -126,6 +143,114 @@
     setTimeout(() => hint.classList.remove('show'), 2200);
   }
 
+  // -------------------------------------------------------------- Diagnose
+
+  /** Byteangabe in der Einheit, in der man sie noch lesen kann. */
+  function mengeText(bytes) {
+    if (bytes < 1024) return Math.round(bytes) + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' kB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+  }
+
+  function diagnoseZaehlerZuruecksetzen() {
+    diagUpdates = 0;
+    diagKacheln = 0;
+    diagBytes = 0;
+    diagLetztesBild = 0;
+    diagVorher = null;
+  }
+
+  /**
+   * Was nur hier messbar ist: was wirklich auf der Zeichenflaeche ankam.
+   *
+   * Der Host weiss, was er abgeschickt hat - ob es gezeichnet wurde, weiss nur
+   * der Renderer. Weichen beide Zahlen auseinander, liegt der Verlust zwischen
+   * Host und Zeichenflaeche und nicht im Protokoll.
+   */
+  function eigeneZeilen(jetzt) {
+    const abstand = diagVorher ? jetzt - diagVorher.zeit : 0;
+    const proSekunde = (zuwachs) => (abstand > 0 ? Math.round((zuwachs * 1000) / abstand) : 0);
+    const zeilen = [];
+    if (diagVorher && abstand > 0) {
+      zeilen.push({
+        name: 'Bildrate',
+        wert:
+          proSekunde(diagUpdates - diagVorher.updates) +
+          ' Updates/s · ' +
+          proSekunde(diagKacheln - diagVorher.kacheln) +
+          ' Kacheln/s',
+      });
+      zeilen.push({
+        name: 'Gezeichnet',
+        wert:
+          mengeText(diagBytes) +
+          ' · ' +
+          mengeText(((diagBytes - diagVorher.bytes) * 1000) / abstand) +
+          '/s · ' +
+          diagKacheln +
+          ' Kacheln',
+      });
+    } else {
+      zeilen.push({ name: 'Bildrate', wert: 'wird gemessen…' });
+      zeilen.push({ name: 'Gezeichnet', wert: mengeText(diagBytes) + ' · ' + diagKacheln + ' Kacheln' });
+    }
+    zeilen.push({
+      name: 'Zuletzt',
+      wert: diagLetztesBild ? 'vor ' + (jetzt - diagLetztesBild) + ' ms' : 'nichts gezeichnet',
+    });
+    zeilen.push({
+      name: 'Fläche',
+      wert:
+        canvas.width +
+        '×' +
+        canvas.height +
+        ' → ' +
+        (canvas.style.width || 'auto') +
+        '×' +
+        (canvas.style.height || 'auto') +
+        ' · ' +
+        (scaling === 'fit' ? 'eingepasst' : '1:1'),
+    });
+    return zeilen;
+  }
+
+  /**
+   * Zeichnet das Overlay neu. Getaktet wird es vom Host (einmal je Sekunde) -
+   * ein eigener Zeitgeber im Renderer waere eine zweite Uhr fuer dieselbe Sache.
+   */
+  function zeigeDiagnose(nachricht) {
+    const jetzt = Date.now();
+    const zeilen = (nachricht.zeilen || []).concat(eigeneZeilen(jetzt));
+    let breite = 0;
+    for (const zeile of zeilen) breite = Math.max(breite, zeile.name.length);
+    let text = '';
+    for (const zeile of zeilen) {
+      text += (zeile.name + ':').padEnd(breite + 2) + zeile.wert + '\n';
+    }
+    diagnoseTitel.textContent = nachricht.titel || 'Diagnose';
+    diagnoseWerte.textContent = text;
+    diagVorher = { zeit: jetzt, updates: diagUpdates, kacheln: diagKacheln, bytes: diagBytes };
+  }
+
+  function setzeDiagnose(nachricht) {
+    if (!nachricht.sichtbar) {
+      diagAn = false;
+      diagnose.hidden = true;
+      diagnoseWerte.textContent = '';
+      diagnoseZaehlerZuruecksetzen();
+      return;
+    }
+    if (!diagAn) {
+      // Frisch eingeschaltet: mit leeren Zaehlern anfangen, damit die erste
+      // Rate nicht aus einem Zeitraum ohne Messung stammt.
+      diagnoseZaehlerZuruecksetzen();
+      diagAn = true;
+    }
+    diagnose.hidden = false;
+    if (nachricht.zeilen) zeigeDiagnose(nachricht);
+  }
+
   // ----------------------------------------------------------- Darstellung
 
   let tilesDrawn = 0;
@@ -158,6 +283,12 @@
       } catch (err) {
         vscode.postMessage({ type: 'drawError', message: String(err) });
       }
+    }
+    if (diagAn) {
+      diagUpdates++;
+      diagKacheln += message.rects.length;
+      diagBytes += bytes.length;
+      diagLetztesBild = Date.now();
     }
     if (tilesDrawn > 0) vscode.postMessage({ type: 'painted', tiles: tilesDrawn });
   }
@@ -346,6 +477,16 @@
 
       case 'pointerDefault':
         canvas.style.cursor = 'default';
+        break;
+
+      case 'diagnose':
+        setzeDiagnose(message);
+        break;
+
+      case 'diagnosePing':
+        // Sofort und ohne Umweg antworten: gemessen werden soll der Weg
+        // Host -> Renderer -> Host, nicht die eigene Rechenzeit.
+        vscode.postMessage({ type: 'diagnosePong', seq: message.seq });
         break;
     }
   });
