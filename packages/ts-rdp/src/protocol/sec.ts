@@ -34,6 +34,11 @@ export interface ClientInfoOptions {
   performanceFlags?: number;
   /** Zugangsdaten direkt mitschicken (bei NLA hat der Server sie ohnehin schon). */
   autoLogon?: boolean;
+  /**
+   * ARC_CS_PRIVATE_PACKET (MS-RDPBCGR 2.2.4.3), genau 28 Byte. Nur beim
+   * Wiederverbinden gesetzt; ohne Cookie bleibt das Feld ganz weg.
+   */
+  autoReconnectCookie?: Buffer;
 }
 
 export function buildClientInfo(o: ClientInfoOptions): Buffer {
@@ -79,6 +84,20 @@ export function buildClientInfo(o: ClientInfoOptions): Buffer {
     .zeros(172) // TIME_ZONE_INFORMATION - der Server faellt auf seine Zeitzone zurueck
     .uint32le(0) // clientSessionId
     .uint32le(o.performanceFlags ?? PERF_DISABLE_WALLPAPER | PERF_DISABLE_MENUANIMATIONS | PERF_DISABLE_THEMING);
+
+  // Auto-Reconnect-Cookie (2.2.1.11.1.1.1). cbAutoReconnectCookie MUSS null
+  // oder 0x1c sein; das Feld ist optional, und ein Nullfeld anzuhaengen waere
+  // ein Unterschied auf dem Draht ohne jeden Nutzen. Ohne Cookie endet das
+  // Paket deshalb wie bisher hinter performanceFlags.
+  if (o.autoReconnectCookie) {
+    if (o.autoReconnectCookie.length !== 28) {
+      throw new RdpError(
+        `autoReconnectCookie muss 28 Byte lang sein, ist aber ${o.autoReconnectCookie.length}`,
+        'RDP_AUTORECONNECT',
+      );
+    }
+    w.uint16le(o.autoReconnectCookie.length).bytes(o.autoReconnectCookie);
+  }
 
   return w.toBuffer();
 }

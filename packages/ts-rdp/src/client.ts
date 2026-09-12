@@ -10,6 +10,7 @@ import { EventEmitter } from 'node:events';
 import * as tls from 'node:tls';
 import { createPublicKey, X509Certificate } from 'node:crypto';
 import { BinaryReader } from './core/binary.js';
+import { backoffWartezeit, BackoffOptions, STANDARD_BACKOFF } from './core/backoff.js';
 import { createLogger, Logger, LogLevel, LogSink, nullLogger } from './core/log.js';
 import { ERROR_INFO_CODES, RdpError, RdpProtocolError } from './core/errors.js';
 import { CredSspClient } from './crypto/credssp.js';
@@ -36,6 +37,12 @@ import * as gcc from './protocol/gcc.js';
 import * as pdu from './protocol/pdu.js';
 import { buildClientCapabilities, CapabilityProfile, ServerCapabilities } from './protocol/caps.js';
 import { buildClientInfo, evaluateLicense, parseLicensePdu } from './protocol/sec.js';
+import {
+  buildAutoReconnectCookie,
+  parseSaveSessionInfo,
+  ServerAutoReconnectPacket,
+  SITZUNG_ENDGUELTIG_BEENDET,
+} from './protocol/autoReconnect.js';
 import {
   BitmapRectangle,
   DecodedBitmap,
@@ -204,6 +211,38 @@ export interface RdpClientOptions {
    * (siehe `examples/diagnose.mjs`).
    */
   graphicsCapsSets?: EgfxCapsSet[];
+  /**
+   * Automatischer Wiederverbindungsaufbau nach einem Verbindungsverlust.
+   *
+   * Ohne Angabe bleibt er aus, und der Client verhaelt sich bis aufs Byte wie
+   * bisher: kein AUTORECONNECT_SUPPORTED im Capability-Satz, kein Cookie im
+   * Info-PDU, ein Verbindungsverlust endet unmittelbar in 'close'.
+   */
+  autoReconnect?: AutoReconnectOptions;
+}
+
+/**
+ * Stellschrauben des automatischen Wiederverbindungsaufbaus.
+ *
+ * Die Vorgaben ueberbruecken eine kurze Netzstoerung - fuenf Versuche binnen
+ * gut einer halben Minute - und geben danach auf, statt einen dauerhaft toten
+ * Server endlos anzurufen.
+ */
+export interface AutoReconnectOptions {
+  /** Standard: an, sobald dieses Objekt ueberhaupt angegeben wird. */
+  enabled?: boolean;
+  /** Hoechstzahl der Versuche je Verbindungsverlust (Standard 5). */
+  maxAttempts?: number;
+  /** Wartezeit vor dem ersten Versuch in Millisekunden (Standard 1000). */
+  initialDelayMs?: number;
+  /** Obergrenze der Wartezeit in Millisekunden (Standard 30000). */
+  maxDelayMs?: number;
+  /** Wachstumsfaktor der Wartezeit je Versuch (Standard 2). */
+  factor?: number;
+  /** Streuung als Anteil der Wartezeit, 0..1 (Standard 0.25). */
+  jitter?: number;
+  /** Zufallsquelle fuer die Streuung - nur zum Nachrechnen in Tests. */
+  random?: () => number;
 }
 
 export interface RdpClientEvents {
@@ -221,6 +260,43 @@ export interface RdpClientEvents {
   resize: (size: { width: number; height: number }) => void;
   error: (err: Error) => void;
   close: (reason?: string) => void;
+  /**
+   * Die Verbindung ist weg und ein neuer Versuch ist eingeplant. Kommt vor
+   * jedem Versuch einmal, mit der Wartezeit bis dahin.
+   */
+  reconnecting: (info: {
+    /** Laufende Nummer des Versuchs, ab 1. */
+    attempt: number;
+    maxAttempts: number;
+    /** Wartezeit bis zu diesem Versuch in Millisekunden. */
+    delayMs: number;
+    /** Was den Verlust ausgeloest hat, soweit bekannt. */
+    reason?: string;
+  }) => void;
+  /**
+   * Die Sitzung steht wieder. Direkt davor kam wie beim Erstaufbau ein
+   * 'connect'-Ereignis - die Zeichenflaeche ist also neu einzurichten.
+   */
+  reconnected: (info: {
+    /** Der wievielte Versuch geklappt hat. */
+    attempt: number;
+    /**
+     * Ob ein Auto-Reconnect-Cookie mitgeschickt wurde. Nur dann konnte der
+     * Server den Benutzer in seine alte Sitzung zurueckholen; sonst steht eine
+     * frische Anmeldung auf der Gegenseite.
+     */
+    resumedSession: boolean;
+  }) => void;
+  /** Alle Versuche sind verbraucht. Danach folgt noch genau ein 'close'. */
+  gaveUp: (info: { attempts: number; lastError?: Error; reason?: string }) => void;
+  /**
+   * Der Server hat einen Auto-Reconnect-Cookie hinterlegt: ab jetzt ist eine
+   * Rueckkehr in dieselbe Sitzung ohne erneute Anmeldung moeglich.
+   *
+   * Das Schluesselmaterial selbst bleibt absichtlich drin - MS-RDPBCGR 5.5
+   * verlangt, dass der Client den Cookie nicht herausgibt.
+   */
+  autoReconnectCookie: (info: { logonId: number; version: number }) => void;
 }
 
 export declare interface RdpClient {
@@ -275,7 +351,12 @@ export const PIPELINE_CHANNEL_NAMES = [
   CORE_INPUT_CHANNEL_NAME,
 ];
 
-type Phase = 'idle' | 'connecting' | 'active' | 'closed';
+/**
+ * 'reconnecting' ist die Wartezeit zwischen zwei Versuchen. Waehrend eines
+ * Versuchs selbst gilt wieder 'connecting' - dort traegt die Zusage des
+ * Handshakes den Fehler, genau wie beim Erstaufbau.
+ */
+type Phase = 'idle' | 'connecting' | 'reconnecting' | 'active' | 'closed';
 
 export class RdpClient extends EventEmitter {
   private readonly log: Logger;
@@ -335,6 +416,33 @@ export class RdpClient extends EventEmitter {
   private fragments: Buffer[] = [];
   /** Wurde der Handshake bereits mit der TLS-Rueckfallebene wiederholt? */
   private triedLegacyTls = false;
+  /** TLS-Profil des aktuellen Transports - beim Wiederverbinden wiederverwendet. */
+  private tlsProfile: TlsProfile = MODERN_TLS_PROFILE;
+
+  // ------------------------------------------- Automatischer Wiederaufbau
+
+  /** Ausgewertete Einstellungen; steht auch dann, wenn nichts angegeben wurde. */
+  private readonly arc: {
+    aktiv: boolean;
+    maxVersuche: number;
+    backoff: BackoffOptions;
+    zufall: () => number;
+  };
+  /** Zuletzt vom Server hinterlegter Cookie (MS-RDPBCGR 5.5, Schritt 2). */
+  private arcCookie?: ServerAutoReconnectPacket;
+  /** Nummer des laufenden Wiederverbindungsversuchs; 0 heisst: keiner. */
+  private arcVersuch = 0;
+  private arcTimer?: NodeJS.Timeout;
+  /** Grund des Verlusts, der die laufende Wiederholung ausgeloest hat. */
+  private arcGrund?: string;
+  private arcLetzterFehler?: Error;
+  /** Ob im letzten Info-PDU ein ARC_CS_PRIVATE_PACKET mitfuhr. */
+  private arcCookieGesendet = false;
+  /**
+   * Hat der Benutzer disconnect() gerufen? Dann ist der Abbau gewollt: keine
+   * Wiederholung, kein Fehler, kein Ereignis.
+   */
+  private benutzerTrennung = false;
 
   constructor(options: RdpClientOptions) {
     super();
@@ -348,10 +456,34 @@ export class RdpClient extends EventEmitter {
       ...options,
     };
     this.log = options.logLevel || options.logSink ? createLogger(options.logLevel ?? 'info', options.logSink) : nullLogger;
+
+    const ar = options.autoReconnect;
+    this.arc = {
+      aktiv: ar ? ar.enabled !== false : false,
+      maxVersuche: ar?.maxAttempts ?? 5,
+      backoff: {
+        initialDelayMs: ar?.initialDelayMs ?? STANDARD_BACKOFF.initialDelayMs,
+        maxDelayMs: ar?.maxDelayMs ?? STANDARD_BACKOFF.maxDelayMs,
+        factor: ar?.factor ?? STANDARD_BACKOFF.factor,
+        jitter: ar?.jitter ?? STANDARD_BACKOFF.jitter,
+      },
+      zufall: ar?.random ?? Math.random,
+    };
+    // Die Capability gehoert zur Funktion, nicht zum Geschmack: sie ist die
+    // Zusage an den Server, mit einem Cookie zurueckzukommen. Wer sie dennoch
+    // von Hand abschaltet, behaelt das letzte Wort.
+    if (this.arc.aktiv) {
+      this.opts.capabilityProfile = {
+        ...this.opts.capabilityProfile,
+        autoReconnect: this.opts.capabilityProfile?.autoReconnect ?? true,
+      };
+    }
+
     this.transport = this.createTransport(MODERN_TLS_PROFILE);
   }
 
   private createTransport(tlsProfile: TlsProfile): RdpTransport {
+    this.tlsProfile = tlsProfile;
     const transport = new RdpTransport({
       host: this.opts.host,
       port: this.opts.port,
@@ -379,6 +511,25 @@ export class RdpClient extends EventEmitter {
     return this.phase === 'active';
   }
 
+  /** Laeuft gerade ein automatischer Wiederverbindungsaufbau? */
+  get isReconnecting(): boolean {
+    return this.phase === 'reconnecting' || (this.arcVersuch > 0 && this.phase === 'connecting');
+  }
+
+  /** Nummer des laufenden Wiederverbindungsversuchs; 0 heisst: keiner. */
+  get reconnectAttempt(): number {
+    return this.arcVersuch;
+  }
+
+  /**
+   * Liegt ein Auto-Reconnect-Cookie des Servers vor? Nur dann fuehrt ein
+   * Wiederaufbau zurueck in dieselbe Sitzung. Der Cookie selbst wird nicht
+   * herausgegeben (MS-RDPBCGR 5.5).
+   */
+  get canResumeSession(): boolean {
+    return this.arcCookie !== undefined;
+  }
+
   async connect(): Promise<void> {
     if (this.phase !== 'idle') throw new RdpError('connect() kann nur einmal aufgerufen werden');
     this.phase = 'connecting';
@@ -396,7 +547,7 @@ export class RdpClient extends EventEmitter {
       }
       this.log.warn(LEGACY_TLS_EXPLANATION);
       this.triedLegacyTls = true;
-      this.resetForRetry();
+      this.resetForRetry(LEGACY_TLS_PROFILE);
       try {
         await this.runHandshake();
       } catch (retryError) {
@@ -427,7 +578,7 @@ export class RdpClient extends EventEmitter {
   }
 
   /** Setzt den gesamten Sitzungszustand zurueck und baut den Transport neu auf. */
-  private resetForRetry(): void {
+  private resetForRetry(tlsProfile: TlsProfile): void {
     this.transport.removeAllListeners();
     this.transport.close();
     this.userId = 0;
@@ -440,10 +591,34 @@ export class RdpClient extends EventEmitter {
     this.fragments = [];
     this.pendingSharePayload = undefined;
     this.phase = 'connecting';
-    this.transport = this.createTransport(LEGACY_TLS_PROFILE);
+    this.transport = this.createTransport(tlsProfile);
+  }
+
+  /**
+   * Alles zuruecksetzen, was an die *alte Sitzung* gebunden war.
+   *
+   * Beim TLS-Rueckfall ist das unnoetig - dort kam nie eine Sitzung zustande.
+   * Beim Wiederverbinden dagegen zwingend: eine halb empfangene Kanalnachricht
+   * oder ein ZGFX-Verlaufspuffer der alten Verbindung wuerde die erste
+   * Nachricht der neuen verderben.
+   */
+  private setzeSitzungszustandZurueck(): void {
+    this.dynvcChannelId = undefined;
+    this.dynamicChannels.clear();
+    this.dynamicFragments.clear();
+    this.zgfxByChannel.clear();
+    this.dynvcReassembler.reset();
+    this.egfx = undefined;
+    this.serverCapabilities = undefined;
+    this.lastErrorInfo = undefined;
+    this.lastErrorInfoCode = undefined;
   }
 
   disconnect(): void {
+    // Gewolltes Trennen beendet jede laufende Wiederholung auf der Stelle und
+    // gilt nicht als Fehler - weder 'error' noch 'gaveUp' folgen daraus.
+    this.benutzerTrennung = true;
+    this.brichWiederverbindungAb();
     if (this.phase === 'active') {
       try {
         this.sendPdu(pdu.buildShutdownRequest(this.shareId, this.userId));
@@ -607,12 +782,23 @@ export class RdpClient extends EventEmitter {
   }
 
   private async sendClientInfo(): Promise<void> {
+    // Der Cookie faehrt nur beim Wiederverbinden mit: beim Erstaufbau gibt es
+    // keine Sitzung, in die zurueckzukehren waere (MS-RDPBCGR 5.5, Schritt 4).
+    const cookie =
+      this.arcVersuch > 0 && this.arcCookie ? buildAutoReconnectCookie(this.arcCookie) : undefined;
+    this.arcCookieGesendet = cookie !== undefined;
+    if (cookie) {
+      this.log.info(
+        `Info-PDU mit Auto-Reconnect-Cookie fuer Sitzung ${this.arcCookie!.logonId}`,
+      );
+    }
     const info = buildClientInfo({
       domain: this.opts.domain ?? '',
       username: this.opts.username ?? '',
       password: this.opts.password ?? '',
       alternateShell: this.opts.alternateShell,
       performanceFlags: this.opts.performanceFlags,
+      autoReconnectCookie: cookie,
     });
     // Security Header mit SEC_INFO_PKT ist hier auch unter TLS vorgeschrieben.
     const payload = Buffer.concat([Buffer.from([SEC_INFO_PKT & 0xff, SEC_INFO_PKT >> 8, 0, 0]), info]);
@@ -1038,15 +1224,46 @@ export class RdpClient extends EventEmitter {
           const text = ERROR_INFO_CODES[code] ?? `Unbekannter Fehlercode 0x${code.toString(16)}`;
           this.log.warn(`Server meldet: ${text}`);
           this.lastErrorInfo = text;
+          // Der nackte Code entscheidet spaeter darueber, ob ein
+          // Wiederverbinden ueberhaupt Sinn ergibt.
+          this.lastErrorInfoCode = code;
         }
         break;
       }
+      case PDUTYPE2_SAVE_SESSION_INFO:
+        this.handleSaveSessionInfo(r);
+        break;
       default:
         this.log.debug(`Data-PDU ${benenneDataPdu(header.pduType2)} - keine Behandlung noetig`);
     }
   }
 
   private lastErrorInfo?: string;
+  /** Derselbe Wert als Zahl - noetig fuer die Entscheidung ueber Wiederholungen. */
+  private lastErrorInfoCode?: number;
+
+  /**
+   * Save Session Info PDU (MS-RDPBCGR 2.2.10.1). Von allem, was darin stehen
+   * kann, braucht dieser Client genau eines: den Server-Auto-Reconnect-Cookie.
+   * Er kommt, sobald der Benutzer angemeldet ist, und wird stuendlich sowie bei
+   * jedem Verbinden erneuert - es gilt stets der zuletzt empfangene.
+   */
+  private handleSaveSessionInfo(r: BinaryReader): void {
+    const info = parseSaveSessionInfo(r);
+    if (!info.autoReconnectCookie) {
+      this.log.debug(`Save Session Info: infoType ${info.infoType}, kein Cookie enthalten`);
+      return;
+    }
+    this.arcCookie = info.autoReconnectCookie;
+    this.log.info(
+      `Auto-Reconnect-Cookie erhalten (Sitzung ${info.autoReconnectCookie.logonId}, ` +
+        `Version ${info.autoReconnectCookie.version})`,
+    );
+    this.emit('autoReconnectCookie', {
+      logonId: info.autoReconnectCookie.logonId,
+      version: info.autoReconnectCookie.version,
+    });
+  }
 
   private handlePointerUpdate(r: BinaryReader): void {
     const messageType = r.uint16le();
@@ -1325,6 +1542,11 @@ export class RdpClient extends EventEmitter {
 
   private fail(err: Error): void {
     if (this.phase === 'closed') return;
+    if (this.phase === 'reconnecting') {
+      // Nachzuegler des alten Transports waehrend der Wartezeit.
+      this.log.debug(`Fehler waehrend der Wartezeit auf den naechsten Versuch: ${err.message}`);
+      return;
+    }
     if (this.phase === 'connecting') {
       // Waehrend des Verbindungsaufbaus traegt die Zusage von connect() den
       // Fehler. Ein zusaetzliches Ereignis wuerde einen Wiederholversuch
@@ -1344,13 +1566,130 @@ export class RdpClient extends EventEmitter {
 
   private handleClose(reason?: string): void {
     if (this.phase === 'closed') return;
+    if (this.phase === 'reconnecting') return;
     if (this.phase === 'connecting') {
       // Gleiche Begruendung wie in fail(): der Abbruch kommt ueber connect() zurueck.
       this.log.debug('Verbindung waehrend des Aufbaus geschlossen');
       return;
     }
+    const grund = reason ?? this.lastErrorInfo;
+    if (this.starteWiederverbindung(grund)) return;
     this.phase = 'closed';
-    this.emit('close', reason ?? this.lastErrorInfo);
+    this.emit('close', grund);
+  }
+
+  // ------------------------------------------- Automatischer Wiederaufbau
+
+  /**
+   * Entscheidet, ob aus einem Verbindungsverlust eine Wiederholung wird, und
+   * startet sie gegebenenfalls. Liefert true, wenn 'close' zu unterbleiben hat.
+   */
+  private starteWiederverbindung(grund?: string): boolean {
+    if (!this.arc.aktiv) return false;
+    // Ein gewolltes Trennen ist kein Verlust. Das ist der eine Unterschied,
+    // an dem die ganze Unterscheidung haengt.
+    if (this.benutzerTrennung) return false;
+    if (this.phase !== 'active') return false;
+    if (this.lastErrorInfoCode !== undefined && SITZUNG_ENDGUELTIG_BEENDET.has(this.lastErrorInfoCode)) {
+      this.log.info(`Kein Wiederaufbau: die Sitzung ist endgueltig beendet (${this.lastErrorInfo})`);
+      return false;
+    }
+    if (this.arc.maxVersuche < 1) return false;
+
+    this.arcGrund = grund;
+    this.arcLetzterFehler = undefined;
+    this.arcVersuch = 0;
+    this.phase = 'reconnecting';
+    this.planeNaechstenVersuch();
+    return true;
+  }
+
+  private planeNaechstenVersuch(): void {
+    this.arcVersuch += 1;
+    const wartezeit = backoffWartezeit(this.arcVersuch, this.arc.backoff, this.arc.zufall);
+    this.log.info(
+      `Verbindung verloren - Versuch ${this.arcVersuch}/${this.arc.maxVersuche} in ${wartezeit} ms`,
+    );
+    this.emit('reconnecting', {
+      attempt: this.arcVersuch,
+      maxAttempts: this.arc.maxVersuche,
+      delayMs: wartezeit,
+      reason: this.arcGrund,
+    });
+    this.arcTimer = setTimeout(() => {
+      void this.fuehreVersuchAus();
+    }, wartezeit);
+  }
+
+  private async fuehreVersuchAus(): Promise<void> {
+    this.arcTimer = undefined;
+    // Zwischenzeitlich getrennt? Dann ist hier nichts mehr zu tun. Die Phase
+    // liegt bewusst in einer Variablen: sonst schreibt der Compiler sie fuer
+    // den Rest der Methode fest und uebersieht, dass der abgewartete
+    // Handshake sie veraendert.
+    const phaseVorher: Phase = this.phase;
+    if (phaseVorher !== 'reconnecting' || this.benutzerTrennung) return;
+
+    this.setzeSitzungszustandZurueck();
+    // Dasselbe TLS-Profil wie zuletzt: welches der Server vertraegt, wurde
+    // beim Erstaufbau bereits ermittelt.
+    this.resetForRetry(this.tlsProfile);
+
+    try {
+      await this.runHandshake();
+    } catch (err) {
+      this.arcLetzterFehler = err as Error;
+      this.log.warn(`Versuch ${this.arcVersuch} gescheitert: ${(err as Error).message}`);
+      this.transport.removeAllListeners();
+      this.transport.close();
+      if (this.benutzerTrennung || this.phase === 'closed') return;
+      this.phase = 'reconnecting';
+      if (this.arcVersuch >= this.arc.maxVersuche) this.gibAuf();
+      else this.planeNaechstenVersuch();
+      return;
+    }
+
+    if (this.benutzerTrennung) {
+      // Der Benutzer hat waehrend des Handshakes abgebrochen.
+      this.phase = 'closed';
+      this.transport.close();
+      return;
+    }
+
+    const versuch = this.arcVersuch;
+    const fortgesetzt = this.arcCookieGesendet;
+    this.arcVersuch = 0;
+    this.arcLetzterFehler = undefined;
+    this.arcGrund = undefined;
+    this.log.info(
+      `Wiederverbunden im Versuch ${versuch}` +
+        (fortgesetzt ? ' - mit Cookie, also zurueck in dieselbe Sitzung' : ' - ohne Cookie'),
+    );
+    this.emit('reconnected', { attempt: versuch, resumedSession: fortgesetzt });
+  }
+
+  private gibAuf(): void {
+    const versuche = this.arcVersuch;
+    const grund = this.arcGrund;
+    const letzterFehler = this.arcLetzterFehler;
+    this.arcVersuch = 0;
+    this.arcGrund = undefined;
+    this.phase = 'closed';
+    this.log.warn(`Wiederverbindung nach ${versuche} Versuchen aufgegeben`);
+    this.emit('gaveUp', { attempts: versuche, lastError: letzterFehler, reason: grund });
+    // Die alte Zusage bleibt bestehen: auf ein Sitzungsende folgt genau ein
+    // 'close'. Es kommt jetzt nur spaeter als frueher.
+    this.emit('close', grund);
+  }
+
+  /** Bricht eine laufende Wiederholung ab, ohne ein Ereignis auszuloesen. */
+  private brichWiederverbindungAb(): void {
+    if (this.arcTimer) {
+      clearTimeout(this.arcTimer);
+      this.arcTimer = undefined;
+    }
+    this.arcVersuch = 0;
+    this.arcGrund = undefined;
   }
 }
 
