@@ -19,6 +19,9 @@
     "terminal server"
   ],
   "main": "./out/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
   "activationEvents": [],
   "contributes": {
     "viewsContainers": {
@@ -167,6 +170,10 @@
       {
         "command": "rdp.showLog",
         "title": "RDP: Protokoll anzeigen"
+      },
+      {
+        "command": "rdp.showEnvironment",
+        "title": "RDP: Laufzeitumgebung anzeigen (lokal oder entfernt)"
       }
     ],
     "menus": {
