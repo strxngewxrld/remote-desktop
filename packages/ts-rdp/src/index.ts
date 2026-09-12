@@ -53,6 +53,27 @@ export {
 export type { ChannelDef } from './protocol/gcc.js';
 export * as dvc from './protocol/dvc.js';
 
+// Zwischenablage (MS-RDPECLIP) auf dem statischen Kanal `cliprdr`.
+export * as cliprdr from './protocol/cliprdr.js';
+export {
+  CliprdrSession,
+  CLIPRDR_CHANNEL_NAME,
+  CLIPRDR_CHANNEL_DEF,
+  CLIPRDR_CHANNEL_OPTIONS,
+  CF_TEXT,
+  CF_UNICODETEXT,
+  STANDARD_MAX_BYTES,
+  zeilenendenNachLokal,
+  zeilenendenNachWindows,
+} from './protocol/cliprdr.js';
+export type {
+  CliprdrSessionOptions,
+  CliprdrFormat,
+  CliprdrCapabilities,
+  CliprdrPdu,
+  ZwischenablageRichtung,
+} from './protocol/cliprdr.js';
+
 export { RdpError, RdpProtocolError, RdpAuthError, ERROR_INFO_CODES, NEG_FAILURE_CODES } from './core/errors.js';
 export { createLogger, nullLogger } from './core/log.js';
 export type { Logger, LogLevel, LogSink } from './core/log.js';

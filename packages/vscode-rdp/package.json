@@ -153,6 +153,10 @@
         "title": "RDP: Diagnose-Overlay ein-/ausblenden"
       },
       {
+        "command": "rdp.toggleClipboardPanel",
+        "title": "RDP: Zwischenablage-Feld ein-/ausblenden"
+      },
+      {
         "command": "rdp.refreshScreen",
         "title": "RDP: Bildschirm neu anfordern"
       },
@@ -304,6 +308,12 @@
         "command": "rdp.sendCtrlAltDel",
         "key": "ctrl+alt+end",
         "mac": "ctrl+alt+end",
+        "when": "rdp.sessionFocused"
+      },
+      {
+        "command": "rdp.toggleClipboardPanel",
+        "key": "ctrl+alt+v",
+        "mac": "cmd+alt+v",
         "when": "rdp.sessionFocused"
       }
     ],
@@ -610,6 +620,38 @@
           "type": "number",
           "default": 400,
           "markdownDescription": "Ruhezeit in Millisekunden, bevor nach einer Größenänderung eine neue Auflösung angefragt wird. Jeder Wechsel verwirft serverseitig den Bildschirminhalt, deshalb wird beim Ziehen an der Fensterkante nicht bei jedem Pixel angefragt."
+        },
+        "rdp.clipboard.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Zwischenablage zwischen VS Code und der Sitzung austauschen (**MS-RDPECLIP**, Kanal `cliprdr`). Aus bedeutet: der Kanal wird gar nicht erst angemeldet. Nur Text – Dateien werden nicht übertragen."
+        },
+        "rdp.clipboard.direction": {
+          "type": "string",
+          "default": "both",
+          "enum": [
+            "both",
+            "remoteToLocal",
+            "localToRemote"
+          ],
+          "enumDescriptions": [
+            "In beide Richtungen",
+            "Nur lesen: was im entfernten Rechner kopiert wird, kommt hierher",
+            "Nur schreiben: was hier kopiert wird, geht in den entfernten Rechner"
+          ],
+          "description": "Erlaubte Richtung der Zwischenablage. Einschränken hilft gegen versehentlichen Abfluss von Daten in beide Richtungen."
+        },
+        "rdp.clipboard.maxSizeKb": {
+          "type": "number",
+          "default": 1024,
+          "minimum": 1,
+          "maximum": 65536,
+          "markdownDescription": "Obergrenze je Zwischenablage-Inhalt in **KiB**, in beide Richtungen. Größeres wird verworfen und nur protokolliert – ein Server soll den Editor nicht über die Zwischenablage volllaufen lassen."
+        },
+        "rdp.clipboard.pollIntervalMs": {
+          "type": "number",
+          "default": 750,
+          "markdownDescription": "Abstand in Millisekunden, in dem die Zwischenablage von VS Code auf Änderungen geprüft wird, solange die Sitzung sichtbar ist. VS Code meldet Änderungen nicht von sich aus. **0** schaltet die Prüfung ab; dann geht Text nur noch über das Zwischenablage-Feld (`RDP: Zwischenablage-Feld ein-/ausblenden`) in die Sitzung."
         },
         "rdp.graphicsPipeline": {
           "type": "boolean",
