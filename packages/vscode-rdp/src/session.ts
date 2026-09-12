@@ -24,8 +24,10 @@ import {
   SYNC_SCROLL_LOCK,
   lookupScancode,
   probeServerCertificate,
+  AVC420_EGFX_CAPS,
+  avcZeichenbereiche,
 } from 'ts-rdp';
-import type { RdpDiagnostics } from 'ts-rdp';
+import type { RdpDiagnostics, EgfxVideoFrame } from 'ts-rdp';
 import { RdpConnection, secretKey } from './connections.js';
 import { BandbreitenProfilName, berechnePerformanceFlags, istProfilName } from './bandbreite.js';
 import { CertificateTrustStore, TrustPolicy } from './trust.js';
@@ -47,6 +49,14 @@ interface ReadyMessage {
   width: number;
   height: number;
   devicePixelRatio: number;
+  /**
+   * Meldet das Webview die WebCodecs-API? Aeltere VS-Code-Fassungen und
+   * Umgebungen ohne Chromium-Videostack haben sie nicht.
+   *
+   * Fehlt das Feld ganz (etwa beim Ersatzobjekt fuer den Wiederverbindungsweg),
+   * gilt das als "nein" - lieber H.264 nicht anmelden als leere Bildbereiche.
+   */
+  webCodecs?: boolean;
 }
 
 /**
@@ -272,6 +282,8 @@ export class RdpSession {
   private anWebviewBytes = 0;
   private anWebviewKacheln = 0;
   private letztesBild = 0;
+  /** Vor H.264 in YUV444 wird nur einmal gewarnt, nicht bei jedem Teilbild. */
+  private avc444Gemeldet = false;
   private verbundenSeit = 0;
   private rttMs?: number;
   private rttSeq = 0;
@@ -417,6 +429,17 @@ export class RdpSession {
       case 'drawError':
         this.log(`Zeichenfehler im Webview: ${message.message}`);
         break;
+      case 'avcRueckfall':
+        // Der Decoder im Webview hat aufgegeben. Die uebrigen Codecpfade
+        // laufen weiter; die H.264-Bereiche bleiben leer, bis der Server sie
+        // ueber einen anderen Codec neu schickt. Mitten in der Sitzung laesst
+        // sich der Capabilityssatz nicht mehr aendern - deshalb hier nur die
+        // Ansage, was zu tun ist.
+        this.log(
+          `H.264 im Webview abgebrochen: ${message.message} ` +
+            'Für diesen Rechner besser "rdp.graphics.avc420" ausschalten.',
+        );
+        break;
       case 'binaryUnsupported':
         // Einmalige Umstellung: dieses VS Code reicht Uint8Array nicht durch.
         this.useBase64 = true;
@@ -473,6 +496,21 @@ export class RdpSession {
         return;
       }
 
+      // Zwei Bedingungen, und beide muessen vor der Capability-Aushandlung
+      // feststehen: die Einstellung *und* ein Webview, das WebCodecs hat.
+      // Anders herum waere der Rueckfall zu spaet - der Server haette dann
+      // schon auf H.264 umgestellt, und wir haetten keinen Decoder dafuer.
+      const avc420Gewuenscht = config.get<boolean>('graphics.avc420', false);
+      const avc420An = avc420Gewuenscht && ready.webCodecs === true;
+      if (avc420Gewuenscht && !avc420An) {
+        this.log(
+          'H.264/AVC420 ist eingeschaltet, aber dieses Webview meldet keine WebCodecs-Unterstützung. ' +
+            'Die Sitzung läuft wie bisher über ClearCodec, RemoteFX Progressive und Planar.',
+        );
+      } else if (avc420An) {
+        this.log('H.264/AVC420 ist eingeschaltet - der Capabilityssatz meldet AVC420_ENABLED an.');
+      }
+
       const client = new RdpClient({
         host,
         port,
@@ -490,6 +528,11 @@ export class RdpSession {
         // Der Display Control Channel wird angefragt, sobald das Mitziehen
         // erlaubt ist. Oeffnet der Server ihn nicht, aendert das nichts.
         enableDisplayControl: config.get<boolean>('dynamicResolution', true),
+        // H.264 nur auf ausdrueckliche Ansage. Ohne die Einstellung wird der
+        // Capabilityssatz gar nicht erst uebergeben, der Server bekommt also
+        // dasselbe Angebot wie bisher und schickt weiterhin ClearCodec,
+        // RemoteFX Progressive und Planar.
+        ...(avc420An ? { graphicsCapsSets: AVC420_EGFX_CAPS, avcFrames: true } : {}),
         connectTimeout: config.get<number>('connectTimeout', 15000),
         performanceFlags: this.performanceFlags(config),
         logLevel: config.get<any>('logLevel', 'info'),
@@ -705,6 +748,8 @@ export class RdpSession {
 
     client.on('bitmap', (tiles: DecodedBitmap[]) => this.sendTiles(tiles));
 
+    client.on('avcFrame', (frame: EgfxVideoFrame) => this.sendVideo(frame));
+
     client.on('pointer', (pointer: PointerImage | null) => {
       if (!pointer) {
         this.post({ type: 'pointerDefault' });
@@ -915,6 +960,58 @@ export class RdpSession {
     }
 
     this.post({ type: 'bitmap', rects, data: this.encode(Buffer.concat(buffers, offset)) });
+  }
+
+  /**
+   * Reicht ein H.264-Teilbild an das Webview weiter.
+   *
+   * Dekodiert wird drueben: der Renderer laeuft in Chromium und hat mit
+   * WebCodecs einen hardwarebeschleunigten Decoder, der Extension-Host hat
+   * keinen. Hier entsteht nur die Nachricht - Bitstream, die schon
+   * ausgerechneten Zeichenbereiche und die beiden Angaben, die der Decoder
+   * zum Konfigurieren braucht.
+   */
+  private sendVideo(frame: EgfxVideoFrame): void {
+    // AVC444 kommt hier nicht an, solange der Capabilityssatz unter Version 10
+    // bleibt. Sollte ein Server es trotzdem schicken, ist Wegwerfen ehrlicher
+    // als ein halb zusammengesetztes Bild: die Ebenenzuordnung ist nicht
+    // gebaut.
+    if (frame.codecId !== 0x000b) {
+      if (!this.avc444Gemeldet) {
+        this.avc444Gemeldet = true;
+        this.log(
+          `H.264 in YUV444 (Codec 0x${frame.codecId.toString(16)}) wird nicht dekodiert - ` +
+            'diese Bildbereiche bleiben leer.',
+        );
+      }
+      return;
+    }
+    if (!frame.yuv420 || !frame.analyse) return;
+
+    // Nicht abgebildete Surfaces liefern nichts auf den Bildschirm - der
+    // Bitstream muss aber trotzdem durch den Decoder, sonst fehlt spaeteren
+    // Folgebildern ihr Bezugsbild. Deshalb leere Bereichsliste statt Abbruch.
+    const bereiche = frame.abgebildet ? avcZeichenbereiche(frame.yuv420.regions, frame.surface) : [];
+
+    const bytes = Buffer.from(
+      frame.yuv420.bitstream.buffer,
+      frame.yuv420.bitstream.byteOffset,
+      frame.yuv420.bitstream.byteLength,
+    );
+    if (this.diagnoseSichtbar) {
+      this.anWebviewBytes += bytes.length;
+      this.letztesBild = Date.now();
+    }
+
+    this.post({
+      type: 'video',
+      codecString: frame.analyse.codecString,
+      schluesselbild: frame.analyse.schluesselbild,
+      hatParametersaetze: frame.analyse.hatParametersaetze,
+      bereiche,
+      data: this.encode(bytes),
+      laenge: bytes.length,
+    });
   }
 
   private encode(buffer: Buffer): Uint8Array | string {
