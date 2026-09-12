@@ -511,6 +511,11 @@
           "default": false,
           "description": "Bild beim Skalieren glätten. Aus wirkt bei Text meist schärfer."
         },
+        "rdp.graphics.avc420": {
+          "type": "boolean",
+          "default": false,
+          "description": "H.264/AVC420 in der Graphics Pipeline anmelden und im Webview über WebCodecs dekodieren. Versuchsweise: der Server schickt dann einen Teil der Bildfläche als H.264, der Rest läuft weiter über ClearCodec, RemoteFX Progressive und Planar. Ohne WebCodecs-Unterstützung fällt die Sitzung auf das bisherige Verhalten zurück. Aus lassen, wenn das Bild steht."
+        },
         "rdp.diagnostics.showOnStart": {
           "type": "boolean",
           "default": false,

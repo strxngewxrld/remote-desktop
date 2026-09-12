@@ -24,7 +24,7 @@ import {
 } from './protocol/virtualChannel.js';
 import * as dvc from './protocol/dvc.js';
 import { ZgfxDecompressor } from './codec/zgfx.js';
-import { EgfxSession } from './protocol/egfxSession.js';
+import { EgfxSession, EgfxVideoFrame } from './protocol/egfxSession.js';
 import type { EgfxCapsSet } from './protocol/egfx.js';
 import {
   LEGACY_TLS_EXPLANATION,
@@ -227,6 +227,15 @@ export interface RdpClientOptions {
    */
   graphicsCapsSets?: EgfxCapsSet[];
   /**
+   * H.264-Teilbilder als 'avcFrame'-Ereignis melden.
+   *
+   * Ohne Angabe bleibt es beim bisherigen Verhalten: die Graphics Pipeline
+   * bekommt keinen onVideo-Rueckruf und meldet ankommendes H.264 nur als
+   * Warnung. Der Schalter ist bewusst getrennt von graphicsCapsSets - wer ihn
+   * setzt, ohne AVC anzumelden, bekommt schlicht nie ein Ereignis.
+   */
+  avcFrames?: boolean;
+  /**
    * Automatischer Wiederverbindungsaufbau nach einem Verbindungsverlust.
    *
    * Ohne Angabe bleibt er aus, und der Client verhaelt sich bis aufs Byte wie
@@ -263,6 +272,13 @@ export interface AutoReconnectOptions {
 export interface RdpClientEvents {
   connect: () => void;
   bitmap: (updates: DecodedBitmap[]) => void;
+  /**
+   * Ein H.264-Teilbild der Graphics Pipeline, noch undekodiert.
+   *
+   * Kommt nur, wenn `avcFrames` gesetzt ist. Der Empfaenger braucht einen
+   * eigenen Decoder; diese Bibliothek bringt keinen mit.
+   */
+  avcFrame: (frame: EgfxVideoFrame) => void;
   /** Neue Zeigerform, oder null fuer den Standardzeiger des Systems. */
   pointer: (pointer: PointerImage | null) => void;
   /** Der Server blendet den Zeiger aus (z.B. bei Volltextbearbeitung). */
@@ -1176,6 +1192,9 @@ export class RdpClient extends EventEmitter {
     this.egfx = new EgfxSession({
       log: this.log,
       capsSets: this.opts.graphicsCapsSets,
+      // Bewusst undefined, wenn niemand zuhoert: EgfxSession unterscheidet
+      // daran, ob ein Decoder bereitsteht oder ob nur gewarnt werden soll.
+      onVideo: this.opts.avcFrames ? (frame) => this.emit('avcFrame', frame) : undefined,
       onUnbekannteKachel: this.opts.onUnbekannteKachel,
       onRohkachel: this.opts.onRohkachel,
       // Ungepackt, und das ist kein Versehen: die ZGFX-Huelle ist einseitig.
