@@ -26,6 +26,17 @@
   /** Gedrueckte Tasten, um beim Fokusverlust alles sauber loszulassen. */
   const pressedKeys = new Set();
   let binaryWorks = true;
+  /**
+   * Soll die Desktopaufloesung der Panelgroesse folgen? Der Host entscheidet
+   * das (Einstellung rdp.dynamicResolution) und sagt es im 'init'.
+   */
+  let dynamischeAufloesung = false;
+  /** Ruhezeit in Millisekunden, bevor eine neue Groesse gemeldet wird. */
+  let aufloesungsVerzug = 400;
+  /** Laufender Entprell-Zeitgeber, oder null. */
+  let aufloesungsTimer = null;
+  /** Zuletzt gemeldete Buehnengroesse - dieselbe wird nicht zweimal geschickt. */
+  let gemeldeteGroesse = null;
   /** Ab dieser Nutzlast lohnt der Umweg ueber Objekteigenschaften nicht mehr. */
   const OBJEKTWEG_GRENZE = 256 * 1024;
 
@@ -111,6 +122,48 @@
       canvas.style.width = desktopWidth + 'px';
       canvas.style.height = desktopHeight + 'px';
     }
+  }
+
+  /** Die derzeitige Groesse der Buehne, auf ganze Pixel abgerundet. */
+  function buehnenGroesse() {
+    const rect = stage.getBoundingClientRect();
+    return { width: Math.floor(rect.width), height: Math.floor(rect.height) };
+  }
+
+  /**
+   * Eine neue Panelgroesse an den Host melden - entprellt.
+   *
+   * Beim Ziehen an der Fensterkante feuert 'resize' dutzende Male je Sekunde.
+   * Jede davon zu melden hiesse, dem Server dutzende Aufloesungswechsel
+   * zuzumuten; jeder einzelne verwirft serverseitig den Bildschirminhalt und
+   * zieht ein volles neues Bild nach sich. Deshalb wird erst gemeldet, wenn es
+   * `aufloesungsVerzug` Millisekunden lang ruhig geblieben ist.
+   *
+   * Das Skalieren der Anzeige laeuft davon unabhaengig weiter - layout() wird
+   * sofort bei jedem Ereignis gerufen, damit das Bild waehrend des Ziehens
+   * mitwaechst (unscharf) und erst danach scharf nachgezogen wird.
+   */
+  function meldeGroesse() {
+    aufloesungsTimer = null;
+    if (!dynamischeAufloesung) return;
+    const groesse = buehnenGroesse();
+    if (groesse.width < 1 || groesse.height < 1) return;
+    if (gemeldeteGroesse && gemeldeteGroesse.width === groesse.width && gemeldeteGroesse.height === groesse.height) {
+      return;
+    }
+    gemeldeteGroesse = groesse;
+    vscode.postMessage({
+      type: 'resizeRequest',
+      width: groesse.width,
+      height: groesse.height,
+      devicePixelRatio: window.devicePixelRatio || 1,
+    });
+  }
+
+  function planeGroessenmeldung() {
+    if (!dynamischeAufloesung) return;
+    if (aufloesungsTimer !== null) clearTimeout(aufloesungsTimer);
+    aufloesungsTimer = setTimeout(meldeGroesse, aufloesungsVerzug);
   }
 
   /** Bildschirmkoordinaten des Remote-Desktops aus einem Mausereignis. */
@@ -417,7 +470,12 @@
 
   overlayAction.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' }));
 
-  window.addEventListener('resize', layout);
+  window.addEventListener('resize', () => {
+    // Sofort neu skalieren, damit das Bild waehrend des Ziehens mitgeht ...
+    layout();
+    // ... und erst nach der Ruhephase eine scharfe Aufloesung anfragen.
+    planeGroessenmeldung();
+  });
 
   // -------------------------------------------------- Nachrichten vom Host
 
@@ -439,6 +497,17 @@
         }
         scaling = message.scaling || 'fit';
         canvas.classList.toggle('smooth', !!message.smooth);
+        if (typeof message.dynamicResolution === 'boolean') dynamischeAufloesung = message.dynamicResolution;
+        if (typeof message.resizeDelay === 'number' && message.resizeDelay >= 0) {
+          aufloesungsVerzug = message.resizeDelay;
+        }
+        // Der Server hat gerade eine Groesse bestaetigt. Sie gilt jetzt als
+        // gemeldet, sonst schickt die naechste Ruhephase dieselbe Bitte erneut.
+        //
+        // Nur, wenn gerade keine Meldung ansteht: sonst verschluckt eine
+        // Bestaetigung, die waehrend des Ziehens eintrifft, genau die
+        // Groessenaenderung, auf die der Nutzer noch wartet.
+        if (aufloesungsTimer === null) gemeldeteGroesse = buehnenGroesse();
         layout();
         break;
 
