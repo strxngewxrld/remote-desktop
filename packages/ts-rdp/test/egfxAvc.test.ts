@@ -373,3 +373,42 @@ describe('Reihenfolge zwischen AVC und den uebrigen Codecpfaden', () => {
     assert.deepEqual(a.reihenfolge.map((e) => e.art), ['video']);
   });
 });
+
+describe('Der Surface-Puffer kennt die H.264-Pixel nicht', () => {
+  test('Nach einem Videobild wird die Surface nicht mehr als Ganzes ausgegeben', () => {
+    // Die AVC-Pixel entstehen im Renderer. Eine Vollausgabe aus dem Puffer
+    // hier waere an diesen Stellen schwarz und loeschte das Videobild wieder
+    // vom Bildschirm - ein Fehler, der nur beim erneuten Abbilden auftritt und
+    // deshalb schwer zuzuordnen waere.
+    const a = baueSitzung(true, AVC420_EGFX_CAPS);
+    a.sitzung.handle(createSurface(1, 64, 64));
+    a.sitzung.handle(mapToOutput(1, 0, 0));
+    a.sitzung.handle(
+      wireToSurface1(1, egfx.RDPGFX_CODECID_UNCOMPRESSED, { left: 0, top: 0, right: 8, bottom: 8 },
+        unkomprimierteKachel(8, 8, 0x60)),
+    );
+    a.sitzung.handle(
+      wireToSurface1(1, egfx.RDPGFX_CODECID_AVC420, { left: 0, top: 0, right: 64, bottom: 64 },
+        avc420Nutzlast([{ left: 0, top: 0, right: 64, bottom: 64 }], SCHLUESSELBILD)),
+    );
+    const vorher = a.reihenfolge.length;
+
+    a.sitzung.handle(mapToOutput(1, 100, 100));
+    assert.equal(a.reihenfolge.length, vorher, 'keine Vollausgabe nach einem Videobild');
+  });
+
+  test('Ohne Videobild bleibt die Vollausgabe beim erneuten Abbilden erhalten', () => {
+    // Die Gegenprobe: am bestehenden Verhalten aendert sich nichts.
+    const a = baueSitzung(true, AVC420_EGFX_CAPS);
+    a.sitzung.handle(createSurface(1, 64, 64));
+    a.sitzung.handle(mapToOutput(1, 0, 0));
+    a.sitzung.handle(
+      wireToSurface1(1, egfx.RDPGFX_CODECID_UNCOMPRESSED, { left: 0, top: 0, right: 8, bottom: 8 },
+        unkomprimierteKachel(8, 8, 0x60)),
+    );
+    const vorher = a.reihenfolge.length;
+
+    a.sitzung.handle(mapToOutput(1, 100, 100));
+    assert.equal(a.reihenfolge.length, vorher + 1, 'die Vollausgabe kommt wie bisher');
+  });
+});
