@@ -49,6 +49,14 @@ interface ReadyMessage {
   width: number;
   height: number;
   devicePixelRatio: number;
+  /**
+   * Meldet das Webview die WebCodecs-API? Aeltere VS-Code-Fassungen und
+   * Umgebungen ohne Chromium-Videostack haben sie nicht.
+   *
+   * Fehlt das Feld ganz (etwa beim Ersatzobjekt fuer den Wiederverbindungsweg),
+   * gilt das als "nein" - lieber H.264 nicht anmelden als leere Bildbereiche.
+   */
+  webCodecs?: boolean;
 }
 
 // ------------------------------------------------------------ Diagnosewerte
@@ -404,6 +412,17 @@ export class RdpSession {
       case 'drawError':
         this.log(`Zeichenfehler im Webview: ${message.message}`);
         break;
+      case 'avcRueckfall':
+        // Der Decoder im Webview hat aufgegeben. Die uebrigen Codecpfade
+        // laufen weiter; die H.264-Bereiche bleiben leer, bis der Server sie
+        // ueber einen anderen Codec neu schickt. Mitten in der Sitzung laesst
+        // sich der Capabilityssatz nicht mehr aendern - deshalb hier nur die
+        // Ansage, was zu tun ist.
+        this.log(
+          `H.264 im Webview abgebrochen: ${message.message} ` +
+            'Für diesen Rechner besser "rdp.graphics.avc420" ausschalten.',
+        );
+        break;
       case 'binaryUnsupported':
         // Einmalige Umstellung: dieses VS Code reicht Uint8Array nicht durch.
         this.useBase64 = true;
@@ -460,8 +479,18 @@ export class RdpSession {
         return;
       }
 
-      const avc420An = config.get<boolean>('graphics.avc420', false);
-      if (avc420An) {
+      // Zwei Bedingungen, und beide muessen vor der Capability-Aushandlung
+      // feststehen: die Einstellung *und* ein Webview, das WebCodecs hat.
+      // Anders herum waere der Rueckfall zu spaet - der Server haette dann
+      // schon auf H.264 umgestellt, und wir haetten keinen Decoder dafuer.
+      const avc420Gewuenscht = config.get<boolean>('graphics.avc420', false);
+      const avc420An = avc420Gewuenscht && ready.webCodecs === true;
+      if (avc420Gewuenscht && !avc420An) {
+        this.log(
+          'H.264/AVC420 ist eingeschaltet, aber dieses Webview meldet keine WebCodecs-Unterstützung. ' +
+            'Die Sitzung läuft wie bisher über ClearCodec, RemoteFX Progressive und Planar.',
+        );
+      } else if (avc420An) {
         this.log('H.264/AVC420 ist eingeschaltet - der Capabilityssatz meldet AVC420_ENABLED an.');
       }
 
