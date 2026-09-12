@@ -9,6 +9,7 @@ function nonce(): string {
 export function renderWebview(webview: vscode.Webview, extensionUri: vscode.Uri, title: string): string {
   const n = nonce();
   const script = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'main.js'));
+  const clipboardScript = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'clipboard.js'));
   const style = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'main.css'));
 
   return `<!DOCTYPE html>
@@ -46,6 +47,29 @@ export function renderWebview(webview: vscode.Webview, extensionUri: vscode.Uri,
     <div id="diagnose-werte"></div>
   </div>
 
+  <!-- Rueckfallebene der Zwischenablage: ein Feld, durch das Text von Hand in
+       beide Richtungen geht, wenn der direkte Weg scheitert. Eingeblendet ueber
+       den Befehl "RDP: Zwischenablage-Feld" oder von selbst, wenn das Schreiben
+       in die Zwischenablage von VS Code fehlschlaegt. -->
+  <div id="clipboard-panel" hidden>
+    <div class="clipboard-head">
+      <strong>Zwischenablage</strong>
+      <button id="clipboard-close" title="Feld schließen (Esc)">Schließen</button>
+    </div>
+    <textarea id="clipboard-text" spellcheck="false"
+              aria-label="Text für die Zwischenablage der Sitzung"
+              placeholder="Text hier einfügen und senden – oder Text vom Server hier abholen."></textarea>
+    <div class="clipboard-actions">
+      <button id="clipboard-send">An die Sitzung senden</button>
+      <button id="clipboard-copy">Lokal kopieren</button>
+      <span id="clipboard-status" role="status" aria-live="polite"></span>
+    </div>
+  </div>
+
+  <!-- Rueckfallebene der Zwischenablage. Muss VOR main.js geladen werden:
+       acquireVsCodeApi() laesst sich nur einmal je Webview aufrufen, und
+       clipboard.js reicht die Bruecke an main.js weiter. -->
+  <script nonce="${n}" src="${clipboardScript}"></script>
   <script nonce="${n}" src="${script}"></script>
 </body>
 </html>`;

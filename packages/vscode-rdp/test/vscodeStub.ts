@@ -306,6 +306,37 @@ export const dateien = new Map<string, Uint8Array>();
 /** Die Einstellungen, vollstaendig als "abschnitt.schluessel". */
 export const einstellungen = new Map<string, unknown>();
 
+/**
+ * Die Zwischenablage des Editors.
+ *
+ * `inhalt` ist der gespeicherte Text, `lesefehler`/`schreibfehler` zwingen den
+ * naechsten Zugriff in einen Fehler - genau das braucht der Test fuer die
+ * Rueckfallebene, denn in manchen Remote- und Web-Umgebungen wirft
+ * `vscode.env.clipboard` tatsaechlich.
+ */
+export const zwischenablage = {
+  inhalt: '',
+  lesefehler: undefined as Error | undefined,
+  schreibfehler: undefined as Error | undefined,
+  /** Alles, was geschrieben wurde, in der Reihenfolge. */
+  geschrieben: [] as string[],
+};
+
+export const env = {
+  clipboard: {
+    readText(): Thenable<string> {
+      if (zwischenablage.lesefehler) return Promise.reject(zwischenablage.lesefehler);
+      return Promise.resolve(zwischenablage.inhalt);
+    },
+    writeText(text: string): Thenable<void> {
+      if (zwischenablage.schreibfehler) return Promise.reject(zwischenablage.schreibfehler);
+      zwischenablage.inhalt = text;
+      zwischenablage.geschrieben.push(text);
+      return Promise.resolve();
+    },
+  },
+};
+
 export function zuruecksetzen(): void {
   notizen.befehle.clear();
   notizen.ausgefuehrt.length = 0;
@@ -331,6 +362,10 @@ export function zuruecksetzen(): void {
   antworten.speicherziele.length = 0;
   einstellungen.clear();
   dateien.clear();
+  zwischenablage.inhalt = '';
+  zwischenablage.lesefehler = undefined;
+  zwischenablage.schreibfehler = undefined;
+  zwischenablage.geschrieben.length = 0;
 }
 
 // ------------------------------------------------------------------ Webview
