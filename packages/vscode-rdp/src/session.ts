@@ -49,6 +49,20 @@ interface ReadyMessage {
   devicePixelRatio: number;
 }
 
+/**
+ * Die Webview meldet eine neue Panelgroesse. Sie ist dort bereits entprellt -
+ * hier kommt nur an, was nach der Ruhephase uebrig bleibt.
+ */
+interface ResizeRequestMessage {
+  type: 'resizeRequest';
+  width: number;
+  height: number;
+  devicePixelRatio: number;
+}
+
+/** Vorgabe fuer die Ruhezeit der Entprellung in Millisekunden. */
+export const AUFLOESUNG_VERZUG_MS = 400;
+
 // ------------------------------------------------------------ Diagnosewerte
 
 /**
@@ -369,6 +383,9 @@ export class RdpSession {
         this.setzeDiagnose(this.diagnoseSichtbar);
         await this.start(message as ReadyMessage);
         break;
+      case 'resizeRequest':
+        this.aufloesungMitziehen(message as ResizeRequestMessage);
+        break;
       case 'diagnosePong':
         // Nur die Antwort auf den zuletzt gestellten Ping zaehlt.
         if (message.seq === this.rttSeq && this.rttGesendet) this.rttMs = Date.now() - this.rttGesendet;
@@ -470,6 +487,9 @@ export class RdpSession {
         ),
         clientName: 'VS Code',
         enableGraphicsPipeline: config.get<boolean>('graphicsPipeline', true),
+        // Der Display Control Channel wird angefragt, sobald das Mitziehen
+        // erlaubt ist. Oeffnet der Server ihn nicht, aendert das nichts.
+        enableDisplayControl: config.get<boolean>('dynamicResolution', true),
         connectTimeout: config.get<number>('connectTimeout', 15000),
         performanceFlags: this.performanceFlags(config),
         logLevel: config.get<any>('logLevel', 'info'),
@@ -506,14 +526,103 @@ export class RdpSession {
     if (this.connection.width && this.connection.height) {
       return { width: this.connection.width, height: this.connection.height };
     }
-    const ratio = config.get<boolean>('highDpi', false) ? Math.min(ready.devicePixelRatio || 1, 2) : 1;
-    // RDP mag Breiten, die durch 4 teilbar sind; ausserdem sinnvolle Grenzen setzen.
+    return RdpSession.aufloesungAusPanel(ready.width, ready.height, this.pixelFaktor(ready.devicePixelRatio, config));
+  }
+
+  /**
+   * Wie viele Desktop-Pixel auf einen CSS-Pixel des Panels kommen.
+   *
+   * `rdp.highDpi` ist bewusst standardmaessig aus - und das ist keine
+   * Zaghaftigkeit: Microsofts eigener Webclient haelt es genauso und weist
+   * ausdruecklich auf die zusaetzliche Prozessorlast hin. Bei einem Faktor 2
+   * vervierfacht sich die Pixelzahl, und jede davon muss kodiert, uebertragen
+   * und dekodiert werden. Mehr als 2 wird deshalb auch eingeschaltet nicht
+   * angefordert.
+   */
+  private pixelFaktor(devicePixelRatio: number, config: vscode.WorkspaceConfiguration): number {
+    if (!config.get<boolean>('highDpi', false)) return 1;
+    return Math.min(devicePixelRatio || 1, 2);
+  }
+
+  /**
+   * Aus der Panelgroesse eine Desktopaufloesung rechnen.
+   *
+   * Dieselbe Rechnung gilt beim Verbindungsaufbau und bei jeder spaeteren
+   * Groessenaenderung. Das ist wichtig: waeren es zwei Rechnungen, ergaebe ein
+   * Zurueckziehen auf die Ausgangsgroesse eine andere Aufloesung als die beim
+   * Verbinden ausgehandelte, und das Bild spraenge ohne Anlass.
+   *
+   * Das Abrunden auf Vielfache von vier ist strenger als MS-RDPEDISP 2.2.2.2.1
+   * verlangt (dort muss nur die Breite gerade sein) und stammt aus dem
+   * Verbindungsaufbau. Es bleibt, weil beide Wege dasselbe liefern muessen.
+   */
+  static aufloesungAusPanel(breite: number, hoehe: number, faktor: number): { width: number; height: number } {
     const clamp = (value: number, min: number, max: number) =>
-      Math.max(min, Math.min(max, Math.floor((value * ratio) / 4) * 4));
+      Math.max(min, Math.min(max, Math.floor((value * faktor) / 4) * 4));
     return {
-      width: clamp(ready.width, 640, 4096),
-      height: clamp(ready.height, 480, 2160),
+      width: clamp(breite, 640, 4096),
+      height: clamp(hoehe, 480, 2160),
     };
+  }
+
+  /**
+   * Die Desktopaufloesung der neuen Panelgroesse nachfuehren (MS-RDPEDISP).
+   *
+   * Rueckfallebene: `requestResolution` wirft nie und meldet `false`, wenn der
+   * Server den Display Control Channel nicht anbietet. Dann bleibt es beim
+   * unscharfen Skalieren wie bisher - sichtbar wird das nur im Protokoll.
+   */
+  /**
+   * Was die Webview ueber das Mitziehen wissen muss.
+   *
+   * Eine fest eingetragene Aufloesung schaltet es ganz ab - dann braucht die
+   * Webview gar nicht erst einen Zeitgeber zu starten.
+   */
+  private aufloesungsEinstellungen(config: vscode.WorkspaceConfiguration): {
+    dynamicResolution: boolean;
+    resizeDelay: number;
+  } {
+    const fest = !!(this.connection.width && this.connection.height);
+    return {
+      dynamicResolution: !fest && config.get<boolean>('dynamicResolution', true),
+      resizeDelay: Math.max(0, config.get<number>('dynamicResolutionDelay', AUFLOESUNG_VERZUG_MS)),
+    };
+  }
+
+  private aufloesungMitziehen(nachricht: ResizeRequestMessage): void {
+    const client = this.client;
+    if (!client || !this.verbindungSteht) return;
+
+    const config = vscode.workspace.getConfiguration('rdp');
+    if (!config.get<boolean>('dynamicResolution', true)) return;
+
+    // Eine fest eingetragene Aufloesung ist eine Ansage des Nutzers und wird
+    // nicht ueberstimmt - auch nicht, wenn das Panel eine andere Form hat.
+    if (this.connection.width && this.connection.height) {
+      this.log('Auflösung ist für diese Verbindung fest eingestellt - das Panel zieht nicht mit.');
+      return;
+    }
+
+    const faktor = this.pixelFaktor(nachricht.devicePixelRatio, config);
+    const groesse = RdpSession.aufloesungAusPanel(nachricht.width, nachricht.height, faktor);
+    if (groesse.width === client.width && groesse.height === client.height) return;
+
+    // Bei eingeschaltetem HiDPI weiss der Server ueber die Skalierungsfelder,
+    // dass der Desktop dichter ist als er misst - sonst wird die Schrift winzig.
+    const gesendet = client.requestResolution(groesse.width, groesse.height, {
+      desktopScaleFactor: Math.round(faktor * 100),
+      deviceScaleFactor: Math.round(faktor * 100),
+    });
+    if (gesendet) {
+      this.log(`Neue Auflösung angefragt: ${groesse.width}×${groesse.height}`);
+    } else {
+      // Kein Fehlerzustand, keine Einblendung: ein Server ohne RDPEDISP ist
+      // voellig in Ordnung, das Bild wird dann eben weiter skaliert.
+      this.log(
+        `Auflösung ${groesse.width}×${groesse.height} wurde nicht angefragt - ` +
+          'der Server unterstützt keinen Auflösungswechsel im laufenden Betrieb.',
+      );
+    }
   }
 
   /**
@@ -583,6 +692,7 @@ export class RdpSession {
         height: client.height,
         scaling: config.get<string>('scaling', 'fit'),
         smooth: config.get<boolean>('smoothScaling', false),
+        ...this.aufloesungsEinstellungen(config),
       });
       // Die Verbindung steht, aber gezeichnet ist noch nichts. Bis zur ersten
       // Kachel bleibt die Einblendung stehen - eine schwarze Flaeche waere
@@ -618,6 +728,7 @@ export class RdpSession {
         height,
         scaling: config.get<string>('scaling', 'fit'),
         smooth: config.get<boolean>('smoothScaling', false),
+        ...this.aufloesungsEinstellungen(config),
       });
       // Waehrend des Aufbaus ist das keine Aenderung, sondern die Antwort des
       // Servers auf unsere Anfrage - Windows gibt regelmaessig eine andere

@@ -25,6 +25,10 @@ export interface WebviewUmgebung {
   readonly canvas: { width: number; height: number; style: Record<string, string> };
   /** Das Diagnose-Overlay, so wie es im Webview aussaehe. */
   readonly diagnose: { sichtbar: boolean; titel: string; text: string };
+  /** Die Buehne auf eine neue Groesse bringen und 'resize' ausloesen. */
+  groesseAendern(breite: number, hoehe: number): void;
+  /** Ein Fensterereignis ausloesen, ohne die Groesse anzufassen. */
+  loeseFensterEreignisAus(typ: string, ereignis?: unknown): void;
 }
 
 class ElementStub {
@@ -33,6 +37,12 @@ class ElementStub {
   hidden = false;
   width = 0;
   height = 0;
+  /**
+   * Die Groesse, die getBoundingClientRect meldet. Veraenderbar, weil das
+   * Mitziehen der Aufloesung genau davon abhaengt: die Buehne wird groesser,
+   * und daraufhin soll eine neue Aufloesung angefragt werden.
+   */
+  rect = { width: 1076, height: 536 };
   readonly classList = {
     mengen: new Set<string>(),
     add: (c: string) => this.classList.mengen.add(c),
@@ -50,7 +60,8 @@ class ElementStub {
   }
   removeEventListener(): void {}
   getBoundingClientRect() {
-    return { width: 1076, height: 536, left: 0, top: 0, right: 1076, bottom: 536 };
+    const { width, height } = this.rect;
+    return { width, height, left: 0, top: 0, right: width, bottom: height };
   }
   focus(): void {}
   setAttribute(): void {}
@@ -72,6 +83,8 @@ export function starteWebview(skript: string): WebviewUmgebung {
   const gesendet: unknown[] = [];
   const gezeichnet: GezeichneteKachel[] = [];
   const nachrichtenHorcher: ((e: { data: unknown }) => void)[] = [];
+  /** Alle Fensterhorcher, nach Ereignisart - damit Tests sie ausloesen koennen. */
+  const fensterHorcher = new Map<string, ((e: unknown) => void)[]>();
 
   const canvas = new ElementStub();
   canvas.width = 1076;
@@ -142,6 +155,9 @@ export function starteWebview(skript: string): WebviewUmgebung {
     window: {
       addEventListener: (typ: string, fn: (e: { data: unknown }) => void) => {
         if (typ === 'message') nachrichtenHorcher.push(fn);
+        const liste = fensterHorcher.get(typ) ?? [];
+        liste.push(fn as (e: unknown) => void);
+        fensterHorcher.set(typ, liste);
       },
       removeEventListener: () => {},
       devicePixelRatio: 1,
@@ -165,10 +181,19 @@ export function starteWebview(skript: string): WebviewUmgebung {
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   new Function(...namen, skript)(...werte);
 
+  const loeseFensterEreignisAus = (typ: string, ereignis: unknown = {}) => {
+    for (const fn of fensterHorcher.get(typ) ?? []) fn(ereignis);
+  };
+
   return {
     sende: (nachricht: unknown) => {
       for (const fn of nachrichtenHorcher) fn({ data: nachricht });
     },
+    groesseAendern: (breite: number, hoehe: number) => {
+      elemente.get('stage')!.rect = { width: breite, height: hoehe };
+      loeseFensterEreignisAus('resize');
+    },
+    loeseFensterEreignisAus,
     gesendet,
     gezeichnet,
     canvas: canvas as unknown as WebviewUmgebung['canvas'],

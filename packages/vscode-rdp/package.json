@@ -594,7 +594,17 @@
         "rdp.highDpi": {
           "type": "boolean",
           "default": false,
-          "description": "Auf hochauflösenden Bildschirmen die volle Pixeldichte anfordern. Schärferes Bild, aber deutlich mehr Datenvolumen und kleinere Schrift in der Sitzung."
+          "description": "Auf hochauflösenden Bildschirmen die volle Pixeldichte anfordern. Schärferes Bild, aber deutlich mehr Datenvolumen und kleinere Schrift in der Sitzung. Gilt sowohl beim Verbinden als auch für jede spätere Größenänderung des Panels."
+        },
+        "rdp.dynamicResolution": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Die Desktopauflösung der Größe des Panels folgen lassen (**MS-RDPEDISP**). Ohne diese Funktion bleibt die beim Verbinden ausgehandelte Auflösung bestehen und das Bild wird beim Vergrößern nur unscharf skaliert. Server, die den Kanal nicht anbieten, verhalten sich unverändert."
+        },
+        "rdp.dynamicResolutionDelay": {
+          "type": "number",
+          "default": 400,
+          "markdownDescription": "Ruhezeit in Millisekunden, bevor nach einer Größenänderung eine neue Auflösung angefragt wird. Jeder Wechsel verwirft serverseitig den Bildschirminhalt, deshalb wird beim Ziehen an der Fensterkante nicht bei jedem Pixel angefragt."
         },
         "rdp.graphicsPipeline": {
           "type": "boolean",
