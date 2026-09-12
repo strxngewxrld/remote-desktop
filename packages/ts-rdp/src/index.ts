@@ -74,6 +74,19 @@ export type {
   ZwischenablageRichtung,
 } from './protocol/cliprdr.js';
 
+// Laufwerksumleitung (MS-RDPEFS) auf dem statischen Kanal `rdpdr`.
+export * as rdpdr from './protocol/rdpdr.js';
+export {
+  RDPDR_CHANNEL_NAME,
+  RDPDR_CHANNEL_DEF,
+  RDPDR_CHANNEL_OPTIONS,
+  RDPDR_DTYP_FILESYSTEM,
+  zerlegePfad,
+  musterPasst,
+  trenneSuchmuster,
+} from './protocol/rdpdr.js';
+export type { DateiEintrag, RdpdrGeraet, VolumenAngaben, PfadErgebnis } from './protocol/rdpdr.js';
+
 export { RdpError, RdpProtocolError, RdpAuthError, ERROR_INFO_CODES, NEG_FAILURE_CODES } from './core/errors.js';
 export { createLogger, nullLogger } from './core/log.js';
 export type { Logger, LogLevel, LogSink } from './core/log.js';
