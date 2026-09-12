@@ -26,6 +26,7 @@ import {
   verschiebeEintrag,
 } from './connections.js';
 import { BANDBREITEN_PROFILE, BandbreitenProfilName, PROFIL_NAMEN } from './bandbreite.js';
+import { FARBEN, FARB_NAMEN, FarbName } from './farben.js';
 import { berichtUeberRest, dekodiereRdpDatei, exportiereRdpDatei, importiereRdpDatei } from './rdpDatei.js';
 import { RdpSession } from './session.js';
 import { CertificateTrustStore } from './trust.js';
@@ -230,6 +231,40 @@ export function activate(context: vscode.ExtensionContext): void {
       tree.refresh();
     }),
 
+    // --------------------------------------------------------- Kennfarbe
+
+    vscode.commands.registerCommand('rdp.setColor', async (node?: BaumKnoten) => {
+      const target = node ?? (await pickConnectionNode('Farbe festlegen'));
+      if (!target) return;
+      // An einem Ordner sitzt die Farbe in den vererbten Einstellungen, an
+      // einer Verbindung an ihr selbst. Welche am Ende gilt, entscheidet
+      // danach dieselbe Vererbung wie bei jedem anderen Feld.
+      const farbe = await pickFarbe(
+        target instanceof FolderNode ? target.ordner.settings?.color : target.connection.color,
+        target instanceof FolderNode
+          ? `Farbe des Ordners "${target.ordner.name}" (gilt für alles darin)`
+          : `Farbe für "${target.connection.name || target.connection.host}"`,
+      );
+      if (farbe === undefined) return;
+      if (target instanceof FolderNode) {
+        const settings: VererbbareEinstellungen = { ...target.ordner.settings };
+        if (farbe === null) delete settings.color;
+        else settings.color = farbe;
+        await schreibeEintragAn(target.pfad, ordnerMitEinstellungen(target.ordner, settings));
+      } else {
+        const neu: RdpConnection = { ...target.connection };
+        if (farbe === null) delete neu.color;
+        else neu.color = farbe;
+        await schreibeEintragAn(target.pfad, neu);
+      }
+      tree.refresh();
+      vscode.window.showInformationMessage(
+        farbe === null
+          ? 'Kennfarbe entfernt. Offene Sitzungen behalten sie bis zum nächsten Verbinden.'
+          : `Kennfarbe "${FARBEN[farbe].titel}" gesetzt. Sie wirkt beim nächsten Verbinden auf Rahmen, Tabsymbol und Statusleiste.`,
+      );
+    }),
+
     // ---------------------------------------------------- Import / Export
 
     vscode.commands.registerCommand('rdp.importRdpFile', async (node?: BaumKnoten) => {
@@ -272,6 +307,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('rdp.refreshScreen', async () => {
       const session = await pickSession();
       session?.refreshScreen();
+    }),
+
+    vscode.commands.registerCommand('rdp.screenshot', async () => {
+      const session = await pickSession();
+      session?.screenshot();
     }),
 
     vscode.commands.registerCommand('rdp.toggleScaling', async () => {
@@ -435,6 +475,33 @@ async function pickBandbreitenProfil(
   return picked ? picked.wert : undefined;
 }
 
+/**
+ * Auswahl einer Kennfarbe.
+ * `null` bedeutet "keine Farbe", `undefined` bedeutet "abgebrochen".
+ */
+async function pickFarbe(aktuell: FarbName | undefined, titel: string): Promise<FarbName | null | undefined> {
+  const picked = await vscode.window.showQuickPick(
+    [
+      {
+        label: '$(circle-slash) Keine Farbe',
+        description: aktuell === undefined ? '(aktuell)' : undefined,
+        detail: 'Es gilt die Farbe des umgebenden Ordners, sonst keine.',
+        wert: null as FarbName | null,
+      },
+      ...FARB_NAMEN.map((name) => ({
+        // Das Symbol vor dem Namen bleibt einfarbig - QuickPick faerbt
+        // $(...)-Symbole nicht ein. Der Klarname traegt die Information.
+        label: `$(circle-filled) ${FARBEN[name].titel}`,
+        description: aktuell === name ? '(aktuell)' : FARBEN[name].hex,
+        detail: FARBEN[name].beschreibung,
+        wert: name as FarbName | null,
+      })),
+    ],
+    { title: titel, ignoreFocusOut: true },
+  );
+  return picked ? picked.wert : undefined;
+}
+
 /** Bearbeitet ein Feld der vererbten Ordnereinstellungen. */
 async function bearbeiteVererbteEinstellungen(ordner: RdpFolder): Promise<RdpFolder | undefined> {
   const settings: VererbbareEinstellungen = { ...ordner.settings };
@@ -453,6 +520,14 @@ async function bearbeiteVererbteEinstellungen(ordner: RdpFolder): Promise<RdpFol
     if (profil === undefined) return undefined;
     if (profil === null) delete settings.bandwidthProfile;
     else settings.bandwidthProfile = profil;
+    return ordnerMitEinstellungen(ordner, settings);
+  }
+
+  if (feld.schluessel === 'color') {
+    const farbe = await pickFarbe(settings.color, `Farbe des Ordners "${ordner.name}"`);
+    if (farbe === undefined) return undefined;
+    if (farbe === null) delete settings.color;
+    else settings.color = farbe;
     return ordnerMitEinstellungen(ordner, settings);
   }
 
