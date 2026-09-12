@@ -170,8 +170,21 @@ export const AVC420_EGFX_CAPS: egfx.EgfxCapsSet[] = [
 
 export class EgfxSession {
   private readonly surfaces = new Map<number, Surface>();
-  /** Cacheeintraege: Slot -> ausgeschnittener Bildbereich. */
-  private readonly cache = new Map<number, { width: number; height: number; rgba: Uint8ClampedArray }>();
+  /**
+   * Cacheeintraege: Slot -> ausgeschnittener Bildbereich (3.3.1.4).
+   *
+   * Der Eintrag traegt seine tatsaechliche Groesse, die kleiner sein kann als
+   * das Rechteck, das der Server genannt hat: ragte es rechts oder unten ueber
+   * die Surface hinaus, wird nur der vorhandene Teil abgelegt. Die linke obere
+   * Ecke verschiebt sich dabei nie - RDPGFX_RECT16 (2.2.1.2) fuehrt left und
+   * top als vorzeichenlose 16-Bit-Werte, ein Rechteck kann also nicht links
+   * oder oberhalb der Surface anfangen. Der Ausschnitt bleibt damit immer am
+   * Zielpunkt verankert, und die fehlenden Pixel bleiben einfach stehen.
+   */
+  private readonly cache = new Map<
+    number,
+    { width: number; height: number; rgba: Uint8ClampedArray }
+  >();
   /** Kacheln des laufenden Frames, gebuendelt bis zum ENDFRAME. */
   private pending: DecodedBitmap[] = [];
   private framesDecoded = 0;
@@ -221,6 +234,41 @@ export class EgfxSession {
   /** Ein Rechteck kurz und lesbar: BreitexHoehe+Links+Oben. */
   private static rechteck(r: egfx.EgfxRect): string {
     return `${r.right - r.left}x${r.bottom - r.top}+${r.left}+${r.top}`;
+  }
+
+  /**
+   * Beschneidet ein Quellrechteck auf die Flaeche, die es wirklich gibt.
+   *
+   * MS-RDPEGFX schreibt fuer alle drei Kopierbefehle (3.3.5.5, 3.3.5.6,
+   * 3.3.5.7) eine SRCCOPY-ROP3-Operation vor - eine reine Kopie, kein
+   * Mischen - und setzt dabei voraus, dass Quell- und Zielrechteck in ihren
+   * Surfaces liegen. Was ausserhalb liegt, ist damit nicht etwa "schwarz",
+   * sondern gar nicht definiert.
+   *
+   * FreeRDP verwirft in diesem Fall den ganzen Befehl (`is_rect_valid` in
+   * libfreerdp/gdi/gfx.c schlaegt fehl, die Funktion springt nach `fail`).
+   * Hier wird stattdessen nur der Teil kopiert, den es gibt: ein
+   * stehengebliebener alter Bildinhalt ist fuer den Betrachter besser als ein
+   * schwarzer Block - und schwarz waere genau das Ergebnis, wenn man
+   * nichtvorhandene Quellpixel als Nullen mitkopierte.
+   *
+   * Gibt `null` zurueck, wenn nach dem Zuschnitt nichts uebrig bleibt.
+   */
+  private static zuschnitt(
+    r: egfx.EgfxRect,
+    breite: number,
+    hoehe: number,
+  ): { left: number; top: number; right: number; bottom: number; beschnitten: boolean } | null {
+    // left und top sind laut RDPGFX_RECT16 (2.2.1.2) vorzeichenlos und koennen
+    // deshalb nicht vor der Surface liegen; Math.max steht trotzdem hier, damit
+    // die Funktion auch fuer selbst gerechnete Rechtecke stimmt.
+    const left = Math.max(0, r.left);
+    const top = Math.max(0, r.top);
+    const right = Math.min(breite, r.right);
+    const bottom = Math.min(hoehe, r.bottom);
+    if (right <= left || bottom <= top) return null;
+    const beschnitten = left !== r.left || top !== r.top || right !== r.right || bottom !== r.bottom;
+    return { left, top, right, bottom, beschnitten };
   }
 
   /** Eroeffnet die Pipeline mit dem konfigurierten Capability-Satz. */
@@ -792,38 +840,59 @@ export class EgfxSession {
       );
       return;
     }
+    // Eine Quelle, deren Pixel hier gar nicht liegen, darf nicht kopiert
+    // werden: was in `rgba` steht, ist dann nachweislich *nicht* das Bild.
+    // Kopierte man es trotzdem, entstuende ein schwarzer Block; so bleibt der
+    // Zielbereich stehen, und der Server zeichnet ihn beim naechsten
+    // Bildaufbau ohnehin neu.
     if (!quelle.beschrieben) {
       this.meldeEinmal(
         `s2s-leer-${pdu.surfaceIdSrc}`,
         `Graphics Pipeline: SURFACETOSURFACE kopiert aus Surface ${pdu.surfaceIdSrc}, in die noch nie ` +
-          'etwas gemalt wurde - das Ziel bekommt eine schwarze Flaeche.',
+          'etwas gemalt wurde - die Kopie wird uebersprungen, der Zielbereich bleibt stehen.',
       );
+      return;
     }
     if (quelle.avcBeschrieben) {
       this.meldeEinmal(
         `s2s-avc-${pdu.surfaceIdSrc}`,
         `Graphics Pipeline: SURFACETOSURFACE kopiert aus Surface ${pdu.surfaceIdSrc}, in die H.264 ` +
-          'gemalt hat. Diese Pixel liegen nur im Renderer; die Kopie wird schwarz.',
+          'gemalt hat. Diese Pixel liegen nur im Renderer - die Kopie wird uebersprungen, der ' +
+          'Zielbereich bleibt stehen.',
       );
+      return;
     }
-    if (
-      pdu.rectSrc.right > quelle.width ||
-      pdu.rectSrc.bottom > quelle.height ||
-      pdu.rectSrc.left >= pdu.rectSrc.right ||
-      pdu.rectSrc.top >= pdu.rectSrc.bottom
-    ) {
+
+    const q = EgfxSession.zuschnitt(pdu.rectSrc, quelle.width, quelle.height);
+    if (!q) {
+      this.meldeEinmal(
+        `s2s-rect-leer-${pdu.surfaceIdSrc}`,
+        `Graphics Pipeline: SURFACETOSURFACE liest ${EgfxSession.rechteck(pdu.rectSrc)} aus Surface ` +
+          `${pdu.surfaceIdSrc} (${quelle.width}x${quelle.height}) - davon liegt nichts in der Surface, ` +
+          'der Befehl bleibt wirkungslos.',
+      );
+      return;
+    }
+    if (q.beschnitten) {
       this.meldeEinmal(
         `s2s-rect-${pdu.surfaceIdSrc}`,
         `Graphics Pipeline: SURFACETOSURFACE liest ${EgfxSession.rechteck(pdu.rectSrc)} aus Surface ` +
-          `${pdu.surfaceIdSrc}, die nur ${quelle.width}x${quelle.height} gross ist - was ausserhalb ` +
-          'liegt, wird als Schwarz kopiert.',
+          `${pdu.surfaceIdSrc}, die nur ${quelle.width}x${quelle.height} gross ist - kopiert wird nur ` +
+          `${EgfxSession.rechteck(q)}, der Rest bleibt unveraendert stehen.`,
       );
     }
 
-    const width = pdu.rectSrc.right - pdu.rectSrc.left;
-    const height = pdu.rectSrc.bottom - pdu.rectSrc.top;
+    const width = q.right - q.left;
+    const height = q.bottom - q.top;
     for (const punkt of pdu.destPts) {
-      const ausschnitt = this.extract(quelle, pdu.rectSrc.left, pdu.rectSrc.top, width, height);
+      // Die Quelle wird je Zielpunkt neu gelesen. Das ist kein Versehen: bei
+      // gleicher Quell- und Ziel-Surface sieht ein spaeterer Zielpunkt, was ein
+      // frueherer geschrieben hat - genauso haelt es FreeRDP
+      // (gdi_SurfaceToSurface liest ebenfalls je Durchlauf aus surfaceSrc).
+      // Der Ausschnitt entsteht dabei vollstaendig, bevor geschrieben wird;
+      // ueberlappende Verschiebungen innerhalb einer Surface - im Mitschnitt
+      // 45 von 79 Faellen - bleiben dadurch korrekt.
+      const ausschnitt = this.extract(quelle, q.left, q.top, width, height);
       this.blit(ziel, ausschnitt, width, height, punkt.x, punkt.y);
       this.emitRegion(ziel, {
         left: punkt.x,
@@ -844,20 +913,48 @@ export class EgfxSession {
       );
       return;
     }
+    // Ein Cacheeintrag ist langlebig: was hier einmal falsch hineingeraet,
+    // stempelt jedes spaetere CACHETOSURFACE erneut ins Bild. Ein Slot, den wir
+    // nicht korrekt fuellen koennen, bleibt deshalb lieber ungefuellt - dann
+    // laeuft das spaetere CACHETOSURFACE in die Warnung "nie gefuellt" und
+    // laesst den Zielbereich stehen, statt ihn schwarz zu uebermalen.
     if (!surface.beschrieben || surface.avcBeschrieben) {
       this.meldeEinmal(
         `s2c-leer-${pdu.surfaceId}`,
-        `Graphics Pipeline: SURFACETOCACHE legt Slot ${pdu.cacheSlot} aus Surface ${pdu.surfaceId} an, ` +
-          `deren Puffer hier ${surface.avcBeschrieben ? 'H.264-Inhalt nicht kennt' : 'noch unbemalt ist'} - ` +
-          'der Cacheeintrag wird schwarz.',
+        `Graphics Pipeline: SURFACETOCACHE soll Slot ${pdu.cacheSlot} aus Surface ${pdu.surfaceId} ` +
+          `fuellen, deren Puffer hier ${surface.avcBeschrieben ? 'H.264-Inhalt nicht kennt' : 'noch unbemalt ist'} - ` +
+          'der Slot bleibt leer statt schwarz.',
+      );
+      this.cache.delete(pdu.cacheSlot);
+      return;
+    }
+
+    const q = EgfxSession.zuschnitt(pdu.rectSrc, surface.width, surface.height);
+    if (!q) {
+      this.meldeEinmal(
+        `s2c-rect-leer-${pdu.surfaceId}`,
+        `Graphics Pipeline: SURFACETOCACHE liest ${EgfxSession.rechteck(pdu.rectSrc)} aus Surface ` +
+          `${pdu.surfaceId} (${surface.width}x${surface.height}) - davon liegt nichts in der Surface, ` +
+          `Slot ${pdu.cacheSlot} bleibt leer.`,
+      );
+      this.cache.delete(pdu.cacheSlot);
+      return;
+    }
+    if (q.beschnitten) {
+      this.meldeEinmal(
+        `s2c-rect-${pdu.surfaceId}`,
+        `Graphics Pipeline: SURFACETOCACHE liest ${EgfxSession.rechteck(pdu.rectSrc)} aus Surface ` +
+          `${pdu.surfaceId}, die nur ${surface.width}x${surface.height} gross ist - Slot ` +
+          `${pdu.cacheSlot} bekommt nur ${EgfxSession.rechteck(q)}.`,
       );
     }
-    const width = pdu.rectSrc.right - pdu.rectSrc.left;
-    const height = pdu.rectSrc.bottom - pdu.rectSrc.top;
+
+    const width = q.right - q.left;
+    const height = q.bottom - q.top;
     this.cache.set(pdu.cacheSlot, {
       width,
       height,
-      rgba: this.extract(surface, pdu.rectSrc.left, pdu.rectSrc.top, width, height),
+      rgba: this.extract(surface, q.left, q.top, width, height),
     });
   }
 
@@ -895,6 +992,28 @@ export class EgfxSession {
 
   // -------------------------------------------------------------- Hilfsmittel
 
+  /**
+   * Schreibt einen fertigen RGBA-Block in eine Surface. Kein Mischen.
+   *
+   * Zum Alphakanal, und warum hier pauschal 255 steht: MS-RDPEGFX 3.3.5.1
+   * regelt das ausdruecklich. Fuer jeden Codec ausser RDPGFX_CODECID_ALPHA
+   * (0x000C) gilt - "If the target surface is not listed in the Surface to
+   * Window Mapping ADM element, then only the red, green, and blue channels
+   * SHOULD be copied to the target surface", und ist sie dort gelistet, "the
+   * alpha channel of the bitmap (if present) MUST be ignored". Der Alphakanal
+   * einer Kachel gehoert also in keinem Fall ins Bild; er wird ausschliesslich
+   * ueber Codec 0x000C gesetzt, der dann *nur* ihn aendert.
+   *
+   * Eine Surface mit Pixelformat ARGB_8888 (2.2.1.4) aendert daran nichts: das
+   * Format sagt, dass der Puffer einen gueltigen Alphakanal *fuehren* kann,
+   * nicht dass Bildinhalte hineinkomponiert wuerden. Alle drei Kopierbefehle
+   * sind laut 3.3.5.5 bis 3.3.5.7 SRCCOPY-ROP3-Operationen - eine reine Kopie
+   * ohne Alphamischung. Solange diese Sitzung keine Surface ueber
+   * MAPSURFACETOWINDOW abbildet und keinen Codec 0x000C annimmt, ist der
+   * Alphakanal am Bildschirm bedeutungslos, und ein durchgehend
+   * undurchsichtiger Puffer ist die einzige Belegung, die auf einer
+   * Zeichenflaeche mit `alpha: false` garantiert richtig ankommt.
+   */
   private blit(
     surface: Surface,
     quelle: Uint8ClampedArray,
@@ -920,6 +1039,17 @@ export class EgfxSession {
     }
   }
 
+  /**
+   * Schneidet einen Bereich aus einer Surface heraus.
+   *
+   * Die Bereichspruefung unten ist ein Sicherheitsnetz, kein Arbeitsmittel:
+   * jeder Aufrufer beschneidet sein Rechteck vorher mit `zuschnitt` auf die
+   * Surface. Das ist wichtig, weil hier nicht gefuellte Zielpixel Nullen
+   * blieben - und `blit` schreibt sie anschliessend mit Alpha 255 zurueck, was
+   * aus "kenne ich nicht" ein sattes Schwarz macht. Genau diesen Weg darf es
+   * nicht mehr geben; deshalb rechnen die Aufrufer die Grenzen aus, statt sich
+   * hier auf ein stillschweigendes Ueberspringen zu verlassen.
+   */
   private extract(
     surface: Surface,
     x0: number,

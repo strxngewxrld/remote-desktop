@@ -218,12 +218,13 @@ describe('Graphics Pipeline - Auffaelligkeiten der Kopierbefehle', () => {
     assert.equal(m.zeilen.filter((z) => z.stufe === 'warn').length, 1);
   });
 
-  test('SURFACETOSURFACE aus einer nie bemalten Surface warnt vor der schwarzen Kopie', () => {
+  test('SURFACETOSURFACE aus einer nie bemalten Surface wird uebersprungen statt schwarz kopiert', () => {
     const m = baueSitzung();
     m.sitzung.handle(createSurface(1, 64, 64, egfx.PIXEL_FORMAT_XRGB_8888));
     m.sitzung.handle(createSurface(2, 64, 64, egfx.PIXEL_FORMAT_XRGB_8888));
     m.sitzung.handle(surfaceToSurface(1, 2, [0, 0, 32, 32], [[0, 0]]));
     assert.match(m.auf('warn'), /kopiert aus Surface 1, in die noch nie etwas gemalt wurde/);
+    assert.match(m.auf('warn'), /der Zielbereich bleibt stehen/);
     assert.match(m.auf('debug'), /SURFACETOSURFACE von Surface 1 32x32\+0\+0 nach Surface 2, Zielpunkte \(0, 0\)/);
   });
 
@@ -244,11 +245,15 @@ describe('Graphics Pipeline - Auffaelligkeiten der Kopierbefehle', () => {
     assert.match(m.auf('debug'), /SURFACETOCACHE Surface 1 16x16\+0\+0 -> Slot 5, Schluessel 0x11223344/);
   });
 
-  test('Ein Cacheeintrag aus einer unbemalten Surface wird als schwarz gemeldet', () => {
+  test('Ein Cacheeintrag aus einer unbemalten Surface wird gar nicht erst angelegt', () => {
     const m = baueSitzung();
     m.sitzung.handle(createSurface(1, 64, 64, egfx.PIXEL_FORMAT_XRGB_8888));
     m.sitzung.handle(surfaceToCache(1, 5, [0, 0, 16, 16]));
-    assert.match(m.auf('warn'), /Slot 5 aus Surface 1 an, deren Puffer hier noch unbemalt ist/);
+    assert.match(m.auf('warn'), /Slot 5 aus Surface 1 fuellen, deren Puffer hier noch unbemalt ist/);
+    assert.match(m.auf('warn'), /der Slot bleibt leer statt schwarz/);
+    // Und der leere Slot faellt beim Zugriff auf, statt schwarz zu zeichnen.
+    m.sitzung.handle(cacheToSurface(5, 1, [[0, 0]]));
+    assert.match(m.auf('warn'), /Slot 5, den diese Sitzung nie gefuellt hat/);
   });
 });
 
@@ -473,3 +478,231 @@ describe('Graphics Pipeline - Kodierkontext und Kachelhistorie (MS-RDPEGFX 3.3.1
     assert.match(m.auf('info'), /DELETEENCODINGCONTEXT Surface 3, Kodierkontext 17 - Kachelhistorie bleibt erhalten/);
   });
 });
+
+// --------------------------------------------------------------------------
+// Kopierpfade: Inhalt, nicht nur Gueltigkeit
+// --------------------------------------------------------------------------
+
+function solidFill(surfaceId: number, farbe: number[], rects: number[][]): Buffer {
+  const [b, g, r, a] = farbe;
+  const w = new BinaryWriter().uint16le(surfaceId).uint8(b).uint8(g).uint8(r).uint8(a).uint16le(rects.length);
+  for (const [left, top, right, bottom] of rects) w.uint16le(left).uint16le(top).uint16le(right).uint16le(bottom);
+  return pdu(egfx.RDPGFX_CMDID_SOLIDFILL, w.toBuffer());
+}
+
+/**
+ * Ein Bildschirm, der sich genau wie das Webview verhaelt.
+ *
+ * Die Sitzung liefert Kacheln mit Bildschirmkoordinaten; das Webview setzt sie
+ * mit putImageData ab. Genau das macht diese Funktion - und erst dadurch sagen
+ * die Tests unten etwas ueber das aus, was der Nutzer sieht, statt nur ueber
+ * den Zustand eines Puffers, den niemand anschaut.
+ */
+function baueBildschirm(m: Mitschnitt, breite: number, hoehe: number): Uint8ClampedArray {
+  const schirm = new Uint8ClampedArray(breite * hoehe * 4);
+  m.bilder = (tiles) => {
+    for (const t of tiles) {
+      for (let y = 0; y < t.height; y++) {
+        for (let x = 0; x < t.width; x++) {
+          const zy = t.y + y;
+          const zx = t.x + x;
+          if (zy < 0 || zy >= hoehe || zx < 0 || zx >= breite) continue;
+          const von = (y * t.width + x) * 4;
+          const nach = (zy * breite + zx) * 4;
+          for (let c = 0; c < 4; c++) schirm[nach + c] = t.rgba[von + c];
+        }
+      }
+    }
+  };
+  return schirm;
+}
+
+/** Zaehlt Pixel, die nicht die erwartete Farbe tragen. */
+function abweichendePixel(
+  puffer: Uint8ClampedArray,
+  breite: number,
+  rect: number[],
+  erwartet: number[],
+): number {
+  const [left, top, right, bottom] = rect;
+  let n = 0;
+  for (let y = top; y < bottom; y++) {
+    for (let x = left; x < right; x++) {
+      const o = (y * breite + x) * 4;
+      if (puffer[o] !== erwartet[0] || puffer[o + 1] !== erwartet[1] || puffer[o + 2] !== erwartet[2]) n++;
+    }
+  }
+  return n;
+}
+
+/**
+ * Was ausserhalb der Quelle liegt, darf nicht schwarz werden.
+ *
+ * MS-RDPEGFX beschreibt alle drei Kopierbefehle als SRCCOPY-ROP3-Operation
+ * (3.3.5.5, 3.3.5.6, 3.3.5.7) und setzt dabei voraus, dass die Rechtecke in
+ * ihren Surfaces liegen. Ueber Pixel ausserhalb sagt die Spezifikation nichts -
+ * sie sind nicht "schwarz", sondern gar nicht da. FreeRDP verwirft den ganzen
+ * Befehl (is_rect_valid in libfreerdp/gdi/gfx.c); hier wird der vorhandene Teil
+ * kopiert und der Rest in Ruhe gelassen.
+ *
+ * Mit dem alten Code scheitern diese Tests nicht knapp: dort fuellte `extract`
+ * nichtvorhandene Quellpixel mit Nullen, und `blit` schrieb sie mit Alpha 255
+ * zurueck - also sattes Schwarz ueber gutem Bildinhalt.
+ */
+describe('Graphics Pipeline - Kopieren ueber den Rand hinaus faerbt nichts schwarz', () => {
+  const GRUEN = [0, 200, 0];
+
+  test('SURFACETOSURFACE kopiert nur den vorhandenen Teil, der Rest bleibt stehen', () => {
+    const m = baueSitzung();
+    const schirm = baueBildschirm(m, 128, 128);
+    m.sitzung.handle(createSurface(1, 32, 32, egfx.PIXEL_FORMAT_XRGB_8888));
+    m.sitzung.handle(createSurface(2, 128, 128, egfx.PIXEL_FORMAT_XRGB_8888));
+    m.sitzung.handle(mapToOutput(2, 0, 0));
+    // Ziel vollflaechig gruen, Quelle mit einem Wert belegen.
+    m.sitzung.handle(solidFill(2, [GRUEN[2], GRUEN[1], GRUEN[0], 0xff], [[0, 0, 128, 128]]));
+    m.sitzung.handle(unkomprimiert(1, [0, 0, 32, 32], 0x20));
+
+    // Der Server verlangt 64x64 aus einer 32x32 grossen Surface.
+    m.sitzung.handle(surfaceToSurface(1, 2, [0, 0, 64, 64], [[0, 0]]));
+
+    // Die vorhandenen 32x32 sind kopiert ...
+    assert.equal(abweichendePixel(schirm, 128, [0, 0, 32, 32], [0x20, 0x20, 0x20]), 0);
+    // ... und der Rest des 64x64-Rechtecks ist unveraendert gruen geblieben.
+    assert.equal(abweichendePixel(schirm, 128, [32, 0, 64, 64], GRUEN), 0);
+    assert.equal(abweichendePixel(schirm, 128, [0, 32, 32, 64], GRUEN), 0);
+    assert.match(m.auf('warn'), /kopiert wird nur 32x32\+0\+0, der Rest bleibt unveraendert stehen/);
+  });
+
+  test('SURFACETOCACHE legt nur den vorhandenen Teil ab und CACHETOSURFACE setzt ihn lagerichtig', () => {
+    const m = baueSitzung();
+    const schirm = baueBildschirm(m, 128, 128);
+    m.sitzung.handle(createSurface(1, 128, 128, egfx.PIXEL_FORMAT_XRGB_8888));
+    m.sitzung.handle(mapToOutput(1, 0, 0));
+    m.sitzung.handle(solidFill(1, [GRUEN[2], GRUEN[1], GRUEN[0], 0xff], [[0, 0, 128, 128]]));
+    m.sitzung.handle(unkomprimiert(1, [96, 96, 128, 128], 0x71));
+
+    // 32x32 ab (112, 112) - die Haelfte davon liegt ausserhalb der Surface.
+    m.sitzung.handle(surfaceToCache(1, 9, [112, 112, 144, 144]));
+    m.sitzung.handle(cacheToSurface(9, 1, [[0, 0]]));
+
+    // Abgelegt wurden nur die vorhandenen 16x16, und sie stehen am Ursprung -
+    // der Versatz ist hier null, weil links und oben nichts fehlte.
+    assert.equal(abweichendePixel(schirm, 128, [0, 0, 16, 16], [0x71, 0x71, 0x71]), 0);
+    // Der Rest des 32x32-Ziels ist gruen geblieben statt schwarz zu werden.
+    assert.equal(abweichendePixel(schirm, 128, [16, 0, 32, 32], GRUEN), 0);
+    assert.equal(abweichendePixel(schirm, 128, [0, 16, 16, 32], GRUEN), 0);
+    assert.match(m.auf('warn'), /Slot 9 bekommt nur 16x16\+112\+112/);
+  });
+
+  test('Ein negativer Zielpunkt schneidet nur ab, was ausserhalb liegt', () => {
+    // RDPGFX_POINT16 (2.2.1.1) ist vorzeichenbehaftet: ein Zielpunkt darf vor
+    // der Surface liegen. Dann gehoert der herausragende Teil weggelassen und
+    // der Rest an seinen Platz - nicht die ganze Kopie verworfen und auch nicht
+    // um den abgeschnittenen Betrag verrutscht.
+    const m = baueSitzung();
+    const schirm = baueBildschirm(m, 128, 128);
+    m.sitzung.handle(createSurface(1, 16, 16, egfx.PIXEL_FORMAT_XRGB_8888));
+    m.sitzung.handle(createSurface(2, 128, 128, egfx.PIXEL_FORMAT_XRGB_8888));
+    m.sitzung.handle(mapToOutput(2, 0, 0));
+    m.sitzung.handle(solidFill(2, [GRUEN[2], GRUEN[1], GRUEN[0], 0xff], [[0, 0, 128, 128]]));
+    m.sitzung.handle(unkomprimiert(1, [0, 0, 16, 16], 0x55));
+
+    // 32x32 aus einer 16x16-Surface, abgesetzt bei (-8, -8): vorhanden sind
+    // 16x16, sichtbar davon 8x8 in der linken oberen Ecke.
+    m.sitzung.handle(surfaceToSurface(1, 2, [0, 0, 32, 32], [[-8, -8]]));
+    assert.equal(abweichendePixel(schirm, 128, [0, 0, 8, 8], [0x55, 0x55, 0x55]), 0);
+    assert.equal(abweichendePixel(schirm, 128, [8, 0, 32, 32], GRUEN), 0);
+    assert.equal(abweichendePixel(schirm, 128, [0, 8, 8, 32], GRUEN), 0);
+  });
+});
+
+/**
+ * Der Cache ist im Mitschnitt vom 12.09. der Hauptweg: 2252 CACHETOSURFACE und
+ * 2077 SURFACETOCACHE stehen 2181 WIRETOSURFACE_1 gegenueber. Ein inhaltlicher
+ * Fehler dort - Zeilenabstand, vertauschte Achsen, Off-by-one am Rand - wuerde
+ * keine einzige Warnung ausloesen, weil formal alles stimmt. Deshalb wird der
+ * Rundlauf hier an echter Serverlast nachgerechnet, Pixel fuer Pixel.
+ */
+describe('Graphics Pipeline - Cache-Rundlauf an echter ClearCodec-Nutzlast', () => {
+  const kacheln = (
+    JSON.parse(
+      readFileSync(join(__dirname, '..', '..', 'test', 'fixtures', 'clearcodec-echt.json'), 'utf8'),
+    ) as { kacheln: { width: number; height: number; hex: string }[] }
+  ).kacheln;
+
+  function clearKachel(surfaceId: number, left: number, top: number, k: { width: number; height: number; hex: string }): Buffer {
+    const daten = Buffer.from(k.hex, 'hex');
+    return pdu(
+      egfx.RDPGFX_CMDID_WIRETOSURFACE_1,
+      new BinaryWriter()
+        .uint16le(surfaceId)
+        .uint16le(egfx.RDPGFX_CODECID_CLEARCODEC)
+        .uint8(egfx.PIXEL_FORMAT_XRGB_8888)
+        .uint16le(left)
+        .uint16le(top)
+        .uint16le(left + k.width)
+        .uint16le(top + k.height)
+        .uint32le(daten.length)
+        .bytes(daten)
+        .toBuffer(),
+    );
+  }
+
+  test('Ein Ausschnitt kommt aus dem Cache Pixel fuer Pixel so zurueck, wie er hineinging', () => {
+    const m = baueSitzung();
+    const BREITE = 320;
+    const schirm = baueBildschirm(m, BREITE, 320);
+    m.sitzung.handle(createSurface(1, BREITE, 320, egfx.PIXEL_FORMAT_ARGB_8888));
+    m.sitzung.handle(mapToOutput(1, 0, 0));
+    // Bewusst auf eine ungerade Stelle malen: ein falscher Zeilenabstand oder
+    // eine vertauschte Achse faellt bei 0/0 und Vielfachen von 64 nicht auf.
+    const k = kacheln[0];
+    m.sitzung.handle(clearKachel(1, 7, 5, k));
+    m.sitzung.handle(surfaceToCache(1, 3, [7, 5, 7 + k.width, 5 + k.height]));
+    // Zwei Zielpunkte, die sich nicht ueberlappen - beide muessen dasselbe Bild tragen.
+    m.sitzung.handle(cacheToSurface(3, 1, [[100, 100], [200, 200]]));
+
+    let abweichend = 0;
+    for (let y = 0; y < k.height; y++) {
+      for (let x = 0; x < k.width; x++) {
+        const o = ((5 + y) * BREITE + 7 + x) * 4;
+        for (const [zx, zy] of [[100, 100], [200, 200]]) {
+          const z = ((zy + y) * BREITE + zx + x) * 4;
+          for (let c = 0; c < 3; c++) if (schirm[z + c] !== schirm[o + c]) abweichend++;
+        }
+      }
+    }
+    assert.equal(abweichend, 0, `${abweichend} Farbkanaele weichen zwischen Original und Cachekopie ab`);
+  });
+
+  test('Eine ueberlappende Verschiebung innerhalb derselben Surface bleibt korrekt', () => {
+    // 45 der 79 SURFACETOSURFACE im Mitschnitt verschieben innerhalb von
+    // Surface 0 und ueberlappen dabei - genau der Fall beim Scrollen. Ohne
+    // Zwischenkopie wuerde eine Zeile die naechste ueberschreiben, bevor diese
+    // gelesen ist, und der Bereich streifig auslaufen.
+    const m = baueSitzung();
+    const BREITE = 512;
+    m.sitzung.handle(createSurface(1, BREITE, 512, egfx.PIXEL_FORMAT_ARGB_8888));
+    const k = kacheln[1];
+    m.sitzung.handle(clearKachel(1, 100, 50, k));
+
+    const surfaces = (m.sitzung as unknown as { surfaces: Map<number, { rgba: Uint8ClampedArray }> }).surfaces;
+    const vorher = Uint8ClampedArray.from(surfaces.get(1)!.rgba);
+
+    // Echter Befehl aus dem Mitschnitt: 84x72 um 47 Zeilen nach unten.
+    const [SX, SY, SW, SH, DY] = [120, 60, 84, 72, 107];
+    m.sitzung.handle(surfaceToSurface(1, 1, [SX, SY, SX + SW, SY + SH], [[SX, DY]]));
+
+    const jetzt = surfaces.get(1)!.rgba;
+    let abweichend = 0;
+    for (let y = 0; y < SH; y++) {
+      for (let x = 0; x < SW; x++) {
+        const q = ((SY + y) * BREITE + SX + x) * 4;
+        const z = ((DY + y) * BREITE + SX + x) * 4;
+        for (let c = 0; c < 3; c++) if (jetzt[z + c] !== vorher[q + c]) abweichend++;
+      }
+    }
+    assert.equal(abweichend, 0, `${abweichend} Farbkanaele stimmen nach der ueberlappenden Kopie nicht`);
+  });
+});
+
