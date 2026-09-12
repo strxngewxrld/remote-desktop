@@ -34,6 +34,15 @@ interface Surface {
    * erste echte Inhalt kommt.
    */
   beschrieben: boolean;
+  /**
+   * Hat H.264 in diese Surface hineingemalt?
+   *
+   * Die AVC-Pixel entstehen im Webview und landen deshalb *nicht* in `rgba` -
+   * dieser Puffer ist an diesen Stellen schwarz. Wer ihn danach noch einmal
+   * vollstaendig ausgibt, loescht das Videobild vom Bildschirm. Dieses Merkmal
+   * verhindert genau das.
+   */
+  avcBeschrieben: boolean;
 }
 
 /**
@@ -236,6 +245,7 @@ export class EgfxSession {
           pixelFormat: pdu.pixelFormat,
           rgba: new Uint8ClampedArray(pdu.width * pdu.height * 4),
           beschrieben: false,
+          avcBeschrieben: false,
         });
         break;
 
@@ -248,8 +258,9 @@ export class EgfxSession {
         const surface = this.surfaces.get(pdu.surfaceId);
         if (!surface) break;
         surface.output = { x: pdu.outputOriginX, y: pdu.outputOriginY };
-        // Nur ausgeben, wenn schon Inhalt da ist.
-        if (surface.beschrieben) {
+        // Nur ausgeben, wenn schon Inhalt da ist - und nicht, wenn H.264 in
+        // diese Surface gemalt hat: der Puffer hier kennt jene Pixel nicht.
+        if (surface.beschrieben && !this.avcVerdecktSurface(surface)) {
           this.emitRegion(surface, { left: 0, top: 0, right: surface.width, bottom: surface.height });
         }
         break;
@@ -266,7 +277,7 @@ export class EgfxSession {
           );
         }
         surface.output = { x: pdu.outputOriginX, y: pdu.outputOriginY };
-        if (surface.beschrieben) {
+        if (surface.beschrieben && !this.avcVerdecktSurface(surface)) {
           this.emitRegion(surface, { left: 0, top: 0, right: surface.width, bottom: surface.height });
         }
         break;
@@ -453,7 +464,30 @@ export class EgfxSession {
     // paar Nachrichten mehr, aber nur in Sitzungen, in denen ueberhaupt AVC
     // ankommt; ohne AVC wird diese Zeile nie erreicht.
     this.flush();
+    surface.avcBeschrieben = true;
     this.opts.onVideo(frame);
+  }
+
+  /**
+   * Darf diese Surface noch als Ganzes ausgegeben werden?
+   *
+   * Nein, sobald H.264 hineingemalt hat. Die Pixel dafuer entstehen im
+   * Webview, nicht hier; `surface.rgba` ist an diesen Stellen schwarz
+   * geblieben. Eine Vollausgabe wuerde das Videobild ueberdecken.
+   *
+   * Dieselbe Luecke bleibt bei SURFACE_TO_SURFACE und SURFACE_TO_CACHE
+   * bestehen: was von einer AVC-Flaeche kopiert wird, ist hier schwarz. Das
+   * liesse sich nur schliessen, indem das Webview jedes dekodierte Bild
+   * zurueckschickt - dafuer waere der Weg zweimal zu gehen, und der Gewinn
+   * stuende in keinem Verhaeltnis. Der Server zeichnet betroffene Bereiche
+   * beim naechsten Bildaufbau ohnehin neu.
+   */
+  private avcVerdecktSurface(surface: Surface): boolean {
+    if (!surface.avcBeschrieben) return false;
+    this.opts.log.debug(
+      'Graphics Pipeline: Vollausgabe der Surface uebersprungen - H.264-Inhalt liegt nur im Renderer.',
+    );
+    return true;
   }
 
   /** Wie viele AVC-Regionen und Bitstream-Bytes ankamen. Nur zur Fehlersuche. */
