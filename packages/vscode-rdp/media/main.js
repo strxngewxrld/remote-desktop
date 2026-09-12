@@ -346,6 +346,234 @@
     if (tilesDrawn > 0) vscode.postMessage({ type: 'painted', tiles: tilesDrawn });
   }
 
+
+  // ------------------------------------------- H.264 ueber die WebCodecs-API
+
+  /**
+   * Der zweite Zeichenweg neben drawTiles - und ausdruecklich nur *neben*.
+   *
+   * RDP laeuft im Mischbetrieb: Text und Bedienoberflaeche kommen weiterhin
+   * ueber ClearCodec, RemoteFX Progressive und Planar als fertige RGBA-Kacheln
+   * herueber, nur bewegte Flaechen als H.264. Beide Wege malen auf dieselbe
+   * Zeichenflaeche. Hier steht deshalb nichts, was den Kachelweg ersetzt; er
+   * bleibt unveraendert und laeuft weiter, auch wenn hier alles scheitert.
+   *
+   * Solange keine einzige 'video'-Nachricht angekommen ist, ruehrt dieser
+   * Abschnitt den Kachelweg nicht einmal an: `avcAktiv` bleibt falsch, und
+   * 'bitmap' geht wie bisher unmittelbar und ohne Umweg in drawTiles.
+   */
+
+  /** Erst ab der ersten 'video'-Nachricht laeuft ueberhaupt etwas davon. */
+  let avcAktiv = false;
+  /** Der laufende Decoder, oder null solange keiner konfiguriert ist. */
+  let avcDecoder = null;
+  /** Aufgegeben? Dann bleibt es beim Kachelweg allein - wie vor diesem Feature. */
+  let avcRueckfall = false;
+  /** Vor dem ersten Schluesselbild darf nichts in den Decoder. */
+  let avcHatteSchluesselbild = false;
+  /** Fortlaufender Zeitstempel; H.264 braucht hier nur eine Reihenfolge. */
+  let avcZeitstempel = 0;
+  /** Gezeichnete Videobilder - fuer das Diagnose-Overlay. */
+  let avcBilder = 0;
+  /**
+   * Die noch nicht ausgegebenen Bilder, in Dekodierreihenfolge. Jeder Eintrag
+   * kennt seine Zeichenbereiche und den Haken, an dem die Warteschlange haengt.
+   */
+  const avcOffen = [];
+  /**
+   * Wie lange auf ein einzelnes Bild gewartet wird, bevor es uebergangen wird.
+   * Ohne diese Schranke koennte ein haengender Decoder das *ganze* Bild
+   * anhalten, auch die Kacheln der uebrigen Codecs.
+   */
+  const AVC_WARTE_MS = 1000;
+
+  /**
+   * Reihenfolgetreue Abarbeitung.
+   *
+   * Kacheln kommen fertig an und werden sofort gezeichnet, Videobilder muessen
+   * erst durch einen asynchronen Decoder. Ohne diese Kette wuerde eine spaeter
+   * eingetroffene Kachel ein frueheres Videobild ueberholen und aelteren Inhalt
+   * ueber neueren malen. Die Kette gilt erst ab dem ersten Videobild.
+   */
+  let avcKette = Promise.resolve();
+  function avcReihen(fn) {
+    avcKette = avcKette.then(fn).catch((err) => {
+      vscode.postMessage({ type: 'drawError', message: 'AVC: ' + String(err) });
+    });
+  }
+
+  /** Gibt H.264 auf und meldet es einmal an den Host. */
+  function avcGibAuf(grund) {
+    if (avcRueckfall) return;
+    avcRueckfall = true;
+    try {
+      if (avcDecoder && avcDecoder.state !== 'closed') avcDecoder.close();
+    } catch (err) {
+      // Ein Decoder, den man nicht mehr schliessen kann, ist ohnehin hin.
+    }
+    avcDecoder = null;
+    // Alles, was noch wartet, freigeben - sonst haengt die Kette fuer immer.
+    while (avcOffen.length) avcOffen.shift().aufloesen();
+    vscode.postMessage({ type: 'avcRueckfall', message: grund });
+  }
+
+  /** Ist WebCodecs ueberhaupt da? Grobpruefung, ohne Codecnamen. */
+  function avcWebCodecsDa() {
+    return (
+      typeof window.VideoDecoder === 'function' &&
+      typeof window.VideoDecoder.isConfigSupported === 'function' &&
+      typeof window.EncodedVideoChunk === 'function'
+    );
+  }
+
+  /** Nimmt ein fertiges Bild entgegen und malt seine Bereiche. */
+  function avcAusgabe(bild) {
+    const eintrag = avcOffen.shift();
+    try {
+      if (eintrag && !eintrag.verfallen) {
+        for (const b of eintrag.bereiche) {
+          // Quelle in Bildkoordinaten, Ziel in Bildschirmkoordinaten. Das
+          // dekodierte Bild liegt am Surface-Ursprung, nicht am destRect.
+          ctx.drawImage(bild, b.sx, b.sy, b.breite, b.hoehe, b.zx, b.zy, b.breite, b.hoehe);
+        }
+        if (eintrag.bereiche.length > 0) avcBilder++;
+      }
+    } catch (err) {
+      vscode.postMessage({ type: 'drawError', message: 'AVC-Zeichnen: ' + String(err) });
+    } finally {
+      // Ein VideoFrame haelt Speicher der Grafikkarte fest. Wer ihn nicht
+      // schliesst, bringt den Decoder nach wenigen Sekunden zum Stillstand.
+      try {
+        bild.close();
+      } catch (err) {
+        /* schon geschlossen */
+      }
+      if (eintrag) eintrag.aufloesen();
+    }
+  }
+
+  /**
+   * Sorgt fuer einen konfigurierten Decoder.
+   *
+   * Die drei Stellen, an denen so etwas erfahrungsgemaess scheitert, sind hier
+   * bewusst alle benannt:
+   *
+   * 1. Kein `description` in der Konfiguration. Der Server schickt laut
+   *    MS-RDPEGFX 2.2.4.4 Annex-B-Daten, also NAL-Einheiten mit Startcodes.
+   *    `description` gehoert zum AVCC-Format mit Laengenpraefixen; wer es bei
+   *    Annex B setzt, bekommt einen Decoder, der stumm nichts ausgibt.
+   * 2. SPS und PPS muessen vor dem ersten Bild da sein. Deshalb wird gar nicht
+   *    erst konfiguriert, solange der Host meldet, dass in diesem Happen keine
+   *    Parametersaetze stecken - der Codecname kaeme sonst auch nicht zustande.
+   * 3. Der Codecname muss zum Strom passen. `isConfigSupported` beantwortet
+   *    das, und zwar bevor irgendetwas dekodiert wird.
+   */
+  async function avcDecoderBereit(nachricht) {
+    if (avcRueckfall) return false;
+    if (avcDecoder) return true;
+
+    if (!avcWebCodecsDa()) {
+      avcGibAuf('WebCodecs (VideoDecoder) steht in diesem Webview nicht zur Verfügung.');
+      return false;
+    }
+    if (!nachricht.hatParametersaetze || !nachricht.codecString) {
+      // Noch kein SPS/PPS gesehen. Nicht aufgeben - der Server schickt in
+      // Kuerze ein Schluesselbild, das beides mitbringt.
+      return false;
+    }
+
+    const konfiguration = { codec: nachricht.codecString, optimizeForLatency: true };
+    let antwort;
+    try {
+      antwort = await window.VideoDecoder.isConfigSupported(konfiguration);
+    } catch (err) {
+      avcGibAuf('WebCodecs lehnt die Konfiguration ab: ' + String(err));
+      return false;
+    }
+    if (!antwort || !antwort.supported) {
+      avcGibAuf('Der Codec ' + nachricht.codecString + ' wird von diesem Webview nicht unterstützt.');
+      return false;
+    }
+
+    try {
+      avcDecoder = new window.VideoDecoder({
+        output: avcAusgabe,
+        error: (err) => avcGibAuf('Decoderfehler: ' + String(err && err.message ? err.message : err)),
+      });
+      avcDecoder.configure(konfiguration);
+    } catch (err) {
+      avcDecoder = null;
+      avcGibAuf('Der Decoder liess sich nicht einrichten: ' + String(err));
+      return false;
+    }
+    return true;
+  }
+
+  /** Eine 'video'-Nachricht: dekodieren und die Bereiche zeichnen. */
+  async function verarbeiteVideo(nachricht) {
+    if (avcRueckfall) return;
+
+    const bytes = toBytes(nachricht.data, nachricht.laenge);
+    if (!bytes) {
+      meldeBinaerUmweg();
+      return;
+    }
+    if (!(await avcDecoderBereit(nachricht))) return;
+
+    // Ein Folgebild ohne vorangegangenes Schluesselbild hat kein Bezugsbild.
+    // Es hineinzugeben liefert je nach Decoder Muell oder einen Fehler.
+    if (!avcHatteSchluesselbild) {
+      if (!nachricht.schluesselbild) return;
+      avcHatteSchluesselbild = true;
+    }
+
+    const eintrag = { bereiche: nachricht.bereiche || [], verfallen: false, aufloesen: () => {} };
+    const fertig = new Promise((res) => {
+      eintrag.aufloesen = res;
+    });
+    avcOffen.push(eintrag);
+
+    try {
+      avcDecoder.decode(
+        new window.EncodedVideoChunk({
+          // 'key' und 'delta' muessen stimmen: der Host hat dafuer den
+          // Bitstream nach einer IDR-Scheibe abgesucht, ein SPS allein zaehlt
+          // dort ausdruecklich nicht.
+          type: nachricht.schluesselbild ? 'key' : 'delta',
+          timestamp: avcZeitstempel++,
+          data: bytes,
+        }),
+      );
+    } catch (err) {
+      avcOffen.shift();
+      eintrag.aufloesen();
+      avcGibAuf('Der Bitstrom liess sich nicht übergeben: ' + String(err));
+      return;
+    }
+
+    // Auf das Bild warten, damit nachfolgende Kacheln es nicht ueberholen -
+    // aber nicht unbegrenzt. Bleibt es aus, wird der Eintrag entwertet und der
+    // Kachelweg laeuft weiter; das Videobild fehlt dann, das Bild friert nicht.
+    let wecker;
+    await Promise.race([
+      fertig,
+      new Promise((res) => {
+        wecker = setTimeout(() => {
+          eintrag.verfallen = true;
+          vscode.postMessage({ type: 'drawError', message: 'AVC: Bild blieb über ' + AVC_WARTE_MS + ' ms aus' });
+          res();
+        }, AVC_WARTE_MS);
+      }),
+    ]);
+    clearTimeout(wecker);
+    if (diagAn) {
+      diagUpdates++;
+      diagBytes += bytes.length;
+      diagLetztesBild = Date.now();
+    }
+    vscode.postMessage({ type: 'painted', tiles: avcBilder });
+  }
+
   function applyPointer(message) {
     const bytes = toBytes(message.data, message.width * message.height * 4);
     if (!bytes) return;
@@ -533,7 +761,17 @@
         break;
 
       case 'bitmap':
-        drawTiles(message);
+        // Der unveraenderte Weg: solange keine einzige 'video'-Nachricht kam,
+        // wird unmittelbar gezeichnet, ohne Warteschlange und ohne Promise.
+        if (avcAktiv) avcReihen(() => drawTiles(message));
+        else drawTiles(message);
+        break;
+
+      case 'video':
+        // Ab hier laufen beide Wege durch dieselbe Reihe, damit eine Kachel
+        // kein aelteres Videobild ueberholt.
+        avcAktiv = true;
+        avcReihen(() => verarbeiteVideo(message));
         break;
 
       case 'pointer':
@@ -567,5 +805,11 @@
     width: Math.floor(rect.width),
     height: Math.floor(rect.height),
     devicePixelRatio: window.devicePixelRatio || 1,
+    // Grobpruefung, noch ohne Codecnamen: gibt es die WebCodecs-API ueberhaupt?
+    // Der Host entscheidet damit, ob er H.264 beim Server anmeldet - lieber gar
+    // nicht erst anmelden als spaeter leere Bildbereiche erklaeren muessen.
+    // Ob auch der konkrete Codec geht, sagt erst isConfigSupported beim ersten
+    // Teilbild.
+    webCodecs: avcWebCodecsDa(),
   });
 })();
