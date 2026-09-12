@@ -352,16 +352,23 @@ export class RdpSession {
     if (RdpSession.offeneSitzungen.size === 0 && !RdpSession.zwischenablageBefehl) {
       // Anders als das Diagnose-Overlay wirkt dieser Befehl nur auf die
       // sichtbare Sitzung: das Feld gehoert zu genau einer Verbindung.
-      RdpSession.zwischenablageBefehl = vscode.commands.registerCommand(ZWISCHENABLAGE_BEFEHL, () => {
-        for (const sitzung of RdpSession.offeneSitzungen) {
-          if (sitzung.panel.active || RdpSession.offeneSitzungen.size === 1) {
-            sitzung.schalteZwischenablagefeldUm();
-            return;
-          }
-        }
-      });
+      RdpSession.zwischenablageBefehl = vscode.commands.registerCommand(ZWISCHENABLAGE_BEFEHL, () =>
+        RdpSession.gemeinteSitzung()?.schalteZwischenablagefeldUm(),
+      );
     }
     RdpSession.offeneSitzungen.add(session);
+  }
+
+  /**
+   * Die Sitzung, die ein Sitzungsbefehl meint.
+   *
+   * Waehrend die Befehlspalette offen ist, ist kein Webview `active` - dann
+   * muss `visible` genuegen. Bleibt auch das offen, gewinnt die zuletzt
+   * geoeffnete: irgendeine Sitzung ist besser als gar keine Reaktion.
+   */
+  private static gemeinteSitzung(): RdpSession | undefined {
+    const alle = [...RdpSession.offeneSitzungen];
+    return alle.find((s) => s.panel.active) ?? alle.find((s) => s.panel.visible) ?? alle.at(-1);
   }
 
   private static vergissSitzung(session: RdpSession): void {
@@ -650,6 +657,14 @@ export class RdpSession {
       this.startWatchdog(client);
     });
 
+    // Genau einmal je Verbindung anmelden, nicht bei jedem 'connect': nach
+    // einem automatischen Wiederverbinden kaeme sonst je Versuch ein weiterer
+    // Horcher dazu, bis Node vor zu vielen warnt. Welche Bruecke gerade lebt,
+    // entscheidet die Weiterleitung selbst.
+    client.on('staticChannelData', (e: { name: string; data: Buffer }) => {
+      if (e.name === CLIPRDR_CHANNEL_NAME) this.zwischenablage?.verarbeite(e.data);
+    });
+
     client.on('bitmap', (tiles: DecodedBitmap[]) => this.sendTiles(tiles));
 
     client.on('pointer', (pointer: PointerImage | null) => {
@@ -747,10 +762,6 @@ export class RdpSession {
       log: (nachricht) => this.log(nachricht),
     });
     this.zwischenablage = bruecke;
-
-    client.on('staticChannelData', (e: { name: string; data: Buffer }) => {
-      if (e.name === CLIPRDR_CHANNEL_NAME) bruecke.verarbeite(e.data);
-    });
 
     this.log(
       `Zwischenablage: Kanal cliprdr bereit (Richtung ${einstellungen.richtung}, ` +
