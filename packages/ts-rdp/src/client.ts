@@ -23,6 +23,7 @@ import {
   parseVirtualChannelCapability,
 } from './protocol/virtualChannel.js';
 import * as dvc from './protocol/dvc.js';
+import * as edisp from './protocol/edisp.js';
 import { ZgfxDecompressor } from './codec/zgfx.js';
 import { EgfxSession } from './protocol/egfxSession.js';
 import type { EgfxCapsSet } from './protocol/egfx.js';
@@ -221,6 +222,18 @@ export interface RdpClientOptions {
    */
   enableGraphicsPipeline?: boolean;
   /**
+   * Den Display Control Channel (MS-RDPEDISP) anfordern.
+   *
+   * Damit laesst sich die Desktopaufloesung waehrend der laufenden Sitzung
+   * aendern, ohne neu zu verbinden. Meldet `drdynvc` an und nimmt den Kanal
+   * `Microsoft::Windows::RDS::DisplayControl` an, sobald der Server ihn oeffnet.
+   *
+   * Oeffnet der Server den Kanal nicht - aeltere Server, xrdp, abgeschaltete
+   * Funktion -, aendert sich am Verhalten des Clients nichts: `requestResolution`
+   * meldet dann schlicht `false`.
+   */
+  enableDisplayControl?: boolean;
+  /**
    * Capability-Sets fuer die Graphics Pipeline. Ohne Angabe gilt
    * `DEFAULT_EGFX_CAPS`; abweichende Saetze dienen der Fehlersuche
    * (siehe `examples/diagnose.mjs`).
@@ -278,6 +291,11 @@ export interface RdpClientEvents {
   graphicsData: (data: Buffer) => void;
   pointerPosition: (pos: { x: number; y: number }) => void;
   resize: (size: { width: number; height: number }) => void;
+  /**
+   * Der Server hat seine Grenzen fuer Aufloesungswechsel genannt
+   * (DISPLAYCONTROL_CAPS_PDU). Ab hier nimmt `requestResolution` Anfragen an.
+   */
+  displayControlReady: (caps: edisp.DisplayControlCaps) => void;
   error: (err: Error) => void;
   close: (reason?: string) => void;
   /**
@@ -357,6 +375,8 @@ export const GRAPHICS_CHANNEL_NAME = 'Microsoft::Windows::RDS::Graphics';
 export const MOUSE_CURSOR_CHANNEL_NAME = 'Microsoft::Windows::RDS::MouseCursor';
 /** Eingabekanal des modernen Stapels. */
 export const CORE_INPUT_CHANNEL_NAME = 'Microsoft::Windows::RDS::CoreInput';
+/** Kanal fuer Aufloesungswechsel im laufenden Betrieb (MS-RDPEDISP 2.1). */
+export const DISPLAY_CONTROL_CHANNEL_NAME = edisp.DISPLAY_CONTROL_CHANNEL_NAME;
 
 /**
  * Windows oeffnet diese drei Kanaele als Einheit. Nimmt ein Client nur einen
@@ -425,6 +445,14 @@ export class RdpClient extends EventEmitter {
   private readonly zgfxByChannel = new Map<number, ZgfxDecompressor>();
   /** Surface- und Frameverwaltung der Graphics Pipeline. */
   private egfx?: EgfxSession;
+  /**
+   * Grenzen des Servers fuer Aufloesungswechsel, sobald sein CAPS-PDU da ist
+   * (MS-RDPEDISP 3.2.1.1 bis 3.2.1.3). Solange das fehlt, hat der Server noch
+   * nicht gesagt, was er zulaesst.
+   */
+  private displayControlCaps?: edisp.DisplayControlCaps;
+  /** Zuletzt angefragte Groesse - haelt Wiederholungen derselben Bitte zurueck. */
+  private letzteAufloesungsanfrage?: { width: number; height: number };
   private bitmapCount = 0;
   /** Entpackte Bytes, die ueber die Graphics Pipeline ankamen. */
   private graphicsBytes = 0;
@@ -632,6 +660,8 @@ export class RdpClient extends EventEmitter {
     this.zgfxByChannel.clear();
     this.dynvcReassembler.reset();
     this.egfx = undefined;
+    this.displayControlCaps = undefined;
+    this.letzteAufloesungsanfrage = undefined;
     this.serverCapabilities = undefined;
     this.lastErrorInfo = undefined;
     this.lastErrorInfoCode = undefined;
@@ -729,7 +759,7 @@ export class RdpClient extends EventEmitter {
           : eintrag,
       );
     }
-    if (this.opts.announceDynamicChannels || this.opts.enableGraphicsPipeline) {
+    if (this.opts.announceDynamicChannels || this.opts.enableGraphicsPipeline || this.opts.enableDisplayControl) {
       channels.push({
         name: 'drdynvc',
         // Ohne SHOW_PROTOCOL: der Kanalkopf gehoert uns, nicht dem Endpunkt.
@@ -1140,6 +1170,10 @@ export class RdpClient extends EventEmitter {
         this.log.info(`DVC: Kanal "${name ?? nachricht.channelId}" geschlossen`);
         // Erst den Namen holen, dann loeschen.
         if (name === GRAPHICS_CHANNEL_NAME) this.egfx = undefined;
+        if (name === DISPLAY_CONTROL_CHANNEL_NAME) {
+          this.displayControlCaps = undefined;
+          this.letzteAufloesungsanfrage = undefined;
+        }
         this.dynamicChannels.delete(nachricht.channelId!);
         this.dynamicFragments.delete(nachricht.channelId!);
         // Der Verlaufspuffer haengt am Kanal und ist 2,5 MB gross - beim
@@ -1169,6 +1203,9 @@ export class RdpClient extends EventEmitter {
 
     // Die Graphics Pipeline steckt jede Nachricht in ZGFX-Kompression.
     if (name === GRAPHICS_CHANNEL_NAME) this.handleGraphicsData(channelId, data);
+    // Der Display Control Channel dagegen nicht: MS-RDPEDISP 2.1 nennt keine
+    // Huelle, die Nutzdaten liegen roh auf dem Kanal.
+    else if (name === DISPLAY_CONTROL_CHANNEL_NAME) this.handleDisplayControlData(data);
   }
 
   /** Eroeffnet die Pipeline, sobald der Server den Grafikkanal aufmacht. */
@@ -1213,6 +1250,40 @@ export class RdpClient extends EventEmitter {
     else this.egfx.start();
   }
 
+  /**
+   * Nachricht des Display Control Channel verarbeiten (MS-RDPEDISP 3.2.5.1).
+   *
+   * Der Server schickt hier praktisch nur das CAPS-PDU, und zwar einmal kurz
+   * nach dem Oeffnen des Kanals. Alles andere wird protokolliert und verworfen:
+   * ein unbekanntes PDU auf einem Nebenkanal darf die Sitzung nicht gefaehrden.
+   */
+  private handleDisplayControlData(data: Buffer): void {
+    let kopf: edisp.DisplayControlHeader;
+    try {
+      kopf = edisp.parseDisplayControlHeader(data);
+    } catch (err) {
+      this.log.warn(`Display Control: Kopf nicht lesbar - ${(err as Error).message}`);
+      return;
+    }
+
+    if (kopf.type !== edisp.DISPLAYCONTROL_PDU_TYPE_CAPS) {
+      this.log.debug(`Display Control: PDU-Typ 0x${kopf.type.toString(16)} wird nicht ausgewertet`);
+      return;
+    }
+
+    try {
+      const caps = edisp.parseCapsPdu(data);
+      this.displayControlCaps = caps;
+      this.log.info(
+        `Display Control: bis zu ${caps.maxNumMonitors} Monitore, ` +
+          `hoechstens ${edisp.maximaleGesamtflaeche(caps)} Quadratpixel gesamt`,
+      );
+      this.emit('displayControlReady', caps);
+    } catch (err) {
+      this.log.warn(`Display Control: CAPS-PDU nicht verwertbar - ${(err as Error).message}`);
+    }
+  }
+
   private handleGraphicsData(channelId: number, data: Buffer): void {
     let dekomprimiert: Buffer;
     try {
@@ -1250,6 +1321,7 @@ export class RdpClient extends EventEmitter {
   /** Welche dynamischen Kanaele der Client annehmen soll. */
   private wantsDynamicChannel(name: string): boolean {
     if (this.opts.acceptDynamicChannels) return this.opts.acceptDynamicChannels(name);
+    if (this.opts.enableDisplayControl === true && name === DISPLAY_CONTROL_CHANNEL_NAME) return true;
     return this.opts.enableGraphicsPipeline === true && PIPELINE_CHANNEL_NAMES.includes(name);
   }
 
@@ -1670,6 +1742,92 @@ export class RdpClient extends EventEmitter {
     for (const pduTeil of dvc.buildDataSegments(channelId, data, this.dvcPduGroesse())) {
       this.sendDynvc(pduTeil);
     }
+  }
+
+  // -------------------------------------------------- Aufloesung im Betrieb
+
+  /**
+   * Steht der Display Control Channel und hat der Server seine Grenzen genannt?
+   *
+   * Erst dann darf eine Anfrage raus: MS-RDPEDISP 3.2.5.2 verlangt, die
+   * Anordnung gegen die Werte aus dem CAPS-PDU zu pruefen, und die kennen wir
+   * vorher nicht.
+   */
+  get canChangeResolution(): boolean {
+    return (
+      this.displayControlCaps !== undefined &&
+      this.getDynamicChannelId(DISPLAY_CONTROL_CHANNEL_NAME) !== undefined
+    );
+  }
+
+  /** Die vom Server genannten Grenzen, sobald sein CAPS-PDU da ist. */
+  get displayControlLimits(): edisp.DisplayControlCaps | undefined {
+    return this.displayControlCaps;
+  }
+
+  /**
+   * Eine neue Desktopaufloesung anfordern (MS-RDPEDISP 3.2.5.2).
+   *
+   * Rueckgabe `true` heisst nur, dass das PDU rausgegangen ist - ob der Server
+   * die Groesse uebernimmt, zeigt sich erst am 'resize'-Ereignis, und er darf
+   * eine andere waehlen.
+   *
+   * Diese Methode wirft **nicht**. Fehlt der Kanal, fehlen die Caps oder passt
+   * die Groesse nicht in die Grenzen des Servers, kommt `false` und ein Eintrag
+   * im Protokoll. Genau das ist die Rueckfallebene fuer Server ohne RDPEDISP:
+   * der Aufrufer darf blind fragen, ohne vorher zu pruefen.
+   */
+  requestResolution(
+    width: number,
+    height: number,
+    optionen?: {
+      /** Desktopskalierung in Prozent, 100..500. */
+      desktopScaleFactor?: number;
+      /** Geraeteskalierung in Prozent; wird auf 100, 140 oder 180 gezogen. */
+      deviceScaleFactor?: number;
+      /** Dieselbe Groesse noch einmal schicken, statt sie zu unterdruecken. */
+      force?: boolean;
+    },
+  ): boolean {
+    const channelId = this.getDynamicChannelId(DISPLAY_CONTROL_CHANNEL_NAME);
+    if (channelId === undefined) {
+      this.log.debug(
+        'Display Control: Aufloesungswechsel nicht moeglich - der Server hat den Kanal ' +
+          `"${DISPLAY_CONTROL_CHANNEL_NAME}" nicht geoeffnet`,
+      );
+      return false;
+    }
+    if (!this.displayControlCaps) {
+      this.log.debug('Display Control: Aufloesungswechsel nicht moeglich - das CAPS-PDU des Servers fehlt noch');
+      return false;
+    }
+
+    const monitor = edisp.primaerMonitor(width, height, optionen);
+    const grund = edisp.pruefeAnordnung([monitor], this.displayControlCaps);
+    if (grund) {
+      this.log.warn(`Display Control: ${width}x${height} wird nicht angefragt - ${grund}`);
+      return false;
+    }
+
+    // Nach dem Zurechtruecken kann aus 1367 eine 1366 geworden sein; verglichen
+    // wird deshalb die tatsaechlich gesendete Groesse, nicht die gewuenschte.
+    const letzte = this.letzteAufloesungsanfrage;
+    if (!optionen?.force && letzte && letzte.width === monitor.width && letzte.height === monitor.height) {
+      this.log.debug(`Display Control: ${monitor.width}x${monitor.height} ist bereits angefragt`);
+      return false;
+    }
+
+    try {
+      this.sendDynamicChannel(channelId, edisp.buildMonitorLayoutPdu([monitor]));
+    } catch (err) {
+      // sendDynamicChannel wirft, wenn drdynvc zwischen Pruefung und Senden
+      // weggebrochen ist. Ein Aufloesungswunsch ist das nicht wert.
+      this.log.warn(`Display Control: Anfrage konnte nicht gesendet werden - ${(err as Error).message}`);
+      return false;
+    }
+    this.letzteAufloesungsanfrage = { width: monitor.width, height: monitor.height };
+    this.log.info(`Display Control: ${monitor.width}x${monitor.height} angefragt`);
+    return true;
   }
 
   // ---------------------------------------------------------------- Intern

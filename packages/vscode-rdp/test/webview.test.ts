@@ -155,3 +155,147 @@ describe('Webview - Last', () => {
     assert.equal(w.gezeichnet.length, 153);
   });
 });
+
+describe('Webview - Auflösung zieht mit', () => {
+  /** Kurz warten, damit der Entprell-Zeitgeber ablaufen kann. */
+  const warte = (ms: number) => new Promise((weiter) => setTimeout(weiter, ms));
+
+  /** Alle Anfragen nach einer neuen Auflösung, die das Skript gestellt hat. */
+  function anfragen(umgebung: ReturnType<typeof starteWebview>) {
+    return umgebung.gesendet.filter((n: any) => n?.type === 'resizeRequest') as {
+      width: number;
+      height: number;
+      devicePixelRatio: number;
+    }[];
+  }
+
+  /** Eine verbundene Webview mit eingeschaltetem Mitziehen und kurzer Ruhezeit. */
+  function verbunden(verzug = 30) {
+    const umgebung = starteWebview(skript);
+    umgebung.sende({
+      type: 'init',
+      width: 1076,
+      height: 536,
+      scaling: 'fit',
+      smooth: false,
+      dynamicResolution: true,
+      resizeDelay: verzug,
+    });
+    return umgebung;
+  }
+
+  test('Eine Größenänderung wird nach der Ruhezeit gemeldet', async () => {
+    const umgebung = verbunden();
+    assert.equal(anfragen(umgebung).length, 0);
+
+    umgebung.groesseAendern(1400, 700);
+    // Unmittelbar danach ist noch nichts hinausgegangen - das ist der Sinn.
+    assert.equal(anfragen(umgebung).length, 0);
+
+    await warte(60);
+    const gestellt = anfragen(umgebung);
+    assert.equal(gestellt.length, 1);
+    assert.equal(gestellt[0].width, 1400);
+    assert.equal(gestellt[0].height, 700);
+  });
+
+  test('Vieles Ziehen hintereinander ergibt genau eine Anfrage - mit der letzten Größe', async () => {
+    // Beim Ziehen an der Fensterkante feuert 'resize' dutzende Male. Jede
+    // davon zu melden hiesse, dem Server dutzende Auflösungswechsel zuzumuten.
+    const umgebung = verbunden();
+    for (let breite = 1100; breite <= 1500; breite += 20) {
+      umgebung.groesseAendern(breite, 700);
+      await warte(2);
+    }
+
+    await warte(60);
+    const gestellt = anfragen(umgebung);
+    assert.equal(gestellt.length, 1, 'genau eine Anfrage nach dem ganzen Ziehen');
+    assert.equal(gestellt[0].width, 1500);
+  });
+
+  test('Das Bild wird sofort mitskaliert, nicht erst nach der Ruhezeit', async () => {
+    // Während des Ziehens soll das (unscharfe) Bild mitgehen; die scharfe
+    // Auflösung kommt danach nach. Ohne das wirkte das Fenster eingefroren.
+    //
+    // Geprüft wird am Verkleinern: layout() deckelt den Maßstab bei 1, ein
+    // größeres Panel ändert die Leinwandgröße daher gar nicht.
+    const umgebung = verbunden();
+    umgebung.groesseAendern(538, 268);
+    assert.equal(umgebung.canvas.style.width, '538px', 'sofort neu skaliert');
+    assert.equal(anfragen(umgebung).length, 0, 'aber noch nichts angefragt');
+  });
+
+  test('Dieselbe Größe wird nicht zweimal angefragt', async () => {
+    const umgebung = verbunden();
+    umgebung.groesseAendern(1400, 700);
+    await warte(60);
+    assert.equal(anfragen(umgebung).length, 1);
+
+    // Ein 'resize' ohne echte Größenänderung - etwa beim Verschieben des Fensters.
+    umgebung.loeseFensterEreignisAus('resize');
+    await warte(60);
+    assert.equal(anfragen(umgebung).length, 1);
+  });
+
+  test('Die bestätigte Größe des Servers löst keine neue Anfrage aus', async () => {
+    // Sonst entstünde eine Schleife: anfragen, bestätigt bekommen, wieder
+    // anfragen. Die Bestätigung kommt als 'init' mit der neuen Größe.
+    const umgebung = verbunden();
+    umgebung.groesseAendern(1400, 700);
+    await warte(60);
+    assert.equal(anfragen(umgebung).length, 1);
+
+    umgebung.sende({ type: 'init', width: 1400, height: 700, scaling: 'fit', smooth: false });
+    umgebung.loeseFensterEreignisAus('resize');
+    await warte(60);
+    assert.equal(anfragen(umgebung).length, 1);
+  });
+
+  test('Ist das Mitziehen aus, wird nie eine Größe gemeldet', async () => {
+    // Das ist der Zustand bei fest eingetragener Auflösung und bei
+    // abgeschalteter Einstellung: exakt das Verhalten von vorher.
+    const umgebung = starteWebview(skript);
+    umgebung.sende({
+      type: 'init',
+      width: 1076,
+      height: 536,
+      scaling: 'fit',
+      smooth: false,
+      dynamicResolution: false,
+      resizeDelay: 30,
+    });
+    umgebung.groesseAendern(1400, 700);
+    await warte(60);
+    assert.equal(anfragen(umgebung).length, 0);
+    // Skaliert wird aber weiterhin.
+    assert.equal(umgebung.canvas.style.width.length > 0, true);
+  });
+
+  test('Ohne jede Angabe im init bleibt das Mitziehen aus', async () => {
+    // Ein alter Host, der die neuen Felder nicht schickt, darf die Webview
+    // nicht dazu bringen, unaufgefordert Anfragen zu stellen.
+    const umgebung = starteWebview(skript);
+    umgebung.sende({ type: 'init', width: 1076, height: 536, scaling: 'fit', smooth: false });
+    umgebung.groesseAendern(1400, 700);
+    await warte(60);
+    assert.equal(anfragen(umgebung).length, 0);
+  });
+
+  test('Die Ruhezeit des Hosts wird übernommen', async () => {
+    const umgebung = verbunden(150);
+    umgebung.groesseAendern(1400, 700);
+    await warte(60);
+    assert.equal(anfragen(umgebung).length, 0, 'nach 60 ms ist die Ruhezeit von 150 ms noch nicht um');
+    await warte(150);
+    assert.equal(anfragen(umgebung).length, 1);
+  });
+
+  test('Die Pixeldichte des Fensters geht mit', async () => {
+    // Der Host braucht sie, um bei eingeschaltetem rdp.highDpi zu rechnen.
+    const umgebung = verbunden();
+    umgebung.groesseAendern(1400, 700);
+    await warte(60);
+    assert.equal(anfragen(umgebung)[0].devicePixelRatio, 1);
+  });
+});

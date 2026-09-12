@@ -600,3 +600,120 @@ describe('Regressionen', () => {
     );
   });
 });
+
+// ------------------------------------------------- Auflösung zieht mit (RDPEDISP)
+
+describe('Auflösung zieht mit der Panelgröße', () => {
+  test('Die Umrechnung Panelgröße -> Auflösung ist für beide Wege dieselbe', () => {
+    // Beim Verbinden und bei jeder späteren Änderung muss dieselbe Panelgröße
+    // dieselbe Auflösung ergeben - sonst springt das Bild, wenn der Nutzer das
+    // Fenster auf die Ausgangsgröße zurückzieht.
+    const ohneHiDpi = RdpSession.aufloesungAusPanel(1076, 536, 1);
+    assert.deepEqual(ohneHiDpi, { width: 1076, height: 536 });
+
+    // 1076 ist bereits durch 4 teilbar; 1077 wird abgerundet.
+    assert.equal(RdpSession.aufloesungAusPanel(1077, 536, 1).width, 1076);
+    assert.equal(RdpSession.aufloesungAusPanel(1079, 536, 1).width, 1076);
+    // Was durch 4 teilbar ist, ist auch gerade - MS-RDPEDISP 2.2.2.2.1 ist
+    // damit von selbst erfüllt.
+    assert.equal(RdpSession.aufloesungAusPanel(1079, 536, 1).width % 2, 0);
+  });
+
+  test('Die Untergrenze von 640x480 wird eingehalten', () => {
+    // Ein sehr schmales Panel darf nicht in eine Auflösung münden, die
+    // MS-RDPEDISP ablehnt (dort ist bei 200 Pixeln Schluss).
+    assert.deepEqual(RdpSession.aufloesungAusPanel(120, 90, 1), { width: 640, height: 480 });
+  });
+
+  test('Die Obergrenze von 4096x2160 wird eingehalten', () => {
+    assert.deepEqual(RdpSession.aufloesungAusPanel(99999, 99999, 1), { width: 4096, height: 2160 });
+    // Auch mit HiDPI-Faktor 2 bleibt es beim Deckel.
+    assert.deepEqual(RdpSession.aufloesungAusPanel(3000, 2000, 2), { width: 4096, height: 2160 });
+  });
+
+  test('rdp.highDpi verdoppelt die Auflösung, ohne die Grenzen zu sprengen', () => {
+    // Microsofts eigener Webclient lässt HiDPI standardmäßig aus und warnt vor
+    // der Prozessorlast; bei Faktor 2 vervierfacht sich die Pixelzahl.
+    assert.deepEqual(RdpSession.aufloesungAusPanel(1000, 600, 1), { width: 1000, height: 600 });
+    assert.deepEqual(RdpSession.aufloesungAusPanel(1000, 600, 2), { width: 2000, height: 1200 });
+  });
+
+  test('Das init-Kommando trägt die Entprelleinstellungen für die Webview', async () => {
+    einstellungen.set('rdp.dynamicResolution', true);
+    einstellungen.set('rdp.dynamicResolutionDelay', 350);
+    const { panel } = await starteSitzung(port);
+    await warteBis(() => nachrichten(panel, 'init').length > 0, 'init-Nachricht');
+
+    const init = nachrichten<{ dynamicResolution: boolean; resizeDelay: number }>(panel, 'init')[0];
+    assert.equal(init.dynamicResolution, true);
+    assert.equal(init.resizeDelay, 350);
+  });
+
+  test('Abgeschaltet erfährt die Webview das und startet keinen Zeitgeber', async () => {
+    einstellungen.set('rdp.dynamicResolution', false);
+    const { panel } = await starteSitzung(port);
+    await warteBis(() => nachrichten(panel, 'init').length > 0, 'init-Nachricht');
+    assert.equal(nachrichten<{ dynamicResolution: boolean }>(panel, 'init')[0].dynamicResolution, false);
+  });
+
+  test('RÜCKFALLEBENE: ein Server ohne RDPEDISP wirft nur einen Protokolleintrag', async () => {
+    // Der Mock-Server öffnet keinen Display Control Channel - genau der Fall,
+    // der in der Praxis auf älteren Servern und auf xrdp eintritt. Es darf
+    // keinen Fehlerzustand und keine Einblendung geben, nur eine Logzeile.
+    einstellungen.set('rdp.dynamicResolution', true);
+    const { panel, ausgabe } = await starteSitzung(port);
+    await warteBis(() => nachrichten(panel, 'init').length > 0, 'init-Nachricht');
+    const zustaendeVorher = nachrichten<{ state: string }>(panel, 'state').length;
+
+    panel.webview.vomWebview({ type: 'resizeRequest', width: 1400, height: 900, devicePixelRatio: 1 });
+    await warteBis(
+      () => ausgabe.zeilen.some((z) => z.includes('keinen Auflösungswechsel')),
+      'Protokolleintrag zur fehlenden Unterstützung',
+    );
+
+    // Kein neuer Zustand, insbesondere kein 'error'.
+    const zustaende = nachrichten<{ state: string }>(panel, 'state').slice(zustaendeVorher);
+    assert.equal(zustaende.some((z) => z.state === 'error'), false, 'kein Fehlerzustand');
+    assert.deepEqual(unbehandelt, [], 'keine unbehandelte Zusage');
+  });
+
+  test('RÜCKFALLEBENE: eine fest eingetragene Auflösung wird nicht überstimmt', async () => {
+    einstellungen.set('rdp.dynamicResolution', true);
+    const kontext = new ExtensionContext();
+    const ausgabe = fensterAttrappe.createOutputChannel('Remote Desktop (RDP)');
+    const verbindung: RdpConnection = {
+      name: 'Fest',
+      host: '127.0.0.1',
+      port,
+      username: 'tester',
+      width: 1024,
+      height: 768,
+    };
+    await kontext.secrets.store(secretKey(verbindung), 'geheim');
+    const sitzung = await RdpSession.open(kontext, verbindung, ausgabe, new CertificateTrustStore(kontext));
+    offeneSitzungen.push(sitzung);
+    const panel = notizen.panels.at(-1)!;
+    panel.webview.vomWebview({ type: 'ready', width: 1024, height: 768, devicePixelRatio: 1 });
+    await warteBis(() => nachrichten(panel, 'init').length > 0, 'init-Nachricht');
+
+    // Die Webview bekommt das Mitziehen erst gar nicht eingeschaltet …
+    assert.equal(nachrichten<{ dynamicResolution: boolean }>(panel, 'init')[0].dynamicResolution, false);
+
+    // … und selbst eine trotzdem eintreffende Bitte wird abgelehnt.
+    panel.webview.vomWebview({ type: 'resizeRequest', width: 1600, height: 900, devicePixelRatio: 1 });
+    await warteBis(
+      () => ausgabe.zeilen.some((z) => z.includes('fest eingestellt')),
+      'Protokolleintrag zur festen Auflösung',
+    );
+    assert.deepEqual(unbehandelt, [], 'keine unbehandelte Zusage');
+  });
+
+  test('RÜCKFALLEBENE: eine Bitte ohne stehende Verbindung tut nichts', async () => {
+    // Kommt beim Aufbau oder nach einem Abbruch vor. Ohne die Prüfung liefe
+    // requestResolution gegen einen Client, den es noch nicht gibt.
+    const { panel } = await starteSitzung(port);
+    panel.webview.vomWebview({ type: 'resizeRequest', width: 1400, height: 900, devicePixelRatio: 1 });
+    await new Promise((weiter) => setTimeout(weiter, 30));
+    assert.deepEqual(unbehandelt, [], 'keine unbehandelte Zusage');
+  });
+});
