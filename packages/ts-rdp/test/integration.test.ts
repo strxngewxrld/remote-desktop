@@ -38,6 +38,10 @@ import {
   PTRFLAGS_DOWN,
 } from '../src/protocol/constants.js';
 import type { DecodedBitmap } from '../src/protocol/updates.js';
+import {
+  computeSecurityVerifier,
+  parseClientAutoReconnectPacket,
+} from '../src/protocol/autoReconnect.js';
 
 const WIDTH = 800;
 const HEIGHT = 600;
@@ -1296,5 +1300,180 @@ describe('Senden auf dynamischen Kanälen', () => {
   test('Ein nicht offener Kanal wird abgewiesen', async () => {
     const { client } = await offeneSitzung();
     assert.throws(() => client.sendDynamicChannel('Fremdkanal', Buffer.alloc(1)), /nicht offen/);
+  });
+});
+
+describe('Automatischer Wiederverbindungsaufbau', () => {
+  /** Cookie, den der Mock-Server nach der Anmeldung hinterlegt. */
+  const COOKIE = {
+    version: 1,
+    logonId: 4711,
+    arcRandom: Buffer.from('000102030405060708090a0b0c0d0e0f', 'hex'),
+  };
+
+  /** Kurze Wartezeiten ohne Streuung - Tests sollen nicht wuerfeln. */
+  const FLINK = { maxAttempts: 3, initialDelayMs: 20, maxDelayMs: 40, factor: 2, jitter: 0 };
+
+  async function sitzungMitCookie(autoReconnect: typeof FLINK | undefined) {
+    const certificate = createTestCertificate();
+    const server = neuerServer({ ...certificate, width: WIDTH, height: HEIGHT });
+    const port = await server.listen();
+    const client = neuerClient({
+      host: '127.0.0.1',
+      port,
+      useNla: false,
+      width: WIDTH,
+      height: HEIGHT,
+      autoReconnect,
+    });
+    const aktiviert = once(server, 'activated');
+    await client.connect();
+    await aktiviert;
+    return { server, client };
+  }
+
+  test('Der Cookie aus dem Save Session Info PDU wird uebernommen', async () => {
+    const { server, client } = await sitzungMitCookie(FLINK);
+    const gemeldet = once(client, 'autoReconnectCookie');
+    server.sendSaveSessionInfo(COOKIE);
+    const [info] = (await gemeldet) as [{ logonId: number; version: number }];
+
+    assert.equal(info.logonId, COOKIE.logonId);
+    assert.equal(info.version, 1);
+    assert.equal(client.canResumeSession, true, 'ab jetzt ist eine Rueckkehr moeglich');
+
+    client.disconnect();
+    server.close();
+  });
+
+  test('Nach einem Abbruch kommt der Client mit dem ARC_CS_PRIVATE_PACKET zurueck', async () => {
+    const { server, client } = await sitzungMitCookie(FLINK);
+    const cookieDa = once(client, 'autoReconnectCookie');
+    server.sendSaveSessionInfo(COOKIE);
+    await cookieDa;
+
+    const zustaende: string[] = [];
+    client.on('reconnecting', (i) => zustaende.push(`reconnecting:${i.attempt}/${i.maxAttempts}`));
+    client.on('reconnected', (i) => zustaende.push(`reconnected:${i.attempt}:${i.resumedSession}`));
+    client.on('gaveUp', () => zustaende.push('gaveUp'));
+    client.on('close', () => zustaende.push('close'));
+    client.on('error', (err) => zustaende.push(`error:${err.message}`));
+
+    // Das Info-PDU der Wiederverbindung traegt den Cookie. Der Lauscher haengt
+    // sich erst jetzt an, das Info-PDU des ersten Aufbaus ist also laengst
+    // durch - das naechste gesehene ist bereits das der Wiederverbindung.
+    const zweitesInfo = new Promise<Buffer>((resolve) => {
+      server.once('clientInfo', (payload: Buffer) => resolve(payload));
+    });
+    const wiederVerbunden = once(client, 'reconnected');
+
+    server.trenneVerbindung();
+    const info = await zweitesInfo;
+    await wiederVerbunden;
+
+    // Am Ende des Info-PDU stehen cbAutoReconnectCookie und das Paket selbst.
+    const schwanz = info.subarray(info.length - 30);
+    assert.equal(schwanz.readUInt16LE(0), 0x001c, 'cbAutoReconnectCookie MUSS 0x1c sein');
+    const arc = parseClientAutoReconnectPacket(schwanz.subarray(2));
+    assert.equal(arc.version, 1);
+    assert.equal(arc.logonId, COOKIE.logonId);
+    assert.equal(
+      arc.securityVerifier.toString('hex'),
+      computeSecurityVerifier(COOKIE.arcRandom).toString('hex'),
+      'der Pruefwert muss ueber die Zufallszahl des Servers gerechnet sein',
+    );
+
+    assert.deepEqual(zustaende, ['reconnecting:1/3', 'reconnected:1:true']);
+    assert.equal(client.isConnected, true);
+    assert.equal(client.reconnectAttempt, 0);
+
+    client.disconnect();
+    server.close();
+  });
+
+  test('Ohne Cookie verbindet der Client neu, meldet aber keine fortgesetzte Sitzung', async () => {
+    const { server, client } = await sitzungMitCookie(FLINK);
+    const wieder = once(client, 'reconnected');
+    server.trenneVerbindung();
+    const [info] = (await wieder) as [{ attempt: number; resumedSession: boolean }];
+
+    assert.equal(info.attempt, 1);
+    assert.equal(info.resumedSession, false, 'ohne Cookie ist es eine frische Anmeldung');
+
+    client.disconnect();
+    server.close();
+  });
+
+  test('Gewolltes Trennen loest keine Wiederverbindung aus', async () => {
+    const { server, client } = await sitzungMitCookie(FLINK);
+    const zustaende: string[] = [];
+    client.on('reconnecting', () => zustaende.push('reconnecting'));
+    client.on('gaveUp', () => zustaende.push('gaveUp'));
+    client.on('error', (err) => zustaende.push(`error:${err.message}`));
+
+    client.disconnect();
+    // Lange genug, dass eine Wiederholung sich gemeldet haette.
+    await new Promise((r) => setTimeout(r, 150));
+
+    assert.deepEqual(zustaende, [], 'ein gewolltes Trennen ist kein Verbindungsverlust');
+    assert.equal(client.isReconnecting, false);
+    assert.equal(client.isConnected, false);
+
+    server.close();
+  });
+
+  test('Ein Abbruch waehrend der Wartezeit beendet die Wiederholung sofort', async () => {
+    const { server, client } = await sitzungMitCookie({ ...FLINK, initialDelayMs: 200 });
+    const zustaende: string[] = [];
+    client.on('reconnected', () => zustaende.push('reconnected'));
+    client.on('gaveUp', () => zustaende.push('gaveUp'));
+    client.on('close', () => zustaende.push('close'));
+
+    const wartet = once(client, 'reconnecting');
+    server.trenneVerbindung();
+    await wartet;
+    assert.equal(client.isReconnecting, true);
+
+    client.disconnect();
+    await new Promise((r) => setTimeout(r, 400));
+    assert.deepEqual(zustaende, [], 'der geplante Versuch darf nicht mehr stattfinden');
+
+    server.close();
+  });
+
+  test('Sind alle Versuche verbraucht, folgt gaveUp und danach genau ein close', async () => {
+    const { server, client } = await sitzungMitCookie({ ...FLINK, maxAttempts: 2 });
+    const zustaende: string[] = [];
+    client.on('reconnecting', (i) => zustaende.push(`reconnecting:${i.attempt}`));
+    client.on('reconnected', () => zustaende.push('reconnected'));
+    client.on('close', () => zustaende.push('close'));
+
+    const aufgegeben = once(client, 'gaveUp');
+    // Der Server verschwindet ganz: jeder weitere Versuch laeuft ins Leere.
+    server.verweigereVerbindungen();
+    const [info] = (await aufgegeben) as [{ attempts: number; lastError?: Error }];
+
+    assert.equal(info.attempts, 2);
+    assert.ok(info.lastError, 'der letzte Fehler gehoert in die Meldung');
+    assert.deepEqual(zustaende, ['reconnecting:1', 'reconnecting:2', 'close']);
+    assert.equal(client.isConnected, false);
+
+    server.close();
+  });
+
+  test('Ohne autoReconnect bleibt es beim bisherigen close', async () => {
+    const { server, client } = await sitzungMitCookie(undefined);
+    const zustaende: string[] = [];
+    client.on('reconnecting', () => zustaende.push('reconnecting'));
+    client.on('close', () => zustaende.push('close'));
+
+    const geschlossen = once(client, 'close');
+    server.trenneVerbindung();
+    await geschlossen;
+
+    assert.deepEqual(zustaende, ['close'], 'ohne Schalter aendert sich nichts am Verhalten');
+    assert.equal(client.canResumeSession, false);
+
+    server.close();
   });
 });

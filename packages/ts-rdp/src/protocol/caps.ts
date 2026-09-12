@@ -100,6 +100,16 @@ export interface CapabilityProfile {
   virtualChannelChunkSize?: number;
   /** flags im Virtual-Channel-Satz (Standard 0 = VCCAPS_NO_COMPR). */
   virtualChannelFlags?: number;
+  /**
+   * AUTORECONNECT_SUPPORTED im General Capability Set melden (Standard: nein).
+   *
+   * Der Schalter gehoert mit dem Auswerten des Auto-Reconnect-Cookies
+   * zusammen: die Capability ist eine Zusage an den Server, nach einem Abbruch
+   * mit einem ARC_CS_PRIVATE_PACKET zurueckzukommen. Wer sie meldet, ohne den
+   * Cookie zu verarbeiten, verspricht etwas, das er nicht einloest. Der
+   * RdpClient setzt das Flag deshalb selbst, sobald autoReconnect aktiv ist.
+   */
+  autoReconnect?: boolean;
 }
 
 /** Indizes im orderSupport-Feld, die ein handelsueblicher Client meldet. */
@@ -109,18 +119,56 @@ function cap(type: number, body: Buffer): CapabilitySet {
   return { type, data: body };
 }
 
-function generalCapability(): CapabilitySet {
+/**
+ * TS_GENERAL_CAPABILITYSET (MS-RDPBCGR 2.2.7.1.1).
+ *
+ * Hier steckt eine Altlast, und sie ist wichtig genug fuer eine Erklaerung:
+ * der Satz wird seit jeher vier Byte zu lang geschrieben. generalCompressionTypes
+ * und generalCompressionLevel belegen darin je vier Byte, die Spezifikation
+ * sieht fuer beide nur zwei vor. Dadurch rutscht extraFlags von Offset 10 auf
+ * Offset 12 - ein Server, der sich an 2.2.7.1.1 haelt, liest dort eine Null
+ * und sieht folglich *keines* der gemeldeten Flags.
+ *
+ * Diese Fassung zu aendern wuerde den Draht fuer jede bestehende Verbindung
+ * veraendern, und der Client laeuft damit nachweislich. Sie bleibt deshalb der
+ * Normalfall. Nur wer Auto-Reconnect anfordert, bekommt den Satz in der Form
+ * der Spezifikation - sonst laege AUTORECONNECT_SUPPORTED an einer Stelle, an
+ * der der Server niemals nachschaut, und das ganze Verfahren liefe leer.
+ *
+ * Die Laenge generell geradezuruecken waere richtig, gehoert aber nicht in
+ * diese Aenderung: das ist eine eigene Entscheidung, die an einem echten
+ * Server nachzumessen ist.
+ */
+function generalCapability(autoReconnect: boolean): CapabilitySet {
+  const extraFlags =
+    LONG_CREDENTIALS_SUPPORTED |
+    NO_BITMAP_COMPRESSION_HDR |
+    FASTPATH_OUTPUT_SUPPORTED |
+    (autoReconnect ? AUTORECONNECT_SUPPORTED : 0);
+
   const w = writer();
   w.uint16le(1) // osMajorType: Windows
     .uint16le(3) // osMinorType: Windows NT
     .uint16le(0x0200) // protocolVersion
-    .uint16le(0)
-    .uint32le(0) // generalCompressionTypes
-    .uint16le(LONG_CREDENTIALS_SUPPORTED | NO_BITMAP_COMPRESSION_HDR | FASTPATH_OUTPUT_SUPPORTED)
-    .uint16le(0) // updateCapabilityFlag
-    .uint16le(0) // remoteUnshareFlag
-    .uint32le(0) // generalCompressionLevel
-    .uint8(0) // refreshRectSupport
+    .uint16le(0); // pad2octetsA
+
+  if (autoReconnect) {
+    // Wie in 2.2.7.1.1: je zwei Byte. Rumpf 20 Byte, lengthCapability 24.
+    w.uint16le(0) // generalCompressionTypes
+      .uint16le(extraFlags)
+      .uint16le(0) // updateCapabilityFlag
+      .uint16le(0) // remoteUnshareFlag
+      .uint16le(0); // generalCompressionLevel
+  } else {
+    // Die bisherige, vier Byte zu lange Fassung - unveraendert.
+    w.uint32le(0) // generalCompressionTypes
+      .uint16le(extraFlags)
+      .uint16le(0) // updateCapabilityFlag
+      .uint16le(0) // remoteUnshareFlag
+      .uint32le(0); // generalCompressionLevel
+  }
+
+  w.uint8(0) // refreshRectSupport
     .uint8(0); // suppressOutputSupport
   return cap(CAPSTYPE_GENERAL, w.toBuffer());
 }
@@ -310,7 +358,7 @@ export function buildClientCapabilities(
   profile: CapabilityProfile = {},
 ): CapabilitySet[] {
   const caps: CapabilitySet[] = [
-    generalCapability(),
+    generalCapability(profile.autoReconnect === true),
     bitmapCapability(o),
     orderCapability(profile.orders === true),
   ];
