@@ -1115,3 +1115,186 @@ describe('Dynamische virtuelle Kanäle und Graphics Pipeline', () => {
     assert.equal(bestaetigung.readUInt32LE(EGFX_HEADER_SIZE + 4), frameId);
   });
 });
+
+describe('Statische virtuelle Kanäle', () => {
+  let certificate: { cert: string; key: string };
+
+  before(() => {
+    certificate = createTestCertificate();
+  });
+
+  /** Sitzung mit angemeldetem Kanal `cliprdr` - angemeldet, nicht bedient. */
+  async function kanalSitzung(vcChunkSize?: number) {
+    const server = neuerServer({ ...certificate, width: WIDTH, height: HEIGHT, vcChunkSize });
+    const port = await server.listen();
+    const client = neuerClient({
+      host: '127.0.0.1',
+      port,
+      useNla: false,
+      width: WIDTH,
+      height: HEIGHT,
+      extraStaticChannels: ['cliprdr'],
+    });
+    const aktiviert = once(server, 'activated');
+    await client.connect();
+    await aktiviert;
+    return { server, client };
+  }
+
+  test('Der Kanal wird angemeldet und bekommt eine eigene MCS-Kanal-ID', async () => {
+    const { server, client } = await kanalSitzung();
+    const id = server.virtualChannelIds.get('cliprdr');
+    assert.ok(id, 'der Server muss den Kanal im Client Network Data gesehen haben');
+    assert.equal(client.getStaticChannelId('cliprdr'), id);
+    // Der I/O-Kanal bleibt daneben bestehen.
+    assert.equal(client.getStaticChannels().io, client.getDiagnostics().ioChannelId);
+  });
+
+  test('Eine kurze Nachricht kommt ungeteilt beim Server an', async () => {
+    const { server, client } = await kanalSitzung();
+    const empfangen = naechstesEreignis<{ name: string; data: Buffer }>(
+      server,
+      'staticChannelData',
+      (e) => e.name === 'cliprdr',
+    );
+    client.sendVirtualChannel('cliprdr', Buffer.from('Zwischenablage'));
+    const nachricht = await empfangen;
+    assert.equal(nachricht.data.toString(), 'Zwischenablage');
+    assert.equal(server.statischeBloecke.length, 1);
+  });
+
+  test('Eine lange Nachricht wird in Blöcke zerlegt und wieder zusammengesetzt', async () => {
+    const { server, client } = await kanalSitzung();
+    const gross = Buffer.alloc(5000);
+    for (let i = 0; i < gross.length; i++) gross[i] = (i * 3) & 0xff;
+
+    const empfangen = naechstesEreignis<{ data: Buffer }>(
+      server,
+      'staticChannelData',
+      (e) => e.data.length === gross.length,
+    );
+    client.sendVirtualChannel('cliprdr', gross);
+    const nachricht = await empfangen;
+    assert.ok(nachricht.data.equals(gross));
+    // 5000 Byte bei 1600 Byte Nutzlast je Block: vier Blöcke.
+    assert.equal(server.statischeBloecke.length, 4);
+    for (const block of server.statischeBloecke) {
+      assert.ok(block.length <= 1600 + 8, `Block zu groß: ${block.length} Byte`);
+    }
+  });
+
+  test('Die vom Server genannte Chunkgröße wird eingehalten', async () => {
+    // Der Server darf bis 16256 hochgehen; wer stur 1600 sendet, verschenkt
+    // nur Bandbreite - wer die Grenze überschreitet, wird verworfen.
+    const { server, client } = await kanalSitzung(4096);
+    const gross = Buffer.alloc(9000, 0x41);
+    const empfangen = naechstesEreignis<{ data: Buffer }>(
+      server,
+      'staticChannelData',
+      (e) => e.data.length === gross.length,
+    );
+    client.sendVirtualChannel('cliprdr', gross);
+    await empfangen;
+    assert.equal(server.statischeBloecke.length, 3, '9000 Byte passen in drei 4096er-Blöcke');
+    assert.deepEqual(
+      server.statischeBloecke.map((b) => b.length),
+      [4096 + 8, 4096 + 8, 808 + 8],
+    );
+  });
+
+  test('Der Server kann auf demselben Kanal zurückschreiben', async () => {
+    const { server, client } = await kanalSitzung();
+    const gross = Buffer.alloc(4000);
+    for (let i = 0; i < gross.length; i++) gross[i] = (i * 5) & 0xff;
+
+    const empfangen = new Promise<{ name: string; channelId: number; data: Buffer }>((resolve) =>
+      client.on('staticChannelData', resolve),
+    );
+    server.sendStaticChannelData('cliprdr', gross);
+    const nachricht = await empfangen;
+
+    assert.equal(nachricht.name, 'cliprdr');
+    assert.equal(nachricht.channelId, server.virtualChannelIds.get('cliprdr'));
+    assert.ok(nachricht.data.equals(gross), 'die Nachricht muss vollständig zusammengesetzt sein');
+    // Die Byte-Zählung der Diagnose muss davon unberührt weiterlaufen.
+    const gezaehlt = client.getDiagnostics().virtualChannelBytes[nachricht.channelId];
+    assert.ok(gezaehlt >= gross.length, `gezählt wurden nur ${gezaehlt} Byte`);
+  });
+
+  test('Ein unbekannter Kanalname wird abgewiesen', async () => {
+    const { client } = await kanalSitzung();
+    assert.throws(() => client.sendVirtualChannel('rdpsnd', Buffer.from('x')), /Unbekannter/);
+  });
+});
+
+describe('Senden auf dynamischen Kanälen', () => {
+  const KANAL = 'Testkanal';
+
+  /** Sitzung mit einem angenommenen, selbst benannten dynamischen Kanal. */
+  async function offeneSitzung() {
+    const certificate = createTestCertificate();
+    const server = neuerServer({
+      ...certificate,
+      width: WIDTH,
+      height: HEIGHT,
+      dynamicChannels: [KANAL],
+    });
+    const port = await server.listen();
+    const client = neuerClient({
+      host: '127.0.0.1',
+      port,
+      useNla: false,
+      width: WIDTH,
+      height: HEIGHT,
+      announceDynamicChannels: true,
+      acceptDynamicChannels: (name) => name === KANAL,
+    });
+    const eroeffnet = naechstesEreignis<DvcCreateResponse>(
+      server,
+      'dvcCreateResponse',
+      (e) => e.name === KANAL,
+    );
+    await client.connect();
+    const antwort = await eroeffnet;
+    assert.equal(antwort.status, DVC_CREATION_STATUS_OK);
+    return { server, client };
+  }
+
+  test('Eine kurze Nutzlast geht als einzelnes DATA hinaus', async () => {
+    const { server, client } = await offeneSitzung();
+    const empfangen = naechstesEreignis<DvcData>(server, 'dvcData', (e) => e.name === KANAL);
+    client.sendDynamicChannel(KANAL, Buffer.from('kurz'));
+    assert.equal((await empfangen).data.toString(), 'kurz');
+  });
+
+  test('Eine große Nutzlast wird segmentiert und vollständig zusammengesetzt', async () => {
+    // Über 1600 Byte passt nichts mehr in ein einzelnes DVC-PDU; ohne
+    // DATA_FIRST käme beim Server nur der Anfang an.
+    const { server, client } = await offeneSitzung();
+    const gross = Buffer.alloc(6000);
+    for (let i = 0; i < gross.length; i++) gross[i] = (i * 11) & 0xff;
+
+    const empfangen = naechstesEreignis<DvcData>(
+      server,
+      'dvcData',
+      (e) => e.data.length === gross.length,
+    );
+    client.sendDynamicChannel(KANAL, gross);
+    assert.ok((await empfangen).data.equals(gross));
+  });
+
+  test('Der Kanal ist auch über seine ID ansprechbar', async () => {
+    const { server, client } = await offeneSitzung();
+    const id = client.getDynamicChannelId(KANAL);
+    assert.equal(id, server.dynamicChannelIds.get(KANAL));
+
+    const empfangen = naechstesEreignis<DvcData>(server, 'dvcData', () => true);
+    client.sendDynamicChannel(id!, Buffer.from('über die ID'));
+    assert.equal((await empfangen).data.toString(), 'über die ID');
+  });
+
+  test('Ein nicht offener Kanal wird abgewiesen', async () => {
+    const { client } = await offeneSitzung();
+    assert.throws(() => client.sendDynamicChannel('Fremdkanal', Buffer.alloc(1)), /nicht offen/);
+  });
+});

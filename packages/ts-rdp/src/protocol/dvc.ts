@@ -10,6 +10,7 @@
  */
 import { BinaryReader, writer } from '../core/binary.js';
 import { RdpProtocolError } from '../core/errors.js';
+import { CHANNEL_CHUNK_LENGTH } from './virtualChannel.js';
 
 export const DVC_CMD_CREATE = 0x01;
 export const DVC_CMD_DATA_FIRST = 0x02;
@@ -137,4 +138,57 @@ export function buildClose(channelId: number): Buffer {
     .uint8((DVC_CMD_CLOSE << 4) | cbId)
     .bytes(bytes)
     .toBuffer();
+}
+
+/**
+ * DYNVC_DATA_FIRST (MS-RDPEDYC 2.2.3.1): erster Teil einer Nachricht, die
+ * nicht in ein einzelnes PDU passt. `Sp` kodiert die Breite der Gesamtlaenge
+ * genau wie `cbId` die der Kanal-ID.
+ */
+export function buildDataFirst(channelId: number, totalLength: number, data: Buffer): Buffer {
+  const { cbId, bytes } = writeChannelId(channelId);
+  const sp = totalLength <= 0xff ? 0 : totalLength <= 0xffff ? 1 : 2;
+  const w = writer()
+    .uint8((DVC_CMD_DATA_FIRST << 4) | (sp << 2) | cbId)
+    .bytes(bytes);
+  if (sp === 0) w.uint8(totalLength);
+  else if (sp === 1) w.uint16le(totalLength);
+  else w.uint32le(totalLength >>> 0);
+  return w.bytes(data).toBuffer();
+}
+
+/**
+ * Nutzdaten eines dynamischen Kanals in sendefertige DVC-PDUs zerlegen.
+ *
+ * Jedes DVC-PDU reist als Nachricht des statischen Kanals `drdynvc` und darf
+ * dessen Chunkgroesse nicht ueberschreiten - genau dafuer gibt es
+ * DATA_FIRST/DATA. Passt alles in ein PDU, entsteht ein einzelnes DATA ohne
+ * Laengenfeld; sonst traegt das erste PDU die Gesamtlaenge und die folgenden
+ * sind schlichte DATA-Stuecke.
+ *
+ * `maxPduSize` ist die Groesse des *ganzen* PDU einschliesslich Kopf.
+ */
+export function buildDataSegments(
+  channelId: number,
+  data: Buffer,
+  maxPduSize = CHANNEL_CHUNK_LENGTH,
+): Buffer[] {
+  const { bytes } = writeChannelId(channelId);
+  const kopfData = 1 + bytes.length;
+  if (data.length + kopfData <= maxPduSize) return [buildData(channelId, data)];
+
+  // Breite des Gesamtlaengenfelds im ersten PDU.
+  const spBreite = data.length <= 0xff ? 1 : data.length <= 0xffff ? 2 : 4;
+  const kopfFirst = kopfData + spBreite;
+  const platzFirst = maxPduSize - kopfFirst;
+  const platzData = maxPduSize - kopfData;
+  if (platzFirst <= 0 || platzData <= 0) {
+    throw new RdpProtocolError(`DVC: Chunkgroesse ${maxPduSize} ist zu klein fuer einen Kopf`);
+  }
+
+  const teile: Buffer[] = [buildDataFirst(channelId, data.length, data.subarray(0, platzFirst))];
+  for (let offset = platzFirst; offset < data.length; offset += platzData) {
+    teile.push(buildData(channelId, data.subarray(offset, Math.min(offset + platzData, data.length))));
+  }
+  return teile;
 }
