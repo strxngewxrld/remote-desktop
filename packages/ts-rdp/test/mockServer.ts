@@ -22,6 +22,7 @@ import { parseFrame, tpkt, tpktRaw } from '../src/protocol/transport.js';
 import * as dvc from '../src/protocol/dvc.js';
 import { CS_NET } from '../src/protocol/gcc.js';
 import { zgfxWrapUncompressed } from '../src/codec/zgfx.js';
+import { GRAPHICS_CHANNEL_NAME } from '../src/client.js';
 import { buildChannelChunks, ChannelReassembler, parseChannelChunk } from '../src/protocol/virtualChannel.js';
 import {
   buildSaveSessionInfoWithCookie,
@@ -242,16 +243,20 @@ export class MockRdpServer extends EventEmitter {
   }
 
   /**
-   * Schickt Nutzdaten auf einem dynamischen Kanal, ZGFX-verpackt.
+   * Schickt Nutzdaten auf einem dynamischen Kanal.
    *
-   * Die Graphics Pipeline erwartet jede Nachricht in dieser Huelle, deshalb
-   * steckt sie hier drin und nicht im Test: sonst muesste jeder Aufrufer
-   * daran denken.
+   * Die ZGFX-Huelle gehoert **nur** der Graphics Pipeline: MS-RDPEGFX 3.2.5.1
+   * beschreibt sie fuer die Richtung Server -> Client dieses einen Kanals.
+   * Andere dynamische Kanaele tragen ihre Nutzdaten roh - MS-RDPEDISP 2.1 etwa
+   * nennt ueberhaupt keine Huelle. Wer hier pauschal verpackt, baut einen
+   * Server, den es nicht gibt, und der Client bekaeme vor jedem PDU zwei
+   * Bytes Muell.
    */
   sendDynamicChannelData(name: string, payload: Buffer): void {
     const id = this.dynamicChannelIds.get(name);
     if (id === undefined) throw new Error(`Dynamischer Kanal "${name}" ist nicht offen`);
-    this.sendDynvc(dvc.buildData(id, zgfxWrapUncompressed(payload)));
+    const rumpf = name === GRAPHICS_CHANNEL_NAME ? zgfxWrapUncompressed(payload) : payload;
+    this.sendDynvc(dvc.buildData(id, rumpf));
   }
 
   /**

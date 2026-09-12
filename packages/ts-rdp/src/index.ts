@@ -112,8 +112,13 @@ export {
   GRAPHICS_CHANNEL_NAME,
   MOUSE_CURSOR_CHANNEL_NAME,
   CORE_INPUT_CHANNEL_NAME,
+  DISPLAY_CONTROL_CHANNEL_NAME,
   PIPELINE_CHANNEL_NAMES,
 } from './client.js';
+
+// Aufloesungswechsel im laufenden Betrieb (MS-RDPEDISP).
+export * as edisp from './protocol/edisp.js';
+export type { DisplayControlCaps, DisplayControlHeader, MonitorLayout } from './protocol/edisp.js';
 export { toRgba, bytesPerPixel, flipVertical } from './codec/pixel.js';
 
 export { SCANCODES, lookupScancode, SYNC_CAPS_LOCK, SYNC_NUM_LOCK, SYNC_SCROLL_LOCK } from './protocol/keymap.js';
