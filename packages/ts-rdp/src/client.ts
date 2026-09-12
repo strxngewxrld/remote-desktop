@@ -16,8 +16,10 @@ import { CredSspClient } from './crypto/credssp.js';
 import { parseFrame, RdpFrame, RdpTransport, tpkt, tpktRaw } from './protocol/transport.js';
 import {
   buildChannelChunks,
+  CHANNEL_CHUNK_LENGTH,
   ChannelReassembler,
   parseChannelChunk,
+  parseVirtualChannelCapability,
 } from './protocol/virtualChannel.js';
 import * as dvc from './protocol/dvc.js';
 import { ZgfxDecompressor } from './codec/zgfx.js';
@@ -34,7 +36,12 @@ import { buildConnectionRequest, parseConnectionConfirm } from './protocol/x224.
 import * as mcs from './protocol/mcs.js';
 import * as gcc from './protocol/gcc.js';
 import * as pdu from './protocol/pdu.js';
-import { buildClientCapabilities, CapabilityProfile, ServerCapabilities } from './protocol/caps.js';
+import {
+  buildClientCapabilities,
+  CAPSTYPE_VIRTUALCHANNEL,
+  CapabilityProfile,
+  ServerCapabilities,
+} from './protocol/caps.js';
 import { buildClientInfo, evaluateLicense, parseLicensePdu } from './protocol/sec.js';
 import {
   BitmapRectangle,
@@ -161,8 +168,16 @@ export interface RdpClientOptions {
   onUnbekannteKachel?: (info: { codecId: number; width: number; height: number; data: Buffer }) => void;
   /** earlyCapabilityFlags der Client Core Data vollstaendig selbst bestimmen. */
   earlyCapabilityFlags?: number;
-  /** Weitere statische Kanaele anmelden (z.B. rdpdr, rdpsnd, cliprdr). */
-  extraStaticChannels?: string[];
+  /**
+   * Weitere statische Kanaele anmelden (z.B. rdpdr, rdpsnd, cliprdr).
+   *
+   * Ein blosser Name bekommt die ueblichen Optionen
+   * (INITIALIZED | COMPRESS_RDP); wer andere braucht, gibt statt des Namens
+   * eine vollstaendige `ChannelDef` an. Auf so angemeldeten Kanaelen laesst
+   * sich mit `sendVirtualChannel()` senden, Eingehendes kommt als
+   * `staticChannelData`.
+   */
+  extraStaticChannels?: Array<string | gcc.ChannelDef>;
   logLevel?: LogLevel;
   logSink?: LogSink;
   connectTimeout?: number;
@@ -215,6 +230,11 @@ export interface RdpClientEvents {
   pointerHidden: () => void;
   /** Nutzdaten eines dynamischen virtuellen Kanals. */
   dynamicChannelData: (payload: { channelId: number; name: string; data: Buffer }) => void;
+  /**
+   * Vollstaendig zusammengesetzte Nachricht eines statischen virtuellen
+   * Kanals (z.B. cliprdr). Der Kanalkopf ist bereits entfernt.
+   */
+  staticChannelData: (payload: { channelId: number; name: string; data: Buffer }) => void;
   /** Entpackte Nachricht der Graphics Pipeline (ZGFX bereits entfernt). */
   graphicsData: (data: Buffer) => void;
   pointerPosition: (pos: { x: number; y: number }) => void;
@@ -307,6 +327,8 @@ export class RdpClient extends EventEmitter {
   private readonly virtualChannelBytes = new Map<number, number>();
   /** MCS-Kanal-ID von drdynvc, sofern angemeldet. */
   private dynvcChannelId?: number;
+  /** Zusammensetzer je statischem Kanal - der Server darf ebenfalls aufteilen. */
+  private readonly statischeZusammensetzer = new Map<number, ChannelReassembler>();
   private readonly dynvcReassembler = new ChannelReassembler();
   /** Offene dynamische Kanaele: DVC-Kanal-ID -> Name. */
   private readonly dynamicChannels = new Map<number, string>();
@@ -433,6 +455,7 @@ export class RdpClient extends EventEmitter {
     this.userId = 0;
     this.shareId = 0;
     this.channelIds.clear();
+    this.statischeZusammensetzer.clear();
     this.selectedProtocol = PROTOCOL_RDP;
     this.palette = undefined;
     this.pointerCache.clear();
@@ -521,11 +544,15 @@ export class RdpClient extends EventEmitter {
     // Zusaetzliche statische Kanaele werden nur angemeldet, nicht bedient - ein
     // echter Client meldet vier Stueck an, und ob der Server daraus etwas
     // ableitet, laesst sich nur messen.
-    for (const name of this.opts.extraStaticChannels ?? []) {
-      channels.push({
-        name,
-        options: gcc.CHANNEL_OPTION_INITIALIZED | gcc.CHANNEL_OPTION_COMPRESS_RDP,
-      });
+    for (const eintrag of this.opts.extraStaticChannels ?? []) {
+      channels.push(
+        typeof eintrag === 'string'
+          ? {
+              name: eintrag,
+              options: gcc.CHANNEL_OPTION_INITIALIZED | gcc.CHANNEL_OPTION_COMPRESS_RDP,
+            }
+          : eintrag,
+      );
     }
     if (this.opts.announceDynamicChannels || this.opts.enableGraphicsPipeline) {
       channels.push({
@@ -789,12 +816,7 @@ export class RdpClient extends EventEmitter {
       const bisher = this.virtualChannelBytes.get(indication.channelId) ?? 0;
       this.virtualChannelBytes.set(indication.channelId, bisher + data.length);
       if (indication.channelId === this.dynvcChannelId) this.handleDynvc(data);
-      else {
-        this.log.debug(
-          `Daten auf virtuellem Kanal ${indication.channelId}: ${data.length} Byte ` +
-            `(${data.subarray(0, 16).toString('hex')})`,
-        );
-      }
+      else this.handleStatischenKanal(indication.channelId, data);
       return;
     }
     if (!pdu.looksLikeShareControl(data)) {
@@ -830,6 +852,39 @@ export class RdpClient extends EventEmitter {
       default:
         this.log.debug(`Unbehandelter Share-Control-PDU-Typ ${header.pduType}`);
     }
+  }
+
+  /**
+   * Bloecke eines statischen virtuellen Kanals zusammensetzen und die fertige
+   * Nachricht melden. Die Byte-Zaehlung fuer `getDiagnostics()` ist davon
+   * unabhaengig und laeuft bereits im Aufrufer.
+   */
+  private handleStatischenKanal(channelId: number, payload: Buffer): void {
+    const name = this.kanalName(channelId);
+    let zusammensetzer = this.statischeZusammensetzer.get(channelId);
+    if (!zusammensetzer) {
+      zusammensetzer = new ChannelReassembler();
+      this.statischeZusammensetzer.set(channelId, zusammensetzer);
+    }
+    try {
+      const vollstaendig = zusammensetzer.push(parseChannelChunk(payload));
+      if (!vollstaendig) return;
+      this.log.debug(`Kanal "${name}": Nachricht ueber ${vollstaendig.length} Byte vollstaendig`);
+      this.emit('staticChannelData', { channelId, name, data: vollstaendig });
+    } catch (err) {
+      // Ein kaputter Block darf die Sitzung nicht beenden - der Kanal faengt
+      // beim naechsten FIRST-Block ohnehin von vorne an.
+      this.statischeZusammensetzer.delete(channelId);
+      this.log.warn(`Kanal "${name}": Block nicht verwertbar - ${(err as Error).message}`);
+    }
+  }
+
+  /** Name eines statischen Kanals, sonst die ID als Zeichenkette. */
+  private kanalName(channelId: number): string {
+    for (const [name, id] of this.channelIds) {
+      if (id === channelId && name !== 'io') return name;
+    }
+    return String(channelId);
   }
 
   /** Bloecke des Kanals drdynvc zu DVC-Nachrichten zusammensetzen. */
@@ -945,7 +1000,7 @@ export class RdpClient extends EventEmitter {
       // RDPGFX_HEADER liest - die Laenge stimmt dann nicht mehr, sein
       // Grafik-Subsystem laeuft mit ERROR_BUFFER_OVERFLOW auf und reisst die
       // ganze Sitzung mit (beim Client kommt ERRINFO_GRAPHICSSUBSYSTEMFAILED an).
-      send: (pdu) => this.sendDynvc(dvc.buildData(channelId, pdu)),
+      send: (pdu) => this.sendDynamicChannel(channelId, pdu),
       onBitmap: (tiles) => {
         if (this.bitmapCount === 0) {
           this.log.info(`Erste Bilddaten empfangen (Graphics Pipeline, ${tiles.length} Kacheln)`);
@@ -1015,7 +1070,32 @@ export class RdpClient extends EventEmitter {
   private sendDynvc(data: Buffer): void {
     if (this.dynvcChannelId === undefined) return;
     this.log.debug(`DVC gesendet: ${data.length} Byte (${data.subarray(0, 24).toString('hex')})`);
-    for (const chunk of buildChannelChunks(data)) this.sendMcs(this.dynvcChannelId, chunk);
+    for (const chunk of buildChannelChunks(data, this.chunkGroesse())) {
+      this.sendMcs(this.dynvcChannelId, chunk);
+    }
+  }
+
+  /**
+   * Vom Server vorgegebene Chunkgroesse fuer statische virtuelle Kanaele.
+   *
+   * Sie steht im TS_VIRTUALCHANNEL_CAPABILITYSET des Demand Active PDU
+   * (MS-RDPBCGR 2.2.7.1.10). Nur die Richtung Server -> Client zaehlt: das
+   * Feld im Confirm Active ignoriert der Server. Fehlt der Satz oder das Feld,
+   * bleibt es bei CHANNEL_CHUNK_LENGTH (1600).
+   */
+  private chunkGroesse(): number {
+    const rumpf = this.serverCapabilities?.raw.get(CAPSTYPE_VIRTUALCHANNEL);
+    if (!rumpf) return CHANNEL_CHUNK_LENGTH;
+    return parseVirtualChannelCapability(rumpf).chunkSize;
+  }
+
+  /**
+   * Groesse, die ein einzelnes DVC-PDU nicht ueberschreiten darf: ein Chunk
+   * abzueglich des 8 Byte langen CHANNEL_PDU_HEADER. Groesseres muesste ueber
+   * zwei Chunks laufen, was MS-RDPEDYC gerade durch DATA_FIRST vermeidet.
+   */
+  private dvcPduGroesse(): number {
+    return this.chunkGroesse() - 8;
   }
 
   private handleDataPdu(r: BinaryReader): void {
@@ -1303,6 +1383,76 @@ export class RdpClient extends EventEmitter {
         bottom: this.opts.height - 1,
       }),
     );
+  }
+
+  // ------------------------------------------------- Virtuelle Kanaele
+
+  /**
+   * MCS-Kanal-ID eines angemeldeten statischen Kanals (z.B. `cliprdr`),
+   * oder `undefined`, wenn der Server ihn nicht eroeffnet hat.
+   */
+  getStaticChannelId(name: string): number | undefined {
+    return this.channelIds.get(name);
+  }
+
+  /** Alle statischen Kanaele der laufenden Sitzung: Name -> MCS-Kanal-ID. */
+  getStaticChannels(): Record<string, number> {
+    return Object.fromEntries(this.channelIds);
+  }
+
+  /**
+   * Nutzdaten auf einem statischen virtuellen Kanal senden.
+   *
+   * Die Nachricht wird in Bloecke der ausgehandelten Chunkgroesse zerlegt;
+   * jeder Block traegt den CHANNEL_PDU_HEADER mit der Gesamtlaenge der
+   * *unzerteilten* Nachricht sowie CHANNEL_FLAG_FIRST/LAST (MS-RDPBCGR
+   * 2.2.6.1). Der Kanal ist entweder ueber seinen Namen aus
+   * `extraStaticChannels` oder ueber seine MCS-Kanal-ID zu benennen.
+   */
+  sendVirtualChannel(channel: string | number, data: Buffer): void {
+    if (this.phase !== 'active') {
+      throw new RdpError(`Kanal "${channel}": Senden ist nur in einer aktiven Sitzung moeglich`);
+    }
+    const channelId = typeof channel === 'number' ? channel : this.channelIds.get(channel);
+    if (channelId === undefined) {
+      throw new RdpError(
+        `Unbekannter virtueller Kanal "${channel}" - angemeldet sind: ` +
+          `${[...this.channelIds.keys()].join(', ') || '(keine)'}`,
+      );
+    }
+    const chunkGroesse = this.chunkGroesse();
+    const bloecke = buildChannelChunks(data, chunkGroesse);
+    this.log.debug(
+      `Kanal ${channelId}: ${data.length} Byte in ${bloecke.length} Block/Bloecken ` +
+        `zu je hoechstens ${chunkGroesse} Byte`,
+    );
+    for (const block of bloecke) this.sendMcs(channelId, block);
+  }
+
+  /** DVC-Kanal-ID eines offenen dynamischen Kanals, sonst `undefined`. */
+  getDynamicChannelId(name: string): number | undefined {
+    for (const [id, offener] of this.dynamicChannels) if (offener === name) return id;
+    return undefined;
+  }
+
+  /**
+   * Nutzdaten auf einem offenen dynamischen Kanal senden (MS-RDPEDYC 2.2.3).
+   *
+   * Grosse Nutzlasten werden in DATA_FIRST/DATA zerlegt, sodass jedes PDU in
+   * einen Chunk des statischen Kanals `drdynvc` passt. Der Kanal ist ueber
+   * seinen Namen oder seine DVC-Kanal-ID zu benennen.
+   */
+  sendDynamicChannel(channel: string | number, data: Buffer): void {
+    const channelId = typeof channel === 'number' ? channel : this.getDynamicChannelId(channel);
+    if (channelId === undefined) {
+      throw new RdpError(`Dynamischer Kanal "${channel}" ist nicht offen`);
+    }
+    if (this.dynvcChannelId === undefined) {
+      throw new RdpError('Der Kanal drdynvc ist nicht angemeldet');
+    }
+    for (const pduTeil of dvc.buildDataSegments(channelId, data, this.dvcPduGroesse())) {
+      this.sendDynvc(pduTeil);
+    }
   }
 
   // ---------------------------------------------------------------- Intern

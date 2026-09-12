@@ -82,3 +82,41 @@ export class ChannelReassembler {
     return vollstaendig;
   }
 }
+
+/**
+ * CHANNEL_CHUNK_LENGTH (MS-RDPBCGR 2.2.7.1.10): die Groesse, die ohne jede
+ * Aushandlung gilt. Gleichbedeutend mit `DEFAULT_CHUNK_SIZE`.
+ */
+export const CHANNEL_CHUNK_LENGTH = DEFAULT_CHUNK_SIZE;
+
+/**
+ * Obergrenze fuer `VCChunkSize`. Groesseres darf der Server nicht vorgeben;
+ * wer es trotzdem tut, bekommt Bloecke in dieser Groesse.
+ */
+export const MAX_CHUNK_SIZE = 16256;
+
+/**
+ * Bringt eine vom Server genannte Chunkgroesse in den zulaessigen Bereich.
+ *
+ * Der Server darf zwischen CHANNEL_CHUNK_LENGTH und 16256 waehlen. Fehlt die
+ * Angabe oder ist sie unsinnig, bleibt es bei 1600 - zu grosse Bloecke wuerde
+ * der Server verwerfen, zu kleine kosten nur Bandbreite.
+ */
+export function begrenzeChunkGroesse(wert?: number): number {
+  if (wert === undefined || !Number.isFinite(wert) || wert < CHANNEL_CHUNK_LENGTH) {
+    return CHANNEL_CHUNK_LENGTH;
+  }
+  return Math.min(Math.floor(wert), MAX_CHUNK_SIZE);
+}
+
+/**
+ * Rumpf des TS_VIRTUALCHANNEL_CAPABILITYSET (ohne die vier Byte Kopf) lesen.
+ *
+ * `VCChunkSize` ist optional: laesst der Server das Feld weg, ist der Satz nur
+ * vier Byte lang und es bleibt bei CHANNEL_CHUNK_LENGTH.
+ */
+export function parseVirtualChannelCapability(body: Buffer): { flags: number; chunkSize: number } {
+  const flags = body.length >= 4 ? body.readUInt32LE(0) : 0;
+  const chunkSize = begrenzeChunkGroesse(body.length >= 8 ? body.readUInt32LE(4) : undefined);
+  return { flags, chunkSize };
+}
