@@ -960,6 +960,25 @@ export class ProgressiveDecoder {
   }
 
   /**
+   * Wie viele Kachelzustaende liegen gerade im Speicher - insgesamt oder fuer
+   * eine Flaeche? Nur zur Fehlersuche und fuer Tests.
+   *
+   * Diese Zahl ist die Antwort auf die Frage nach dem Speicherverbrauch. Sie
+   * kann hoechstens so gross werden, wie die Flaeche Kachelplaetze hat
+   * (Breite/64 mal Hoehe/64 - bei 1920x1080 also 510), denn der Schluessel ist
+   * die Kachelposition. Die Zahl der Kodierkontexte geht *nicht* ein: wir
+   * legen je Kontext nichts an. Genau das muss so bleiben - ein Server, der wie
+   * der aus logs/dump.txt 329 Kontexte je Minute oeffnet und schliesst, wuerde
+   * jede kontextgebundene Struktur volllaufen lassen.
+   */
+  gemerkteKacheln(surfaceId?: number): number {
+    if (surfaceId !== undefined) return this.flaechen.get(surfaceId)?.size ?? 0;
+    let n = 0;
+    for (const f of this.flaechen.values()) n += f.size;
+    return n;
+  }
+
+  /**
    * Verarbeitet eine Nachricht und liefert die darin fertig gewordenen Kacheln.
    *
    * "Fertig geworden" heisst: jede Kachel, die in dieser Nachricht Daten
