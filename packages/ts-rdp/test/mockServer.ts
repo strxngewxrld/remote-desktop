@@ -24,12 +24,17 @@ import { CS_NET } from '../src/protocol/gcc.js';
 import { zgfxWrapUncompressed } from '../src/codec/zgfx.js';
 import { buildChannelChunks, ChannelReassembler, parseChannelChunk } from '../src/protocol/virtualChannel.js';
 import {
+  buildSaveSessionInfoWithCookie,
+  ServerAutoReconnectPacket,
+} from '../src/protocol/autoReconnect.js';
+import {
   FASTPATH_UPDATETYPE_BITMAP,
   MCS_GLOBAL_CHANNEL,
   PDUTYPE_DATAPDU,
   PDUTYPE_DEACTIVATEALLPDU,
   PDUTYPE_DEMANDACTIVEPDU,
   PDUTYPE2_FONTMAP,
+  PDUTYPE2_SAVE_SESSION_INFO,
   SEC_LICENSE_PKT,
   TYPE_RDP_NEG_RSP,
 } from '../src/protocol/constants.js';
@@ -196,6 +201,40 @@ export class MockRdpServer extends EventEmitter {
     } else {
       this.write(Buffer.concat([Buffer.from([0x00, total]), body]));
     }
+  }
+
+  /**
+   * Schickt ein Save Session Info PDU mit Auto-Reconnect-Cookie
+   * (MS-RDPBCGR 2.2.10.1) - genau das, was Windows tut, sobald der Benutzer
+   * angemeldet ist.
+   */
+  sendSaveSessionInfo(cookie: ServerAutoReconnectPacket): void {
+    this.sendSlowpath(
+      pdu.writeShareControlHeader(
+        PDUTYPE_DATAPDU,
+        0x03ea,
+        pdu.writeShareDataHeader(
+          0x000103ea,
+          PDUTYPE2_SAVE_SESSION_INFO,
+          buildSaveSessionInfoWithCookie(cookie),
+        ),
+      ),
+    );
+  }
+
+  /**
+   * Reisst die laufende Verbindung ab, bleibt aber auf dem Port erreichbar -
+   * so wie eine Netzstoerung, nach der der Server noch da ist.
+   */
+  trenneVerbindung(): void {
+    this.socket?.destroy();
+    this.socket = undefined;
+  }
+
+  /** Nimmt keine weiteren Verbindungen mehr an, ohne den Port freizugeben. */
+  verweigereVerbindungen(): void {
+    this.server.close();
+    this.trenneVerbindung();
   }
 
   sendSlowpath(payload: Buffer): void {
