@@ -81,4 +81,14 @@ export class ChannelReassembler {
     this.teile = [];
     return vollstaendig;
   }
+
+  /**
+   * Verwirft eine angefangene Nachricht. Noetig, wenn die Verbindung unter der
+   * Reassemblierung weggebrochen ist: die Bruchstuecke der alten Verbindung
+   * wuerden sonst der ersten Nachricht der neuen vorangestellt.
+   */
+  reset(): void {
+    this.teile = [];
+    this.erwartet = 0;
+  }
 }

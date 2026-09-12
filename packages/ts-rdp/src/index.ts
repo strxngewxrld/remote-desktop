@@ -20,7 +20,12 @@ export {
 } from './protocol/tlsProfiles.js';
 export type { TlsProfile } from './protocol/tlsProfiles.js';
 export type { CertificateInfo, ProbeOptions } from './probe.js';
-export type { RdpClientOptions, RdpClientEvents, RdpDiagnostics } from './client.js';
+export type {
+  RdpClientOptions,
+  RdpClientEvents,
+  RdpDiagnostics,
+  AutoReconnectOptions,
+} from './client.js';
 export { buildClientCapabilities } from './protocol/caps.js';
 export type { CapabilityProfile } from './protocol/caps.js';
 
@@ -28,6 +33,34 @@ export { RdpError, RdpProtocolError, RdpAuthError, ERROR_INFO_CODES, NEG_FAILURE
 export { createLogger, nullLogger } from './core/log.js';
 export type { Logger, LogLevel, LogSink } from './core/log.js';
 export { BinaryReader, BinaryWriter } from './core/binary.js';
+export { backoffWartezeit, STANDARD_BACKOFF } from './core/backoff.js';
+export type { BackoffOptions } from './core/backoff.js';
+
+export {
+  AUTO_RECONNECT_VERSION_1,
+  ARC_PACKET_LENGTH,
+  ENHANCED_SECURITY_CLIENT_RANDOM,
+  INFOTYPE_LOGON,
+  INFOTYPE_LOGON_LONG,
+  INFOTYPE_LOGON_PLAINNOTIFY,
+  INFOTYPE_LOGON_EXTENDED_INFO,
+  LOGON_EX_AUTORECONNECTCOOKIE,
+  LOGON_EX_LOGONERRORS,
+  SITZUNG_ENDGUELTIG_BEENDET,
+  buildServerAutoReconnectPacket,
+  parseServerAutoReconnectPacket,
+  buildClientAutoReconnectPacket,
+  parseClientAutoReconnectPacket,
+  computeSecurityVerifier,
+  buildAutoReconnectCookie,
+  parseSaveSessionInfo,
+  buildSaveSessionInfoWithCookie,
+} from './protocol/autoReconnect.js';
+export type {
+  ServerAutoReconnectPacket,
+  ClientAutoReconnectPacket,
+  SaveSessionInfo,
+} from './protocol/autoReconnect.js';
 
 export type { DecodedBitmap, BitmapRectangle, PointerImage } from './protocol/updates.js';
 export {
