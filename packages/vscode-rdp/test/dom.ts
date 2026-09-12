@@ -23,6 +23,8 @@ export interface WebviewUmgebung {
   /** Was auf die Zeichenflaeche gemalt wurde. */
   readonly gezeichnet: GezeichneteKachel[];
   readonly canvas: { width: number; height: number; style: Record<string, string> };
+  /** Das Diagnose-Overlay, so wie es im Webview aussaehe. */
+  readonly diagnose: { sichtbar: boolean; titel: string; text: string };
 }
 
 class ElementStub {
@@ -101,7 +103,13 @@ export function starteWebview(skript: string): WebviewUmgebung {
     ['overlay-action', new ElementStub()],
     ['spinner', new ElementStub()],
     ['hint', new ElementStub()],
+    ['diagnose', new ElementStub()],
+    ['diagnose-titel', new ElementStub()],
+    ['diagnose-werte', new ElementStub()],
   ]);
+
+  // Wie im HTML: das Overlay startet ausgeblendet.
+  elemente.get('diagnose')!.hidden = true;
 
   class ImageDataStub {
     constructor(
@@ -164,5 +172,12 @@ export function starteWebview(skript: string): WebviewUmgebung {
     gesendet,
     gezeichnet,
     canvas: canvas as unknown as WebviewUmgebung['canvas'],
+    get diagnose() {
+      return {
+        sichtbar: !elemente.get('diagnose')!.hidden,
+        titel: elemente.get('diagnose-titel')!.textContent,
+        text: elemente.get('diagnose-werte')!.textContent,
+      };
+    },
   };
 }
