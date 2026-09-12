@@ -1320,13 +1320,12 @@ export class RdpClient extends EventEmitter {
       return;
     }
 
-    // Der EGFX-Kopf ist cmdId (2), flags (2), pduLength (4).
-    if (dekomprimiert.length >= 8) {
-      this.log.debug(
-        `Graphics Pipeline: cmdId 0x${dekomprimiert.readUInt16LE(0).toString(16)}, ` +
-          `${dekomprimiert.length} Byte entpackt`,
-      );
-    }
+    // Bewusst nur die Puffergroesse: ein entpackter Puffer enthaelt fast immer
+    // mehrere EGFX-Befehle hintereinander. Frueher stand hier die cmdId des
+    // ersten - das las sich wie eine Haeufigkeitsverteilung, war aber keine,
+    // weil ENDFRAME und MAPSURFACETOOUTPUT nie an erster Stelle stehen. Jeden
+    // einzelnen Befehl meldet jetzt EgfxSession.protokolliere().
+    this.log.debug(`Graphics Pipeline: ${dekomprimiert.length} Byte entpackt`);
     this.graphicsBytes += dekomprimiert.length;
     this.emit('graphicsData', dekomprimiert);
 

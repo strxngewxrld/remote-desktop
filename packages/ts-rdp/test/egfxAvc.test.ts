@@ -17,6 +17,7 @@ function stilleProtokollierung(): Logger & { warnungen: string[] } {
   const log = {
     warnungen,
     debug: () => {},
+    trace: () => {},
     info: () => {},
     warn: (m: string) => warnungen.push(m),
     error: () => {},
