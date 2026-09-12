@@ -107,6 +107,8 @@ export { ClearCodecDecoder } from './codec/clear.js';
 export { ProgressiveDecoder } from './codec/progressive.js';
 export type { ProgressiveTile } from './codec/progressive.js';
 export type { Avc420Stream, Avc444Stream, AvcRegion, AvcRect } from './codec/avcMeta.js';
+export { analysiereBitstrom, codecStringAusSps, avcZeichenbereiche } from './codec/avcFrame.js';
+export type { AvcBitstromAnalyse, AvcZeichenbereich, AvcSurfaceLage } from './codec/avcFrame.js';
 export type { EgfxSessionOptions } from './protocol/egfxSession.js';
 export {
   GRAPHICS_CHANNEL_NAME,
