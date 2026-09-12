@@ -24,8 +24,10 @@ import {
   SYNC_SCROLL_LOCK,
   lookupScancode,
   probeServerCertificate,
+  AVC420_EGFX_CAPS,
+  avcZeichenbereiche,
 } from 'ts-rdp';
-import type { RdpDiagnostics } from 'ts-rdp';
+import type { RdpDiagnostics, EgfxVideoFrame } from 'ts-rdp';
 import { RdpConnection, secretKey } from './connections.js';
 import { BandbreitenProfilName, berechnePerformanceFlags, istProfilName } from './bandbreite.js';
 import { CertificateTrustStore, TrustPolicy } from './trust.js';
@@ -258,6 +260,8 @@ export class RdpSession {
   private anWebviewBytes = 0;
   private anWebviewKacheln = 0;
   private letztesBild = 0;
+  /** Vor H.264 in YUV444 wird nur einmal gewarnt, nicht bei jedem Teilbild. */
+  private avc444Gemeldet = false;
   private verbundenSeit = 0;
   private rttMs?: number;
   private rttSeq = 0;
@@ -456,6 +460,11 @@ export class RdpSession {
         return;
       }
 
+      const avc420An = config.get<boolean>('graphics.avc420', false);
+      if (avc420An) {
+        this.log('H.264/AVC420 ist eingeschaltet - der Capabilityssatz meldet AVC420_ENABLED an.');
+      }
+
       const client = new RdpClient({
         host,
         port,
@@ -470,6 +479,11 @@ export class RdpSession {
         ),
         clientName: 'VS Code',
         enableGraphicsPipeline: config.get<boolean>('graphicsPipeline', true),
+        // H.264 nur auf ausdrueckliche Ansage. Ohne die Einstellung wird der
+        // Capabilityssatz gar nicht erst uebergeben, der Server bekommt also
+        // dasselbe Angebot wie bisher und schickt weiterhin ClearCodec,
+        // RemoteFX Progressive und Planar.
+        ...(avc420An ? { graphicsCapsSets: AVC420_EGFX_CAPS, avcFrames: true } : {}),
         connectTimeout: config.get<number>('connectTimeout', 15000),
         performanceFlags: this.performanceFlags(config),
         logLevel: config.get<any>('logLevel', 'info'),
@@ -594,6 +608,8 @@ export class RdpSession {
     });
 
     client.on('bitmap', (tiles: DecodedBitmap[]) => this.sendTiles(tiles));
+
+    client.on('avcFrame', (frame: EgfxVideoFrame) => this.sendVideo(frame));
 
     client.on('pointer', (pointer: PointerImage | null) => {
       if (!pointer) {
@@ -804,6 +820,58 @@ export class RdpSession {
     }
 
     this.post({ type: 'bitmap', rects, data: this.encode(Buffer.concat(buffers, offset)) });
+  }
+
+  /**
+   * Reicht ein H.264-Teilbild an das Webview weiter.
+   *
+   * Dekodiert wird drueben: der Renderer laeuft in Chromium und hat mit
+   * WebCodecs einen hardwarebeschleunigten Decoder, der Extension-Host hat
+   * keinen. Hier entsteht nur die Nachricht - Bitstream, die schon
+   * ausgerechneten Zeichenbereiche und die beiden Angaben, die der Decoder
+   * zum Konfigurieren braucht.
+   */
+  private sendVideo(frame: EgfxVideoFrame): void {
+    // AVC444 kommt hier nicht an, solange der Capabilityssatz unter Version 10
+    // bleibt. Sollte ein Server es trotzdem schicken, ist Wegwerfen ehrlicher
+    // als ein halb zusammengesetztes Bild: die Ebenenzuordnung ist nicht
+    // gebaut.
+    if (frame.codecId !== 0x000b) {
+      if (!this.avc444Gemeldet) {
+        this.avc444Gemeldet = true;
+        this.log(
+          `H.264 in YUV444 (Codec 0x${frame.codecId.toString(16)}) wird nicht dekodiert - ` +
+            'diese Bildbereiche bleiben leer.',
+        );
+      }
+      return;
+    }
+    if (!frame.yuv420 || !frame.analyse) return;
+
+    // Nicht abgebildete Surfaces liefern nichts auf den Bildschirm - der
+    // Bitstream muss aber trotzdem durch den Decoder, sonst fehlt spaeteren
+    // Folgebildern ihr Bezugsbild. Deshalb leere Bereichsliste statt Abbruch.
+    const bereiche = frame.abgebildet ? avcZeichenbereiche(frame.yuv420.regions, frame.surface) : [];
+
+    const bytes = Buffer.from(
+      frame.yuv420.bitstream.buffer,
+      frame.yuv420.bitstream.byteOffset,
+      frame.yuv420.bitstream.byteLength,
+    );
+    if (this.diagnoseSichtbar) {
+      this.anWebviewBytes += bytes.length;
+      this.letztesBild = Date.now();
+    }
+
+    this.post({
+      type: 'video',
+      codecString: frame.analyse.codecString,
+      schluesselbild: frame.analyse.schluesselbild,
+      hatParametersaetze: frame.analyse.hatParametersaetze,
+      bereiche,
+      data: this.encode(bytes),
+      laenge: bytes.length,
+    });
   }
 
   private encode(buffer: Buffer): Uint8Array | string {
