@@ -173,3 +173,106 @@ body.vscode-high-contrast-light #diagnose {
   color: var(--vscode-descriptionForeground, inherit);
   font-weight: 600;
 }
+
+/*
+ * Rueckfallfeld der Zwischenablage.
+ *
+ * Sitzt unten rechts ueber der Zeichenflaeche und ist nur sichtbar, wenn es
+ * gebraucht wird. Anders als das Diagnose-Overlay faengt es Mausereignisse
+ * ab - es ist ja zum Hineinschreiben da. Farben ausschliesslich aus den
+ * Theme-Variablen, damit es in Hell, Dunkel und Kontrastreich lesbar bleibt.
+ */
+#clipboard-panel {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: min(32rem, calc(100% - 1.5rem));
+  padding: 0.6rem;
+  border: 1px solid var(--vscode-contrastBorder, var(--vscode-editorWidget-border, transparent));
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background, #1e1e1e);
+  color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+}
+
+#clipboard-panel[hidden] {
+  display: none;
+}
+
+.clipboard-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+#clipboard-text {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 6rem;
+  max-height: 40vh;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 2px;
+  background: var(--vscode-input-background, #3c3c3c);
+  color: var(--vscode-input-foreground, inherit);
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-size: 0.85em;
+  resize: vertical;
+}
+
+#clipboard-text:focus {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -1px;
+}
+
+.clipboard-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+#clipboard-panel button {
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 2px;
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+  font-family: inherit;
+  font-size: 0.9em;
+  cursor: pointer;
+}
+
+#clipboard-panel button:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+#clipboard-panel button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#clipboard-close,
+#clipboard-copy {
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #fff);
+}
+
+#clipboard-close:hover:not(:disabled),
+#clipboard-copy:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+#clipboard-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--vscode-descriptionForeground, inherit);
+  font-size: 0.85em;
+}
