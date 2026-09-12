@@ -39,6 +39,13 @@ export function renderWebview(webview: vscode.Webview, extensionUri: vscode.Uri,
     Tastatur aktiv · Strg+Alt+Ende sendet Strg+Alt+Entf
   </div>
 
+  <!-- Diagnose-Overlay: liegt ueber der Zeichenflaeche, faengt aber nichts ab
+       (pointer-events: none) und bleibt fuer Vorlesewerkzeuge unsichtbar. -->
+  <div id="diagnose" hidden aria-hidden="true">
+    <div id="diagnose-titel"></div>
+    <div id="diagnose-werte"></div>
+  </div>
+
   <script nonce="${n}" src="${script}"></script>
 </body>
 </html>`;

@@ -128,3 +128,48 @@ canvas.focused {
 #hint.show {
   opacity: 1;
 }
+
+/* ------------------------------------------------------------- Diagnose */
+
+/*
+ * Das Overlay liegt ueber der Sitzung und darf sie in keiner Weise behindern:
+ * keine Mausereignisse, keine Textauswahl, keine Tastaturfalle. Die Farben
+ * kommen ausschliesslich aus den Theme-Variablen von VS Code, damit es in
+ * Hell, Dunkel und Kontrastreich lesbar bleibt.
+ */
+#diagnose {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 5;
+  max-width: 22rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--vscode-contrastBorder, var(--vscode-editorWidget-border, transparent));
+  border-radius: 3px;
+  background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.9));
+  color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  opacity: 0.82;
+  pointer-events: none;
+  user-select: none;
+  white-space: pre;
+  overflow: hidden;
+}
+
+/* Im kontrastreichen Thema ist Durchscheinen keine Hilfe, sondern ein Mangel. */
+body.vscode-high-contrast #diagnose,
+body.vscode-high-contrast-light #diagnose {
+  opacity: 1;
+}
+
+#diagnose[hidden] {
+  display: none;
+}
+
+#diagnose-titel {
+  margin-bottom: 0.2rem;
+  color: var(--vscode-descriptionForeground, inherit);
+  font-weight: 600;
+}
