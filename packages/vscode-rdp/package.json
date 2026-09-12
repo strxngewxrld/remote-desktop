@@ -42,7 +42,7 @@
     "viewsWelcome": [
       {
         "view": "rdpConnections",
-        "contents": "Noch keine Verbindung gespeichert.\n[Verbindung hinzufügen](command:rdp.addConnection)\n[Einmalig verbinden](command:rdp.connect)"
+        "contents": "Noch keine Verbindung gespeichert.\n[Verbindung hinzufügen](command:rdp.addConnection)\n[.rdp-Datei importieren](command:rdp.importRdpFile)\n[Einmalig verbinden](command:rdp.connect)"
       }
     ],
     "commands": [
@@ -75,6 +75,66 @@
         "command": "rdp.refreshConnections",
         "title": "RDP: Liste aktualisieren",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "rdp.addFolder",
+        "title": "RDP: Ordner hinzufügen",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "rdp.renameFolder",
+        "title": "RDP: Ordner umbenennen",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "rdp.deleteFolder",
+        "title": "RDP: Ordner löschen",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "rdp.editFolderSettings",
+        "title": "RDP: Vererbte Einstellungen des Ordners…",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "rdp.moveToFolder",
+        "title": "RDP: In Ordner verschieben",
+        "icon": "$(move)"
+      },
+      {
+        "command": "rdp.editTags",
+        "title": "RDP: Tags bearbeiten",
+        "icon": "$(tag)"
+      },
+      {
+        "command": "rdp.searchConnections",
+        "title": "RDP: Verbindung suchen (Name, Host, Tag)",
+        "icon": "$(search)"
+      },
+      {
+        "command": "rdp.filterConnections",
+        "title": "RDP: Baumansicht filtern",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "rdp.clearConnectionFilter",
+        "title": "RDP: Filter der Baumansicht aufheben",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "rdp.setBandwidthProfile",
+        "title": "RDP: Bandbreitenprofil setzen",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "rdp.importRdpFile",
+        "title": "RDP: .rdp-Datei importieren",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "rdp.exportRdpFile",
+        "title": "RDP: Als .rdp-Datei exportieren",
+        "icon": "$(cloud-upload)"
       },
       {
         "command": "rdp.disconnect",
@@ -112,6 +172,26 @@
           "command": "rdp.refreshConnections",
           "when": "view == rdpConnections",
           "group": "navigation@2"
+        },
+        {
+          "command": "rdp.addFolder",
+          "when": "view == rdpConnections",
+          "group": "navigation@3"
+        },
+        {
+          "command": "rdp.filterConnections",
+          "when": "view == rdpConnections",
+          "group": "navigation@4"
+        },
+        {
+          "command": "rdp.clearConnectionFilter",
+          "when": "view == rdpConnections && rdp.filterAktiv",
+          "group": "navigation@5"
+        },
+        {
+          "command": "rdp.importRdpFile",
+          "when": "view == rdpConnections",
+          "group": "navigation@6"
         }
       ],
       "view/item/context": [
@@ -131,8 +211,68 @@
           "group": "1_modify@2"
         },
         {
+          "command": "rdp.editTags",
+          "when": "view == rdpConnections && viewItem == rdpConnection",
+          "group": "1_modify@3"
+        },
+        {
+          "command": "rdp.setBandwidthProfile",
+          "when": "view == rdpConnections && viewItem == rdpConnection",
+          "group": "1_modify@4"
+        },
+        {
+          "command": "rdp.moveToFolder",
+          "when": "view == rdpConnections && viewItem == rdpConnection",
+          "group": "1_modify@5"
+        },
+        {
+          "command": "rdp.exportRdpFile",
+          "when": "view == rdpConnections && viewItem == rdpConnection",
+          "group": "2_transfer@1"
+        },
+        {
+          "command": "rdp.addConnection",
+          "when": "view == rdpConnections && viewItem == rdpFolder",
+          "group": "1_modify@1"
+        },
+        {
+          "command": "rdp.addFolder",
+          "when": "view == rdpConnections && viewItem == rdpFolder",
+          "group": "1_modify@2"
+        },
+        {
+          "command": "rdp.renameFolder",
+          "when": "view == rdpConnections && viewItem == rdpFolder",
+          "group": "1_modify@3"
+        },
+        {
+          "command": "rdp.editFolderSettings",
+          "when": "view == rdpConnections && viewItem == rdpFolder",
+          "group": "1_modify@4"
+        },
+        {
+          "command": "rdp.setBandwidthProfile",
+          "when": "view == rdpConnections && viewItem == rdpFolder",
+          "group": "1_modify@5"
+        },
+        {
+          "command": "rdp.moveToFolder",
+          "when": "view == rdpConnections && viewItem == rdpFolder",
+          "group": "1_modify@6"
+        },
+        {
+          "command": "rdp.importRdpFile",
+          "when": "view == rdpConnections && viewItem == rdpFolder",
+          "group": "2_transfer@1"
+        },
+        {
           "command": "rdp.deleteConnection",
           "when": "view == rdpConnections && viewItem == rdpConnection",
+          "group": "9_danger@1"
+        },
+        {
+          "command": "rdp.deleteFolder",
+          "when": "view == rdpConnections && viewItem == rdpFolder",
           "group": "9_danger@1"
         }
       ],
@@ -169,54 +309,153 @@
         "rdp.connections": {
           "type": "array",
           "default": [],
-          "markdownDescription": "Gespeicherte Verbindungen. Passwörter werden **nicht** hier abgelegt, sondern im sicheren Speicher von VS Code.",
+          "markdownDescription": "Gespeicherte Verbindungen und Ordner. Passwörter werden **nicht** hier abgelegt, sondern im sicheren Speicher von VS Code.\n\nEin Eintrag ist entweder eine Verbindung (`host`) oder ein Ordner (`type: \"folder\"` mit `children`). Ordner dürfen verschachtelt werden und vererben ihre `settings` an alles, was in ihnen liegt. Die Auflösungsreihenfolge lautet: Verbindung schlägt Ordner, Ordner schlägt Elternordner, Elternordner schlägt globale Einstellung. Das alte flache Format ohne Ordner bleibt unverändert gültig.",
           "items": {
-            "type": "object",
-            "required": [
-              "name",
-              "host"
-            ],
-            "properties": {
-              "name": {
-                "type": "string",
-                "description": "Anzeigename"
-              },
-              "host": {
-                "type": "string",
-                "description": "Hostname oder IP-Adresse"
-              },
-              "port": {
-                "type": "number",
-                "default": 3389
-              },
-              "username": {
-                "type": "string"
-              },
-              "domain": {
-                "type": "string"
-              },
-              "width": {
-                "type": "number",
-                "description": "Leer lassen für automatische Größe"
-              },
-              "height": {
-                "type": "number"
-              },
-              "colorDepth": {
-                "type": "number",
-                "enum": [
-                  15,
-                  16,
-                  24,
-                  32
+            "anyOf": [
+              {
+                "type": "object",
+                "title": "Verbindung",
+                "required": [
+                  "name",
+                  "host"
                 ],
-                "default": 32
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Anzeigename"
+                  },
+                  "host": {
+                    "type": "string",
+                    "description": "Hostname oder IP-Adresse"
+                  },
+                  "port": {
+                    "type": "number",
+                    "default": 3389
+                  },
+                  "username": {
+                    "type": "string"
+                  },
+                  "domain": {
+                    "type": "string"
+                  },
+                  "width": {
+                    "type": "number",
+                    "description": "Leer lassen für automatische Größe"
+                  },
+                  "height": {
+                    "type": "number"
+                  },
+                  "colorDepth": {
+                    "type": "number",
+                    "enum": [
+                      15,
+                      16,
+                      24,
+                      32
+                    ],
+                    "default": 32
+                  },
+                  "keyboardLayout": {
+                    "type": "string",
+                    "description": "z.B. de-DE, en-US oder eine Layout-ID wie 0x407"
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Schlagworte für Suche und Filter"
+                  },
+                  "bandwidthProfile": {
+                    "type": "string",
+                    "enum": [
+                      "lan",
+                      "broadband",
+                      "mobile"
+                    ],
+                    "enumDescriptions": [
+                      "Alle Effekte an",
+                      "Hintergrundbild, Fensterinhalt beim Ziehen und Menüanimationen aus",
+                      "Alle Effekte aus"
+                    ],
+                    "description": "Bandbreitenprofil dieser Verbindung"
+                  }
+                }
               },
-              "keyboardLayout": {
-                "type": "string",
-                "description": "z.B. de-DE, en-US oder eine Layout-ID wie 0x407"
+              {
+                "type": "object",
+                "title": "Ordner",
+                "required": [
+                  "name",
+                  "children"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "folder"
+                    ],
+                    "description": "Kennzeichnet den Eintrag als Ordner"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Anzeigename des Ordners"
+                  },
+                  "children": {
+                    "type": "array",
+                    "description": "Verbindungen und weitere Ordner"
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Gelten zusätzlich für alle enthaltenen Verbindungen"
+                  },
+                  "settings": {
+                    "type": "object",
+                    "description": "Wird an alle enthaltenen Verbindungen vererbt; einzelne Verbindungen dürfen überschreiben.",
+                    "properties": {
+                      "port": {
+                        "type": "number"
+                      },
+                      "username": {
+                        "type": "string"
+                      },
+                      "domain": {
+                        "type": "string"
+                      },
+                      "width": {
+                        "type": "number"
+                      },
+                      "height": {
+                        "type": "number"
+                      },
+                      "colorDepth": {
+                        "type": "number",
+                        "enum": [
+                          15,
+                          16,
+                          24,
+                          32
+                        ]
+                      },
+                      "keyboardLayout": {
+                        "type": "string"
+                      },
+                      "bandwidthProfile": {
+                        "type": "string",
+                        "enum": [
+                          "lan",
+                          "broadband",
+                          "mobile"
+                        ]
+                      }
+                    }
+                  }
+                }
               }
-            }
+            ]
           }
         },
         "rdp.defaultKeyboardLayout": {
@@ -282,6 +521,24 @@
             "Zertifikate ohne Prüfung akzeptieren (nicht empfohlen)"
           ],
           "description": "Umgang mit den meist selbstsignierten Zertifikaten von RDP-Servern."
+        },
+        "rdp.defaultBandwidthProfile": {
+          "type": "string",
+          "default": "",
+          "enum": [
+            "",
+            "lan",
+            "broadband",
+            "mobile"
+          ],
+          "enumDescriptions": [
+            "Kein Profil – es gelten die einzelnen Schalter unter rdp.performance.*",
+            "LAN: alle Effekte an, inklusive Desktopkomposition und Schriftglättung",
+            "Breitband: Hintergrundbild, Fensterinhalt beim Ziehen und Menüanimationen aus",
+            "Mobil (langsam): alle Effekte aus"
+          ],
+          "markdownDescription": "Bandbreitenprofil für Verbindungen ohne eigene Angabe. Ein Profil setzt die `TS_PERF_*`-Flags des Client Info PDU in einem Rutsch und gewinnt gegen die einzelnen `rdp.performance.*`-Schalter. Reihenfolge: Verbindung, Ordner, Elternordner, dann dieser Wert.",
+          "scope": "window"
         },
         "rdp.performance.disableWallpaper": {
           "type": "boolean",
