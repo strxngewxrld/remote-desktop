@@ -297,6 +297,18 @@ export const antworten = {
   speicherziele: [] as (Uri | undefined)[],
 };
 
+/** Wie `vscode.ExtensionKind`: 1 = UI (lokal), 2 = Workspace (dort, wo der Arbeitsbereich liegt). */
+export enum ExtensionKind {
+  UI = 1,
+  Workspace = 2,
+}
+
+/** Wie `vscode.UIKind`: 1 = Desktop, 2 = Browser. */
+export enum UIKind {
+  Desktop = 1,
+  Web = 2,
+}
+
 /**
  * Ein Dateisystem im Arbeitsspeicher fuer `workspace.fs`. Tests legen den
  * Inhalt hier ab, statt echte Dateien anzulegen.
@@ -322,7 +334,38 @@ export const zwischenablage = {
   geschrieben: [] as string[],
 };
 
+/**
+ * Wo VS Code die Extension laufen laesst.
+ *
+ * Unter Remote-SSH ist das der entfernte Rechner - genau der Unterschied, den
+ * die Extension erkennen und protokollieren muss. Die Attrappe laesst Tests
+ * beide Faelle durchspielen, ohne dass eine SSH-Verbindung noetig waere.
+ */
+export const umgebung = {
+  /** `vscode.env.remoteName`: `undefined` lokal, sonst etwa `ssh-remote`. */
+  fernart: undefined as string | undefined,
+  /** Welche `ExtensionKind` `extensions.getExtension` melden soll. */
+  geladenAls: ExtensionKind.Workspace as ExtensionKind | undefined,
+  /** Ist die Extension ueberhaupt auffindbar? */
+  bekannt: true,
+  /** `vscode.env.uiKind`. */
+  oberflaeche: UIKind.Desktop as UIKind,
+};
+
+export const extensions = {
+  getExtension(id: string): { id: string; extensionKind: ExtensionKind | undefined } | undefined {
+    if (!umgebung.bekannt) return undefined;
+    return { id, extensionKind: umgebung.geladenAls };
+  },
+};
+
 export const env = {
+  get remoteName(): string | undefined {
+    return umgebung.fernart;
+  },
+  get uiKind(): UIKind {
+    return umgebung.oberflaeche;
+  },
   clipboard: {
     readText(): Thenable<string> {
       if (zwischenablage.lesefehler) return Promise.reject(zwischenablage.lesefehler);
@@ -366,6 +409,10 @@ export function zuruecksetzen(): void {
   zwischenablage.lesefehler = undefined;
   zwischenablage.schreibfehler = undefined;
   zwischenablage.geschrieben.length = 0;
+  umgebung.fernart = undefined;
+  umgebung.geladenAls = ExtensionKind.Workspace;
+  umgebung.bekannt = true;
+  umgebung.oberflaeche = UIKind.Desktop;
 }
 
 // ------------------------------------------------------------------ Webview
