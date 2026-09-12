@@ -5,7 +5,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { once } from 'node:events';
-import { GRAPHICS_CHANNEL_NAME, RdpClient } from '../src/client.js';
+import { DISPLAY_CONTROL_CHANNEL_NAME, GRAPHICS_CHANNEL_NAME, RdpClient } from '../src/client.js';
+import * as edisp from '../src/protocol/edisp.js';
 import { BinaryReader, BinaryWriter } from '../src/core/binary.js';
 import { readShareControlHeader } from '../src/protocol/pdu.js';
 import { MockRdpServer, ReceivedInput } from './mockServer.js';
@@ -1475,5 +1476,229 @@ describe('Automatischer Wiederverbindungsaufbau', () => {
     assert.equal(client.canResumeSession, false);
 
     server.close();
+  });
+});
+
+describe('Display Control Channel (MS-RDPEDISP)', () => {
+  let certificate: { cert: string; key: string };
+  before(() => {
+    certificate = createTestCertificate();
+  });
+
+  /**
+   * Sitzung mit eingeschaltetem Display Control aufbauen.
+   *
+   * `kanaele` bestimmt, welche dynamischen Kanaele der Server anbietet - eine
+   * leere Liste ist der Server ohne RDPEDISP, also die Rueckfallebene.
+   */
+  async function displaySitzung(kanaele: string[] = [DISPLAY_CONTROL_CHANNEL_NAME]) {
+    const server = neuerServer({ ...certificate, width: WIDTH, height: HEIGHT, dynamicChannels: kanaele });
+    const port = await server.listen();
+    const client = neuerClient({
+      host: '127.0.0.1',
+      port,
+      useNla: false,
+      width: WIDTH,
+      height: HEIGHT,
+      enableDisplayControl: true,
+    });
+    const eroeffnet = kanaele.includes(DISPLAY_CONTROL_CHANNEL_NAME)
+      ? naechstesEreignis<DvcCreateResponse>(server, 'dvcCreateResponse', (e) => e.name === DISPLAY_CONTROL_CHANNEL_NAME)
+      : Promise.resolve(undefined);
+    await client.connect();
+    await eroeffnet;
+    return { server, client };
+  }
+
+  /** Das CAPS-PDU des Servers schicken und warten, bis der Client es verdaut hat. */
+  async function sendeCaps(
+    server: MockRdpServer,
+    client: RdpClient,
+    caps = { maxNumMonitors: 16, maxMonitorAreaFactorA: 8192, maxMonitorAreaFactorB: 8192 },
+  ) {
+    const bereit = once(client, 'displayControlReady');
+    server.sendDynamicChannelData(DISPLAY_CONTROL_CHANNEL_NAME, edisp.buildCapsPdu(caps));
+    return (await bereit)[0] as edisp.DisplayControlCaps;
+  }
+
+  test('Der Client nimmt den Kanal an, sobald der Server ihn öffnet', async () => {
+    const { server, client } = await displaySitzung();
+    assert.equal(server.dynamicChannelIds.has(DISPLAY_CONTROL_CHANNEL_NAME), true);
+    assert.equal(client.getDynamicChannelId(DISPLAY_CONTROL_CHANNEL_NAME) !== undefined, true);
+  });
+
+  test('Das CAPS-PDU des Servers wird gelesen und gemeldet', async () => {
+    const { server, client } = await displaySitzung();
+    // Vorher ist noch nichts bekannt - und genau deshalb noch nichts erlaubt.
+    assert.equal(client.canChangeResolution, false);
+
+    const caps = await sendeCaps(server, client, {
+      maxNumMonitors: 4,
+      maxMonitorAreaFactorA: 3840,
+      maxMonitorAreaFactorB: 2400,
+    });
+    assert.equal(caps.maxNumMonitors, 4);
+    assert.equal(caps.maxMonitorAreaFactorA, 3840);
+    assert.equal(caps.maxMonitorAreaFactorB, 2400);
+    assert.equal(client.canChangeResolution, true);
+    assert.equal(client.displayControlLimits?.maxNumMonitors, 4);
+  });
+
+  test('Eine Anfrage geht als MONITOR_LAYOUT_PDU über den Kanal', async () => {
+    const { server, client } = await displaySitzung();
+    await sendeCaps(server, client);
+
+    const empfangen = naechstesEreignis<DvcData>(
+      server,
+      'dvcData',
+      (e) => e.name === DISPLAY_CONTROL_CHANNEL_NAME,
+    );
+    assert.equal(client.requestResolution(1600, 900), true);
+
+    const monitore = edisp.parseMonitorLayoutPdu((await empfangen).data);
+    assert.equal(monitore.length, 1);
+    assert.equal(monitore[0].width, 1600);
+    assert.equal(monitore[0].height, 900);
+    assert.equal(monitore[0].flags & edisp.DISPLAYCONTROL_MONITOR_PRIMARY, edisp.DISPLAYCONTROL_MONITOR_PRIMARY);
+  });
+
+  test('Eine ungerade Breite wird vor dem Senden gerade gemacht', async () => {
+    // 2.2.2.2.1: Width MUST NOT be an odd value. Der Aufrufer darf die
+    // Fensterbreite roh durchreichen, ohne das selbst zu wissen.
+    const { server, client } = await displaySitzung();
+    await sendeCaps(server, client);
+
+    const empfangen = naechstesEreignis<DvcData>(
+      server,
+      'dvcData',
+      (e) => e.name === DISPLAY_CONTROL_CHANNEL_NAME,
+    );
+    assert.equal(client.requestResolution(1367, 769), true);
+    const [monitor] = edisp.parseMonitorLayoutPdu((await empfangen).data);
+    assert.equal(monitor.width, 1366);
+    // Die Hoehe darf ungerade bleiben - dort steht die Forderung nicht.
+    assert.equal(monitor.height, 769);
+  });
+
+  test('Dieselbe Größe zweimal hintereinander wird nur einmal geschickt', async () => {
+    const { server, client } = await displaySitzung();
+    await sendeCaps(server, client);
+
+    let gesendet = 0;
+    server.on('dvcData', (e: DvcData) => {
+      if (e.name === DISPLAY_CONTROL_CHANNEL_NAME) gesendet++;
+    });
+    const ersteDrausen = naechstesEreignis<DvcData>(
+      server,
+      'dvcData',
+      (e) => e.name === DISPLAY_CONTROL_CHANNEL_NAME,
+    );
+    assert.equal(client.requestResolution(1280, 800), true);
+    await ersteDrausen;
+
+    assert.equal(client.requestResolution(1280, 800), false);
+    // Auch die gerundete Fassung derselben Größe zählt als dieselbe Bitte.
+    assert.equal(client.requestResolution(1281, 800), false);
+    assert.equal(gesendet, 1);
+
+    // Mit `force` geht sie trotzdem raus - etwa nach einem Reset des Servers.
+    const nochmal = naechstesEreignis<DvcData>(
+      server,
+      'dvcData',
+      (e) => e.name === DISPLAY_CONTROL_CHANNEL_NAME,
+    );
+    assert.equal(client.requestResolution(1280, 800, { force: true }), true);
+    await nochmal;
+    assert.equal(gesendet, 2);
+  });
+
+  test('Eine Größe jenseits der Servergrenzen wird gar nicht erst geschickt', async () => {
+    const { server, client } = await displaySitzung();
+    // 1 * 640 * 480 = 307200 Quadratpixel - für 1920x1080 reicht das nicht.
+    await sendeCaps(server, client, {
+      maxNumMonitors: 1,
+      maxMonitorAreaFactorA: 640,
+      maxMonitorAreaFactorB: 480,
+    });
+
+    let gesendet = 0;
+    server.on('dvcData', (e: DvcData) => {
+      if (e.name === DISPLAY_CONTROL_CHANNEL_NAME) gesendet++;
+    });
+    assert.equal(client.requestResolution(1920, 1080), false);
+    // 800x384 bleibt unter der Grenze und geht durch.
+    assert.equal(client.requestResolution(800, 384), true);
+    await naechstesEreignis<DvcData>(server, 'dvcData', (e) => e.name === DISPLAY_CONTROL_CHANNEL_NAME);
+    assert.equal(gesendet, 1);
+  });
+
+  test('Ohne CAPS-PDU wird nichts angefragt', async () => {
+    // 3.2.5.2 verlangt die Prüfung gegen die Servergrenzen; ohne CAPS kennen
+    // wir sie nicht und dürfen deshalb noch nicht fragen.
+    const { client } = await displaySitzung();
+    assert.equal(client.canChangeResolution, false);
+    assert.equal(client.requestResolution(1280, 800), false);
+  });
+
+  test('RÜCKFALLEBENE: ohne den Kanal meldet requestResolution false und wirft nicht', async () => {
+    // Das ist der Server ohne RDPEDISP - er bietet den Kanal gar nicht an.
+    // Für den Aufrufer darf das nichts weiter bedeuten als ein `false`.
+    const { server, client } = await displaySitzung([]);
+    assert.equal(server.dynamicChannelIds.has(DISPLAY_CONTROL_CHANNEL_NAME), false);
+    assert.equal(client.canChangeResolution, false);
+    assert.equal(client.displayControlLimits, undefined);
+
+    assert.doesNotThrow(() => client.requestResolution(1920, 1080));
+    assert.equal(client.requestResolution(1920, 1080), false);
+    // Und die Sitzung läuft danach unverändert weiter.
+    assert.equal(client.isConnected, true);
+  });
+
+  test('RÜCKFALLEBENE: ein unbekanntes PDU auf dem Kanal beendet die Sitzung nicht', async () => {
+    const { server, client } = await displaySitzung();
+    const fehler: Error[] = [];
+    client.on('error', (err) => fehler.push(err));
+
+    // Ein PDU-Typ, den MS-RDPEDISP nicht kennt, und danach schlichter Müll.
+    const unbekannt = Buffer.alloc(8);
+    unbekannt.writeUInt32LE(0x000000ff, 0);
+    unbekannt.writeUInt32LE(8, 4);
+    server.sendDynamicChannelData(DISPLAY_CONTROL_CHANNEL_NAME, unbekannt);
+    server.sendDynamicChannelData(DISPLAY_CONTROL_CHANNEL_NAME, Buffer.from([1, 2, 3]));
+
+    // Danach kommt ein gültiges CAPS-PDU an und wird ganz normal verarbeitet.
+    const caps = await sendeCaps(server, client);
+    assert.equal(caps.maxNumMonitors, 16);
+    assert.equal(fehler.length, 0);
+    assert.equal(client.isConnected, true);
+  });
+
+  test('Ohne enableDisplayControl bleibt der Kanal unangetastet', async () => {
+    // Wer die Funktion nicht einschaltet, bekommt exakt das alte Verhalten:
+    // der Client lehnt den Kanal ab, wie jeden anderen unbekannten auch.
+    const server = neuerServer({
+      ...certificate,
+      width: WIDTH,
+      height: HEIGHT,
+      dynamicChannels: [DISPLAY_CONTROL_CHANNEL_NAME],
+    });
+    const port = await server.listen();
+    const client = neuerClient({
+      host: '127.0.0.1',
+      port,
+      useNla: false,
+      width: WIDTH,
+      height: HEIGHT,
+      announceDynamicChannels: true,
+    });
+    const antwort = naechstesEreignis<DvcCreateResponse>(
+      server,
+      'dvcCreateResponse',
+      (e) => e.name === DISPLAY_CONTROL_CHANNEL_NAME,
+    );
+    await client.connect();
+    assert.equal((await antwort).status, DVC_CREATION_STATUS_NO_LISTENER);
+    assert.equal(client.canChangeResolution, false);
+    assert.equal(client.requestResolution(1280, 800), false);
   });
 });
