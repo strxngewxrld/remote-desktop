@@ -193,12 +193,35 @@ export class EgfxSession {
    * fruehere Nachricht abgelegt hat. Deshalb ebenfalls eine Instanz je Sitzung,
    * die den Zustand selbst nach surfaceId trennt.
    */
-  private readonly progressive = new ProgressiveDecoder();
+  private readonly progressive: ProgressiveDecoder;
   /** Summen ueber die AVC-Teilbilder - belegt, dass die Nutzlast zerlegbar war. */
   private avcRegionen = 0;
   private avcBytes = 0;
 
-  constructor(private readonly opts: EgfxSessionOptions) {}
+  /**
+   * Auffaelligkeiten, vor denen schon gewarnt wurde.
+   *
+   * Eine Warnung je Vorkommnis waere bei Bildfehlern nutzlos: sie treten
+   * tausendfach auf und verdraengen alles andere aus dem Mitschnitt. Einmal
+   * warnen genuegt, die Zahlen stehen ohnehin in den debug-Zeilen.
+   */
+  private readonly gemeldeteAuffaelligkeiten = new Set<string>();
+
+  constructor(private readonly opts: EgfxSessionOptions) {
+    this.progressive = new ProgressiveDecoder(opts.log);
+  }
+
+  /** Warnt genau einmal je Schluessel. */
+  private meldeEinmal(schluessel: string, text: string): void {
+    if (this.gemeldeteAuffaelligkeiten.has(schluessel)) return;
+    this.gemeldeteAuffaelligkeiten.add(schluessel);
+    this.opts.log.warn(text);
+  }
+
+  /** Ein Rechteck kurz und lesbar: BreitexHoehe+Links+Oben. */
+  private static rechteck(r: egfx.EgfxRect): string {
+    return `${r.right - r.left}x${r.bottom - r.top}+${r.left}+${r.top}`;
+  }
 
   /** Eroeffnet die Pipeline mit dem konfigurierten Capability-Satz. */
   start(): void {
@@ -225,6 +248,12 @@ export class EgfxSession {
       );
       return;
     }
+
+    // Jeder Befehl eines entpackten Puffers wird protokolliert, nicht nur der
+    // erste. Ein Puffer traegt fast immer mehrere (STARTFRAME, Bildinhalte,
+    // ENDFRAME); wer nur den ersten meldet, sieht ENDFRAME und
+    // MAPSURFACETOOUTPUT nie und haelt sie faelschlich fuer fehlend.
+    this.protokolliere(pdu);
 
     switch (pdu.cmdId) {
       case egfx.RDPGFX_CMDID_CAPSCONFIRM:
@@ -334,12 +363,124 @@ export class EgfxSession {
     }
   }
 
+  /**
+   * Eine Zeile je Befehl - die Grundlage jeder Fehlersuche an Bildfehlern.
+   *
+   * Stufenwahl: alles Seltene und Aussagekraeftige steht auf `debug`, der
+   * Lebenslauf einer Surface sogar auf `info` (er umfasst im Normalfall eine
+   * Handvoll Zeilen je Sitzung und beantwortet die haeufigste Frage sofort).
+   * Auf `trace` bleiben nur STARTFRAME und ENDFRAME: sie kommen je Bildaufbau
+   * und wuerden alles andere zudecken, ohne selbst etwas zu erklaeren.
+   */
+  private protokolliere(pdu: egfx.EgfxPdu): void {
+    if ('raw' in pdu) return;
+    const name = egfx.cmdName(pdu.cmdId);
+    const R = EgfxSession.rechteck;
+
+    switch (pdu.cmdId) {
+      case egfx.RDPGFX_CMDID_STARTFRAME:
+        this.opts.log.trace(`EGFX: ${name} frameId ${pdu.frameId}`);
+        return;
+      case egfx.RDPGFX_CMDID_ENDFRAME:
+        this.opts.log.trace(`EGFX: ${name} frameId ${pdu.frameId}, ${this.pending.length} Kachel(n) gebuendelt`);
+        return;
+
+      case egfx.RDPGFX_CMDID_CREATESURFACE:
+        this.opts.log.info(
+          `EGFX: ${name} ${pdu.surfaceId}, ${pdu.width}x${pdu.height}, ` +
+            `Pixelformat ${egfx.pixelFormatName(pdu.pixelFormat)}`,
+        );
+        return;
+      case egfx.RDPGFX_CMDID_DELETESURFACE:
+        this.opts.log.info(`EGFX: ${name} ${pdu.surfaceId}`);
+        return;
+      case egfx.RDPGFX_CMDID_MAPSURFACETOOUTPUT: {
+        const s = this.surfaces.get(pdu.surfaceId);
+        this.opts.log.info(
+          `EGFX: ${name} ${pdu.surfaceId} nach (${pdu.outputOriginX}, ${pdu.outputOriginY}); ` +
+            `Surface ${s ? `${s.width}x${s.height}, ${s.beschrieben ? 'bemalt' : 'noch unbemalt'}` : 'unbekannt'}`,
+        );
+        return;
+      }
+      case egfx.RDPGFX_CMDID_MAPSURFACETOSCALEDOUTPUT: {
+        const s = this.surfaces.get(pdu.surfaceId);
+        this.opts.log.info(
+          `EGFX: ${name} ${pdu.surfaceId} nach (${pdu.outputOriginX}, ${pdu.outputOriginY}), ` +
+            `Zielgroesse ${pdu.targetWidth}x${pdu.targetHeight}; ` +
+            `Surface ${s ? `${s.width}x${s.height}` : 'unbekannt'}`,
+        );
+        return;
+      }
+
+      case egfx.RDPGFX_CMDID_WIRETOSURFACE_1:
+        this.opts.log.debug(
+          `EGFX: ${name} Surface ${pdu.surfaceId}, Codec ${egfx.codecName(pdu.codecId)}, ` +
+            `Pixelformat ${egfx.pixelFormatName(pdu.pixelFormat)}, Ziel ${R(pdu.destRect)}, ` +
+            `${pdu.bitmapData.length} Byte`,
+        );
+        return;
+      case egfx.RDPGFX_CMDID_WIRETOSURFACE_2:
+        // Die Auswertung folgt in wireToSurfaceProgressiv, wo die Kachelzahlen
+        // feststehen. Hier nur der Kopf, damit die Reihenfolge stimmt.
+        this.opts.log.debug(
+          `EGFX: ${name} Surface ${pdu.surfaceId}, Codec ${egfx.codecName(pdu.codecId)}, ` +
+            `Kodierkontext ${pdu.codecContextId}, ${pdu.bitmapData.length} Byte`,
+        );
+        return;
+      case egfx.RDPGFX_CMDID_DELETEENCODINGCONTEXT:
+        // Wirft den progressiven Kachelzustand weg. Kommt der Befehl, waehrend
+        // der Server noch Aufwertungen fuer dieselbe Flaeche schickt, malt der
+        // Decoder danach grau - deshalb steht er auf info.
+        this.opts.log.info(
+          `EGFX: ${name} Surface ${pdu.surfaceId}, Kodierkontext ${pdu.codecContextId} - ` +
+            'progressiver Kachelzustand wird verworfen',
+        );
+        return;
+
+      case egfx.RDPGFX_CMDID_SOLIDFILL:
+        this.opts.log.debug(
+          `EGFX: ${name} Surface ${pdu.surfaceId}, Farbe ` +
+            `rgba(${pdu.fillPixel.r}, ${pdu.fillPixel.g}, ${pdu.fillPixel.b}, ${pdu.fillPixel.a}), ` +
+            `${pdu.fillRects.length} Rechteck(e) ${pdu.fillRects.map(R).join(' ')}`,
+        );
+        return;
+      case egfx.RDPGFX_CMDID_SURFACETOSURFACE:
+        this.opts.log.debug(
+          `EGFX: ${name} von Surface ${pdu.surfaceIdSrc} ${R(pdu.rectSrc)} ` +
+            `nach Surface ${pdu.surfaceIdDest}, Zielpunkte ` +
+            `${pdu.destPts.map((q) => `(${q.x}, ${q.y})`).join(' ')}`,
+        );
+        return;
+      case egfx.RDPGFX_CMDID_SURFACETOCACHE:
+        this.opts.log.debug(
+          `EGFX: ${name} Surface ${pdu.surfaceId} ${R(pdu.rectSrc)} -> Slot ${pdu.cacheSlot}, ` +
+            `Schluessel 0x${pdu.cacheKey.toString(16)}`,
+        );
+        return;
+      case egfx.RDPGFX_CMDID_CACHETOSURFACE:
+        this.opts.log.debug(
+          `EGFX: ${name} Slot ${pdu.cacheSlot} -> Surface ${pdu.surfaceId}, Zielpunkte ` +
+            `${pdu.destPts.map((q) => `(${q.x}, ${q.y})`).join(' ')}`,
+        );
+        return;
+      case egfx.RDPGFX_CMDID_EVICTCACHEENTRY:
+        this.opts.log.debug(`EGFX: ${name} Slot ${pdu.cacheSlot}`);
+        return;
+
+      default:
+        this.opts.log.debug(`EGFX: ${name}`);
+    }
+  }
+
   // ------------------------------------------------------------- Bildinhalte
 
   private wireToSurface(pdu: egfx.EgfxWireToSurface1): void {
     const surface = this.surfaces.get(pdu.surfaceId);
     if (!surface) {
-      this.opts.log.debug(`Graphics Pipeline: Inhalt fuer unbekannte Surface ${pdu.surfaceId}`);
+      this.meldeEinmal(
+        `w2s1-unbekannt-${pdu.surfaceId}`,
+        `Graphics Pipeline: Bildinhalt fuer unbekannte Surface ${pdu.surfaceId} - er geht verloren.`,
+      );
       return;
     }
 
@@ -376,7 +517,10 @@ export class EgfxSession {
   private wireToSurfaceProgressiv(pdu: egfx.EgfxWireToSurface2): void {
     const surface = this.surfaces.get(pdu.surfaceId);
     if (!surface) {
-      this.opts.log.debug(`Graphics Pipeline: Progressive fuer unbekannte Surface ${pdu.surfaceId}`);
+      this.meldeEinmal(
+        `w2s2-unbekannt-${pdu.surfaceId}`,
+        `Graphics Pipeline: Progressive fuer unbekannte Surface ${pdu.surfaceId} - der Inhalt geht verloren.`,
+      );
       return;
     }
     this.codecCounts.set(pdu.codecId, (this.codecCounts.get(pdu.codecId) ?? 0) + 1);
@@ -389,6 +533,29 @@ export class EgfxSession {
       // Server schickt den Bereich beim naechsten Bildaufbau erneut.
       this.opts.log.warn(`Graphics Pipeline: Progressive nicht dekodierbar - ${(err as Error).message}`);
       return;
+    }
+
+    const d = this.progressive.letzteDiagnose();
+    this.opts.log.debug(
+      `EGFX: WIRETOSURFACE_2 Surface ${pdu.surfaceId} ergab ${d.regionen} Region(en) mit ` +
+        `${d.rechtecke} Rechteck(en): ${d.einfach} einfach, ${d.erstdurchgang} Erstdurchgang, ` +
+        `${d.aufwertung} Aufwertung; ${d.stuecke} Kachelstueck(e), davon ${d.grau} ohne Inhalt ` +
+        `(mittelgrau). Fehlender Vorzustand: ${d.aufwertungOhneErstdurchgang} Aufwertung(en), ` +
+        `${d.differenzOhneVorzustand} Differenzkachel(n).`,
+    );
+    if (d.aufwertungOhneErstdurchgang > 0) {
+      this.meldeEinmal(
+        `prog-aufwertung-${pdu.surfaceId}`,
+        `Graphics Pipeline: Surface ${pdu.surfaceId} bekommt progressive Aufwertungen fuer Kacheln ` +
+          'ohne Erstdurchgang. Diese Kacheln werden mittelgrau gezeichnet - der Vorzustand fehlt.',
+      );
+    }
+    if (d.differenzOhneVorzustand > 0) {
+      this.meldeEinmal(
+        `prog-differenz-${pdu.surfaceId}`,
+        `Graphics Pipeline: Surface ${pdu.surfaceId} bekommt Differenzkacheln ohne Vorzustand. ` +
+          'Der Kachelzustand wurde verworfen oder ging verloren; das Ergebnis ist nicht der Bildinhalt.',
+      );
     }
 
     for (const kachel of kacheln) {
@@ -558,7 +725,13 @@ export class EgfxSession {
 
   private solidFill(pdu: egfx.EgfxSolidFill): void {
     const surface = this.surfaces.get(pdu.surfaceId);
-    if (!surface) return;
+    if (!surface) {
+      this.meldeEinmal(
+        `fill-unbekannt-${pdu.surfaceId}`,
+        `Graphics Pipeline: SOLIDFILL auf unbekannte Surface ${pdu.surfaceId} - der Bereich bleibt stehen.`,
+      );
+      return;
+    }
     surface.beschrieben = true;
     for (const rect of pdu.fillRects) {
       for (let y = rect.top; y < Math.min(rect.bottom, surface.height); y++) {
@@ -577,7 +750,41 @@ export class EgfxSession {
   private surfaceToSurface(pdu: egfx.EgfxSurfaceToSurface): void {
     const quelle = this.surfaces.get(pdu.surfaceIdSrc);
     const ziel = this.surfaces.get(pdu.surfaceIdDest);
-    if (!quelle || !ziel) return;
+    if (!quelle || !ziel) {
+      this.meldeEinmal(
+        `s2s-unbekannt-${pdu.surfaceIdSrc}-${pdu.surfaceIdDest}`,
+        `Graphics Pipeline: SURFACETOSURFACE ${pdu.surfaceIdSrc} -> ${pdu.surfaceIdDest}, aber ` +
+          `${!quelle ? 'die Quelle' : 'das Ziel'} ist unbekannt - der Zielbereich bleibt stehen.`,
+      );
+      return;
+    }
+    if (!quelle.beschrieben) {
+      this.meldeEinmal(
+        `s2s-leer-${pdu.surfaceIdSrc}`,
+        `Graphics Pipeline: SURFACETOSURFACE kopiert aus Surface ${pdu.surfaceIdSrc}, in die noch nie ` +
+          'etwas gemalt wurde - das Ziel bekommt eine schwarze Flaeche.',
+      );
+    }
+    if (quelle.avcBeschrieben) {
+      this.meldeEinmal(
+        `s2s-avc-${pdu.surfaceIdSrc}`,
+        `Graphics Pipeline: SURFACETOSURFACE kopiert aus Surface ${pdu.surfaceIdSrc}, in die H.264 ` +
+          'gemalt hat. Diese Pixel liegen nur im Renderer; die Kopie wird schwarz.',
+      );
+    }
+    if (
+      pdu.rectSrc.right > quelle.width ||
+      pdu.rectSrc.bottom > quelle.height ||
+      pdu.rectSrc.left >= pdu.rectSrc.right ||
+      pdu.rectSrc.top >= pdu.rectSrc.bottom
+    ) {
+      this.meldeEinmal(
+        `s2s-rect-${pdu.surfaceIdSrc}`,
+        `Graphics Pipeline: SURFACETOSURFACE liest ${EgfxSession.rechteck(pdu.rectSrc)} aus Surface ` +
+          `${pdu.surfaceIdSrc}, die nur ${quelle.width}x${quelle.height} gross ist - was ausserhalb ` +
+          'liegt, wird als Schwarz kopiert.',
+      );
+    }
 
     const width = pdu.rectSrc.right - pdu.rectSrc.left;
     const height = pdu.rectSrc.bottom - pdu.rectSrc.top;
@@ -595,7 +802,22 @@ export class EgfxSession {
 
   private surfaceToCache(pdu: egfx.EgfxSurfaceToCache): void {
     const surface = this.surfaces.get(pdu.surfaceId);
-    if (!surface) return;
+    if (!surface) {
+      this.meldeEinmal(
+        `s2c-unbekannt-${pdu.surfaceId}`,
+        `Graphics Pipeline: SURFACETOCACHE aus unbekannter Surface ${pdu.surfaceId} - Slot ` +
+          `${pdu.cacheSlot} bleibt leer, und jedes spaetere CACHETOSURFACE darauf zeichnet nichts.`,
+      );
+      return;
+    }
+    if (!surface.beschrieben || surface.avcBeschrieben) {
+      this.meldeEinmal(
+        `s2c-leer-${pdu.surfaceId}`,
+        `Graphics Pipeline: SURFACETOCACHE legt Slot ${pdu.cacheSlot} aus Surface ${pdu.surfaceId} an, ` +
+          `deren Puffer hier ${surface.avcBeschrieben ? 'H.264-Inhalt nicht kennt' : 'noch unbemalt ist'} - ` +
+          'der Cacheeintrag wird schwarz.',
+      );
+    }
     const width = pdu.rectSrc.right - pdu.rectSrc.left;
     const height = pdu.rectSrc.bottom - pdu.rectSrc.top;
     this.cache.set(pdu.cacheSlot, {
@@ -608,7 +830,24 @@ export class EgfxSession {
   private cacheToSurface(pdu: egfx.EgfxCacheToSurface): void {
     const eintrag = this.cache.get(pdu.cacheSlot);
     const ziel = this.surfaces.get(pdu.surfaceId);
-    if (!eintrag || !ziel) return;
+    if (!eintrag) {
+      // Der Zielbereich bleibt unveraendert stehen - genau so entstehen
+      // Flaechen, die nie uebermalt werden. Ohne diese Zeile ist der Fall
+      // unsichtbar, weil hier nur stillschweigend zurueckgekehrt wird.
+      this.meldeEinmal(
+        'c2s-slot',
+        `Graphics Pipeline: CACHETOSURFACE zeigt auf Slot ${pdu.cacheSlot}, den diese Sitzung nie ` +
+          `gefuellt hat. Der Zielbereich auf Surface ${pdu.surfaceId} bleibt unveraendert stehen.`,
+      );
+      return;
+    }
+    if (!ziel) {
+      this.meldeEinmal(
+        `c2s-surface-${pdu.surfaceId}`,
+        `Graphics Pipeline: CACHETOSURFACE auf unbekannte Surface ${pdu.surfaceId}.`,
+      );
+      return;
+    }
     for (const punkt of pdu.destPts) {
       this.blit(ziel, eintrag.rgba, eintrag.width, eintrag.height, punkt.x, punkt.y);
       this.emitRegion(ziel, {

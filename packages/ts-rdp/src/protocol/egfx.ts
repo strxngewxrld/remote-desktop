@@ -49,6 +49,57 @@ export const RDPGFX_CMDID_QOEFRAMEACKNOWLEDGE = 0x0016;
 export const RDPGFX_CMDID_MAPSURFACETOSCALEDOUTPUT = 0x0017;
 export const RDPGFX_CMDID_MAPSURFACETOSCALEDWINDOW = 0x0018;
 
+/**
+ * Klarnamen der Befehle - fuer die Protokollierung.
+ *
+ * Eine entpackte EGFX-Nachricht enthaelt in aller Regel *mehrere* Befehle
+ * hintereinander (STARTFRAME, dann Bildinhalte, dann ENDFRAME). Wer nur den
+ * ersten meldet, bekommt ein schiefes Bild davon, was der Server tatsaechlich
+ * schickt; deshalb gibt es diese Tabelle.
+ */
+const CMD_NAMEN: Record<number, string> = {
+  [0x0001]: 'WIRETOSURFACE_1',
+  [0x0002]: 'WIRETOSURFACE_2',
+  [0x0003]: 'DELETEENCODINGCONTEXT',
+  [0x0004]: 'SOLIDFILL',
+  [0x0005]: 'SURFACETOSURFACE',
+  [0x0006]: 'SURFACETOCACHE',
+  [0x0007]: 'CACHETOSURFACE',
+  [0x0008]: 'EVICTCACHEENTRY',
+  [0x0009]: 'CREATESURFACE',
+  [0x000a]: 'DELETESURFACE',
+  [0x000b]: 'STARTFRAME',
+  [0x000c]: 'ENDFRAME',
+  [0x000d]: 'FRAMEACKNOWLEDGE',
+  [0x000e]: 'RESETGRAPHICS',
+  [0x000f]: 'MAPSURFACETOOUTPUT',
+  [0x0010]: 'CACHEIMPORTOFFER',
+  [0x0011]: 'CACHEIMPORTREPLY',
+  [0x0012]: 'CAPSADVERTISE',
+  [0x0013]: 'CAPSCONFIRM',
+  [0x0015]: 'MAPSURFACETOWINDOW',
+  [0x0016]: 'QOEFRAMEACKNOWLEDGE',
+  [0x0017]: 'MAPSURFACETOSCALEDOUTPUT',
+  [0x0018]: 'MAPSURFACETOSCALEDWINDOW',
+};
+
+/** Klarname eines Befehls, mit Hexwert als Rueckfall. */
+export function cmdName(cmdId: number): string {
+  return CMD_NAMEN[cmdId] ?? `0x${cmdId.toString(16)}`;
+}
+
+/** Klarname eines Codecs, mit Hexwert als Rueckfall. */
+export function codecName(codecId: number): string {
+  return CODEC_NAMEN[codecId] ?? `0x${codecId.toString(16)}`;
+}
+
+/** Klarname eines Pixelformats, mit Hexwert als Rueckfall. */
+export function pixelFormatName(pixelFormat: number): string {
+  if (pixelFormat === PIXEL_FORMAT_XRGB_8888) return 'XRGB_8888';
+  if (pixelFormat === PIXEL_FORMAT_ARGB_8888) return 'ARGB_8888';
+  return `0x${pixelFormat.toString(16)}`;
+}
+
 // --- Codec-IDs (MS-RDPEGFX 2.2.2.1 / 2.2.2.2) -------------------------------
 
 export const RDPGFX_CODECID_UNCOMPRESSED = 0x0000;
@@ -60,6 +111,18 @@ export const RDPGFX_CODECID_AVC420 = 0x000b;
 export const RDPGFX_CODECID_ALPHA = 0x000c;
 export const RDPGFX_CODECID_AVC444 = 0x000e;
 export const RDPGFX_CODECID_AVC444V2 = 0x000f;
+
+const CODEC_NAMEN: Record<number, string> = {
+  [RDPGFX_CODECID_UNCOMPRESSED]: 'UNCOMPRESSED',
+  [RDPGFX_CODECID_CAVIDEO]: 'CAVIDEO',
+  [RDPGFX_CODECID_CLEARCODEC]: 'CLEARCODEC',
+  [RDPGFX_CODECID_CAPROGRESSIVE]: 'CAPROGRESSIVE',
+  [RDPGFX_CODECID_PLANAR]: 'PLANAR',
+  [RDPGFX_CODECID_AVC420]: 'AVC420',
+  [RDPGFX_CODECID_ALPHA]: 'ALPHA',
+  [RDPGFX_CODECID_AVC444]: 'AVC444',
+  [RDPGFX_CODECID_AVC444V2]: 'AVC444V2',
+};
 
 // --- Pixelformate (MS-RDPEGFX 2.2.1.4) --------------------------------------
 
