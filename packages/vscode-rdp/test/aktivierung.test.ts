@@ -34,9 +34,10 @@ const versprocheneBefehle = manifest.contributes.commands.map((c) => c.command).
 /**
  * Befehle, die nicht zur Aktivierung gehoeren, sondern zur Sitzung: sie
  * entstehen mit der ersten offenen Sitzung und vergehen mit der letzten.
- * Geprueft werden sie dort, wo sie leben - in `diagnose.test.ts`.
+ * Geprueft werden sie dort, wo sie leben - in `diagnose.test.ts` und
+ * `zwischenablage.test.ts`.
  */
-const SITZUNGSBEFEHLE = new Set(['rdp.toggleDiagnostics']);
+const SITZUNGSBEFEHLE = new Set(['rdp.toggleDiagnostics', 'rdp.toggleClipboardPanel']);
 
 /** Was `activate` selbst registrieren muss. */
 const beimAktivierenErwartet = versprocheneBefehle.filter((b) => !SITZUNGSBEFEHLE.has(b));
