@@ -25,6 +25,7 @@ import {
   lookupScancode,
   probeServerCertificate,
 } from 'ts-rdp';
+import type { RdpDiagnostics } from 'ts-rdp';
 import { RdpConnection, secretKey } from './connections.js';
 import { CertificateTrustStore, TrustPolicy } from './trust.js';
 import { resolveKeyboardLayout } from './keyboardLayouts.js';
@@ -33,11 +34,195 @@ import { renderWebview } from './webview.js';
 /** Ein Rastschritt des Mausrads, wie ihn Windows erwartet. */
 const WHEEL_STEP = 120;
 
+/** Befehl, der das Diagnose-Overlay ein- und ausblendet. */
+export const DIAGNOSE_BEFEHL = 'rdp.toggleDiagnostics';
+/** Schluessel im globalen Speicher - der Zustand soll die Sitzung ueberdauern. */
+export const DIAGNOSE_ZUSTAND_SCHLUESSEL = 'rdp.diagnose.sichtbar';
+/** Taktrate des Overlays. Bewusst nicht pro Bild: einmal je Sekunde genuegt. */
+const DIAGNOSE_TAKT_MS = 1000;
+
 interface ReadyMessage {
   type: 'ready';
   width: number;
   height: number;
   devicePixelRatio: number;
+}
+
+// ------------------------------------------------------------ Diagnosewerte
+
+/**
+ * Eine Momentaufnahme. Zwei davon im Abstand einer Sekunde ergeben die Raten,
+ * die im Overlay stehen - deshalb wird hier nichts gerechnet, nur festgehalten.
+ */
+export interface DiagnoseProbe {
+  /** Date.now() zum Zeitpunkt der Messung. */
+  zeit: number;
+  /** Rohwerte der Library; fehlt, solange keine Verbindung steht. */
+  diagnostics?: RdpDiagnostics;
+  /** RGBA-Bytes, die der Host bisher an die Webview gereicht hat. */
+  anWebviewBytes: number;
+  /** Kacheln, die der Host bisher an die Webview gereicht hat. */
+  anWebviewKacheln: number;
+  /** Date.now() des letzten Bitmap-Ereignisses; 0, wenn noch keines kam. */
+  letztesBild: number;
+}
+
+/** Umstaende, die sich nicht aus zwei Proben ergeben. */
+export interface DiagnoseUmfeld {
+  breite: number;
+  hoehe: number;
+  /** Date.now() des Verbindungsaufbaus; 0, solange nichts steht. */
+  verbundenSeit: number;
+  /** Roundtrip Extension-Host <-> Webview in Millisekunden. */
+  rttMs?: number;
+  /** Laeuft die Uebertragung ins Webview ueber Base64 statt Binaerdaten? */
+  base64: boolean;
+}
+
+/** Eine Zeile des Overlays: links der Name, rechts der Wert. */
+export interface DiagnoseZeile {
+  name: string;
+  wert: string;
+}
+
+/**
+ * Klarnamen der Codecs der Graphics Pipeline (MS-RDPEGFX, RDPGFX_CODECID_*).
+ * `getDiagnostics()` liefert nur Hexschluessel - die Zahl allein sagt beim
+ * Draufschauen nicht, ob gerade unser ClearCodec oder unser Progressive
+ * arbeitet, und genau darum geht es bei diesem Overlay.
+ */
+const CODEC_NAMEN: Record<string, string> = {
+  '0x0': 'Roh',
+  '0x3': 'RemoteFX',
+  '0x8': 'ClearCodec',
+  '0x9': 'Progressive',
+  '0xa': 'Planar',
+  '0xb': 'AVC420',
+  '0xc': 'Alpha',
+  '0xe': 'AVC444',
+  '0xf': 'AVC444v2',
+};
+
+/** Byteangabe in der Einheit, in der man sie noch lesen kann. */
+export function mengeText(bytes: number): string {
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+/** Zuwachs je Sekunde aus einem Zuwachs je Messabstand. */
+function proSekunde(zuwachs: number, abstandMs: number): number {
+  if (abstandMs <= 0) return 0;
+  return (zuwachs * 1000) / abstandMs;
+}
+
+/** mm:ss, ab einer Stunde h:mm:ss. */
+export function dauerText(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const zwei = (n: number) => String(n).padStart(2, '0');
+  if (s < 3600) return `${zwei(Math.floor(s / 60))}:${zwei(s % 60)}`;
+  return `${Math.floor(s / 3600)}:${zwei(Math.floor((s % 3600) / 60))}:${zwei(s % 60)}`;
+}
+
+/** Summe aller Bytes ueber die virtuellen Kanaele. */
+function kanalBytes(d: RdpDiagnostics | undefined): number {
+  if (!d) return 0;
+  let summe = 0;
+  for (const wert of Object.values(d.virtualChannelBytes)) summe += wert;
+  return summe;
+}
+
+/**
+ * Baut die Zeilen des Overlays aus zwei Momentaufnahmen.
+ *
+ * Absichtlich eine reine Funktion: so laesst sich die Aufbereitung pruefen,
+ * ohne eine Sitzung, einen Server oder ein Webview zu brauchen.
+ */
+export function diagnoseZeilen(
+  jetzt: DiagnoseProbe,
+  vorher: DiagnoseProbe | undefined,
+  umfeld: DiagnoseUmfeld,
+): DiagnoseZeile[] {
+  const abstand = vorher ? jetzt.zeit - vorher.zeit : 0;
+  const rate = (aktuell: number, frueher: number | undefined): string =>
+    frueher === undefined || abstand <= 0 ? '' : ` · ${Math.round(proSekunde(aktuell - frueher, abstand))}/s`;
+  const datenrate = (aktuell: number, frueher: number | undefined): string =>
+    frueher === undefined || abstand <= 0 ? '' : ` · ${mengeText(proSekunde(aktuell - frueher, abstand))}/s`;
+
+  const zeilen: DiagnoseZeile[] = [];
+  const groesse = `${umfeld.breite}×${umfeld.hoehe}`;
+  zeilen.push({
+    name: 'Sitzung',
+    wert:
+      (umfeld.verbundenSeit ? `${groesse} · ${dauerText(jetzt.zeit - umfeld.verbundenSeit)}` : `${groesse} · –`) +
+      (umfeld.base64 ? ' · Base64' : ''),
+  });
+
+  const d = jetzt.diagnostics;
+  if (!d) {
+    zeilen.push({ name: 'Verbindung', wert: 'steht nicht' });
+    return zeilen;
+  }
+  const v = vorher?.diagnostics;
+
+  const rahmen = d.frames.fastpath + d.frames.slowpath;
+  zeilen.push({
+    name: 'Rahmen',
+    wert:
+      `${rahmen}${rate(rahmen, v ? v.frames.fastpath + v.frames.slowpath : undefined)}` +
+      ` (${d.frames.fastpath} fast / ${d.frames.slowpath} slow` +
+      (d.frames.verworfen ? ` / ${d.frames.verworfen} verw.` : '') +
+      ')',
+  });
+
+  zeilen.push({ name: 'Kacheln', wert: `${d.bitmaps}${rate(d.bitmaps, v?.bitmaps)}` });
+
+  // Codecs absteigend nach Haeufigkeit: der wichtigste steht vorn und bleibt
+  // dort, solange er fuehrt - ein Wert, der die Spalte wechselt, ist im
+  // Augenwinkel nicht ablesbar.
+  const codecs = Object.entries(d.graphicsCodecs).sort((a, b) => b[1] - a[1]);
+  zeilen.push({
+    name: 'Codecs',
+    wert: codecs.length
+      ? codecs.map(([id, n]) => `${CODEC_NAMEN[id] ?? id} ${n}${rate(n, v?.graphicsCodecs[id] ?? (v ? 0 : undefined))}`).join(', ')
+      : 'keine',
+  });
+
+  zeilen.push({
+    name: 'eGFX entpackt',
+    wert: `${mengeText(d.graphicsBytes)}${datenrate(d.graphicsBytes, v?.graphicsBytes)}`,
+  });
+
+  if (d.graphicsAvc.regionen > 0) {
+    zeilen.push({
+      name: 'H.264',
+      wert: `${d.graphicsAvc.regionen} Regionen · ${mengeText(d.graphicsAvc.bytes)}`,
+    });
+  }
+
+  const kanaele = kanalBytes(d);
+  zeilen.push({ name: 'Kanäle', wert: `${mengeText(kanaele)}${datenrate(kanaele, v ? kanalBytes(v) : undefined)}` });
+
+  zeilen.push({
+    name: 'An Webview',
+    wert:
+      `${mengeText(jetzt.anWebviewBytes)}${datenrate(jetzt.anWebviewBytes, vorher?.anWebviewBytes)}` +
+      ` · ${jetzt.anWebviewKacheln} Kacheln`,
+  });
+
+  zeilen.push({
+    name: 'Letztes Bild',
+    wert: jetzt.letztesBild ? `vor ${jetzt.zeit - jetzt.letztesBild} ms` : 'noch keines',
+  });
+
+  if (umfeld.rttMs !== undefined) {
+    zeilen.push({ name: 'Webview-RTT', wert: `${Math.round(umfeld.rttMs)} ms` });
+  }
+
+  if (d.activations > 1) zeilen.push({ name: 'Aktivierungen', wert: String(d.activations) });
+
+  return zeilen;
 }
 
 export class RdpSession {
@@ -55,6 +240,27 @@ export class RdpSession {
    */
   private verbindungSteht = false;
   private watchdogTimers: NodeJS.Timeout[] = [];
+
+  /**
+   * Alle offenen Sitzungen. Der Diagnose-Befehl wirkt auf alle zugleich: sein
+   * Zustand ist global gespeichert, und zwei Sitzungen mit verschiedener
+   * Overlay-Sichtbarkeit waeren weder erklaerbar noch nuetzlich.
+   */
+  private static readonly offeneSitzungen = new Set<RdpSession>();
+  /** Lebt genau so lange, wie mindestens eine Sitzung offen ist. */
+  private static diagnoseBefehl?: vscode.Disposable;
+
+  // --- Diagnose. Alle Zaehler bleiben stehen, solange das Overlay aus ist.
+  private diagnoseSichtbar = false;
+  private diagnoseTimer?: NodeJS.Timeout;
+  private letzteProbe?: DiagnoseProbe;
+  private anWebviewBytes = 0;
+  private anWebviewKacheln = 0;
+  private letztesBild = 0;
+  private verbundenSeit = 0;
+  private rttMs?: number;
+  private rttSeq = 0;
+  private rttGesendet = 0;
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
@@ -96,7 +302,51 @@ export class RdpSession {
     const session = new RdpSession(panel, context, connection, output, trustStore, statusBar);
     session.disposables.push(statusBar);
     session.wirePanel();
+    session.diagnoseSichtbar = RdpSession.diagnoseStartzustand(context);
+    RdpSession.merkeSitzung(session);
     return session;
+  }
+
+  /**
+   * Soll das Overlay beim Start sichtbar sein? Der zuletzt umgeschaltete
+   * Zustand hat Vorrang vor der Einstellung - wer es in einer Sitzung
+   * eingeschaltet hat, will es in der naechsten wiedersehen.
+   */
+  private static diagnoseStartzustand(context: vscode.ExtensionContext): boolean {
+    const gespeichert = context.globalState.get<boolean>(DIAGNOSE_ZUSTAND_SCHLUESSEL);
+    if (typeof gespeichert === 'boolean') return gespeichert;
+    return vscode.workspace.getConfiguration('rdp').get<boolean>('diagnostics.showOnStart', false);
+  }
+
+  /**
+   * Traegt die Sitzung ein und haelt den Diagnose-Befehl am Leben.
+   *
+   * Der Befehl gehoert der Klasse, nicht der einzelnen Sitzung: VS Code laesst
+   * denselben Befehlsnamen kein zweites Mal registrieren, eine zweite Sitzung
+   * wuerde sonst beim Oeffnen scheitern.
+   */
+  private static merkeSitzung(session: RdpSession): void {
+    if (RdpSession.offeneSitzungen.size === 0 && !RdpSession.diagnoseBefehl) {
+      RdpSession.diagnoseBefehl = vscode.commands.registerCommand(DIAGNOSE_BEFEHL, () =>
+        RdpSession.schalteDiagnoseUm(session.context),
+      );
+    }
+    RdpSession.offeneSitzungen.add(session);
+  }
+
+  private static vergissSitzung(session: RdpSession): void {
+    RdpSession.offeneSitzungen.delete(session);
+    if (RdpSession.offeneSitzungen.size === 0) {
+      RdpSession.diagnoseBefehl?.dispose();
+      RdpSession.diagnoseBefehl = undefined;
+    }
+  }
+
+  /** Schaltet das Overlay in allen offenen Sitzungen um und merkt sich das. */
+  private static schalteDiagnoseUm(context: vscode.ExtensionContext): void {
+    const naechster = !RdpSession.diagnoseStartzustand(context);
+    void context.globalState.update(DIAGNOSE_ZUSTAND_SCHLUESSEL, naechster);
+    for (const sitzung of RdpSession.offeneSitzungen) sitzung.setzeDiagnose(naechster);
   }
 
   private wirePanel(): void {
@@ -113,12 +363,22 @@ export class RdpSession {
   private async handleWebviewMessage(message: any): Promise<void> {
     switch (message?.type) {
       case 'ready':
+        // Der Zustand des Overlays geht vor dem Verbindungsaufbau hinueber:
+        // die Webview soll ihn nicht erst nach dem ersten Bild erfahren.
+        this.setzeDiagnose(this.diagnoseSichtbar);
         await this.start(message as ReadyMessage);
+        break;
+      case 'diagnosePong':
+        // Nur die Antwort auf den zuletzt gestellten Ping zaehlt.
+        if (message.seq === this.rttSeq && this.rttGesendet) this.rttMs = Date.now() - this.rttGesendet;
         break;
       case 'reconnect':
         this.painted = false;
         this.verbindungSteht = false;
         this.clearWatchdog();
+        // Die neue Verbindung faengt bei null an - sonst stuende im Overlay
+        // eine Rate, die aus zwei verschiedenen Sitzungen stammt.
+        this.diagnoseZaehlerZuruecksetzen();
         // Die alte Verbindung erst trennen, dann vergessen. Andersherum bleibt
         // sie offen, ohne dass noch jemand sie kennt: der Server haelt die
         // Sitzung, und ihre Horcher speisen weiter Kacheln und Fehler in
@@ -311,6 +571,7 @@ export class RdpSession {
 
     client.on('connect', () => {
       this.verbindungSteht = true;
+      this.verbundenSeit = Date.now();
       this.post({
         type: 'init',
         width: client.width,
@@ -449,6 +710,73 @@ export class RdpSession {
     this.watchdogTimers = [];
   }
 
+  // -------------------------------------------------------------- Diagnose
+
+  /**
+   * Blendet das Overlay ein oder aus.
+   *
+   * Ist es aus, laeuft kein Zeitgeber, es wird nichts abgefragt und im
+   * Zeichenpfad bleibt nur eine Abfrage eines Wahrheitswerts uebrig.
+   */
+  setzeDiagnose(sichtbar: boolean): void {
+    this.diagnoseSichtbar = sichtbar;
+    this.post({ type: 'diagnose', sichtbar });
+    if (this.diagnoseTimer) {
+      clearInterval(this.diagnoseTimer);
+      this.diagnoseTimer = undefined;
+    }
+    if (!sichtbar || this.disposed) {
+      // Die Zaehler zuruecksetzen: beim naechsten Einschalten sollen die Raten
+      // nicht aus einem Zeitraum stammen, in dem gar nicht gemessen wurde.
+      this.letzteProbe = undefined;
+      this.rttMs = undefined;
+      return;
+    }
+    this.sendeDiagnose();
+    this.diagnoseTimer = setInterval(() => this.sendeDiagnose(), DIAGNOSE_TAKT_MS);
+  }
+
+  /** Nur fuer Tests und die Statusanzeige: ist das Overlay eingeblendet? */
+  get diagnoseAktiv(): boolean {
+    return this.diagnoseSichtbar;
+  }
+
+  private diagnoseZaehlerZuruecksetzen(): void {
+    this.anWebviewBytes = 0;
+    this.anWebviewKacheln = 0;
+    this.letztesBild = 0;
+    this.verbundenSeit = 0;
+    this.letzteProbe = undefined;
+    this.rttMs = undefined;
+  }
+
+  /** Eine Messung nehmen, mit der vorigen vergleichen und hinueberschicken. */
+  private sendeDiagnose(): void {
+    if (this.disposed || !this.diagnoseSichtbar) return;
+    const jetzt: DiagnoseProbe = {
+      zeit: Date.now(),
+      diagnostics: this.client?.getDiagnostics(),
+      anWebviewBytes: this.anWebviewBytes,
+      anWebviewKacheln: this.anWebviewKacheln,
+      letztesBild: this.letztesBild,
+    };
+    const zeilen = diagnoseZeilen(jetzt, this.letzteProbe, {
+      breite: this.client?.width ?? this.lastReady?.width ?? 0,
+      hoehe: this.client?.height ?? this.lastReady?.height ?? 0,
+      verbundenSeit: this.verbundenSeit,
+      rttMs: this.rttMs,
+      base64: this.useBase64,
+    });
+    this.letzteProbe = jetzt;
+    this.post({ type: 'diagnose', sichtbar: true, titel: this.title, zeilen });
+
+    // Den Roundtrip erst nach dem Senden messen: die Antwort traegt zur
+    // naechsten Runde bei und haelt diese hier kurz.
+    this.rttSeq++;
+    this.rttGesendet = Date.now();
+    this.post({ type: 'diagnosePing', seq: this.rttSeq });
+  }
+
   /** Fasst alle Kacheln eines Updates zu genau einer Nachricht zusammen. */
   private sendTiles(tiles: DecodedBitmap[]): void {
     const rects: Array<{ x: number; y: number; w: number; h: number; offset: number; length: number }> = [];
@@ -460,6 +788,14 @@ export class RdpSession {
       rects.push({ x: tile.x, y: tile.y, w: tile.width, h: tile.height, offset, length: bytes.length });
       buffers.push(bytes);
       offset += bytes.length;
+    }
+
+    // Der einzige Messpunkt im Zeichenpfad: zwei Additionen, und auch die nur,
+    // wenn das Overlay wirklich zusieht.
+    if (this.diagnoseSichtbar) {
+      this.anWebviewBytes += offset;
+      this.anWebviewKacheln += rects.length;
+      this.letztesBild = Date.now();
     }
 
     this.post({ type: 'bitmap', rects, data: this.encode(Buffer.concat(buffers, offset)) });
@@ -618,6 +954,11 @@ export class RdpSession {
     if (this.disposed) return;
     this.disposed = true;
     this.clearWatchdog();
+    if (this.diagnoseTimer) {
+      clearInterval(this.diagnoseTimer);
+      this.diagnoseTimer = undefined;
+    }
+    RdpSession.vergissSitzung(this);
     this.client?.disconnect();
     this.client = undefined;
     this.statusBar.hide();

@@ -89,6 +89,10 @@
         "title": "RDP: Skalierung umschalten"
       },
       {
+        "command": "rdp.toggleDiagnostics",
+        "title": "RDP: Diagnose-Overlay ein-/ausblenden"
+      },
+      {
         "command": "rdp.refreshScreen",
         "title": "RDP: Bildschirm neu anfordern"
       },
@@ -267,6 +271,11 @@
           "type": "boolean",
           "default": false,
           "description": "Bild beim Skalieren glätten. Aus wirkt bei Text meist schärfer."
+        },
+        "rdp.diagnostics.showOnStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Diagnose-Overlay beim Start einer Sitzung einblenden. Der zuletzt über „RDP: Diagnose-Overlay ein-/ausblenden“ gewählte Zustand hat Vorrang."
         },
         "rdp.certificateTrust": {
           "type": "string",
