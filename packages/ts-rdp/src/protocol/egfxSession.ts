@@ -236,6 +236,11 @@ export class EgfxSession {
     return `${r.right - r.left}x${r.bottom - r.top}+${r.left}+${r.top}`;
   }
 
+  /** Groesse einer Surface fuer den Mitschnitt - oder der Hinweis, dass es sie nicht gibt. */
+  private static masse(s: Surface | undefined): string {
+    return s ? `(${s.width}x${s.height}, ${s.beschrieben ? 'bemalt' : 'unbemalt'})` : '(unbekannt)';
+  }
+
   /**
    * Beschneidet ein Quellrechteck auf die Flaeche, die es wirklich gibt.
    *
@@ -406,6 +411,21 @@ export class EgfxSession {
       case egfx.RDPGFX_CMDID_STARTFRAME:
         // Alles bis zum ENDFRAME gehoert zusammen und wird gebuendelt gezeigt,
         // damit kein halb gezeichnetes Bild aufblitzt.
+        //
+        // Faellt ein ENDFRAME aus, saehe das ohne diese Zeilen niemand: das
+        // naechste STARTFRAME wuerde die gesammelten Kacheln stillschweigend
+        // wegwerfen, und genau die Flaechen blieben dann auf dem Bildschirm
+        // stehen, die der Server gerade aktualisiert hat. Deshalb erst
+        // ausgeben, dann neu anfangen - und einmal melden, dass es passiert.
+        if (this.pending.length > 0) {
+          this.meldeEinmal(
+            'frame-ohne-ende',
+            `Graphics Pipeline: STARTFRAME, obwohl der vorige Frame nie mit ENDFRAME geschlossen ` +
+              `wurde - ${this.pending.length} bereits fertige Kachel(n) waeren verloren gegangen. ` +
+              'Sie werden jetzt ausgegeben.',
+          );
+          this.flush();
+        }
         this.imFrame = true;
         this.pending = [];
         break;
@@ -558,25 +578,40 @@ export class EgfxSession {
             `${pdu.fillRects.length} Rechteck(e) ${pdu.fillRects.map(R).join(' ')}`,
         );
         return;
-      case egfx.RDPGFX_CMDID_SURFACETOSURFACE:
+      // Die drei Kopierbefehle tragen im Mitschnitt alles, was eine
+      // Nachrechnung am Schreibtisch braucht: beide Surface-Nummern samt ihrer
+      // Groesse, das Quellrechteck, den Cacheslot mit Schluessel und Groesse
+      // des Eintrags sowie jeden Zielpunkt. Erst damit laesst sich einer
+      // einzelnen Zeile ansehen, ob ein Rechteck aus seiner Surface faellt oder
+      // ein Cacheeintrag anders gross ist als erwartet - ohne den Debugger.
+      case egfx.RDPGFX_CMDID_SURFACETOSURFACE: {
+        const q = this.surfaces.get(pdu.surfaceIdSrc);
+        const z = this.surfaces.get(pdu.surfaceIdDest);
         this.opts.log.debug(
-          `EGFX: ${name} von Surface ${pdu.surfaceIdSrc} ${R(pdu.rectSrc)} ` +
-            `nach Surface ${pdu.surfaceIdDest}, Zielpunkte ` +
-            `${pdu.destPts.map((q) => `(${q.x}, ${q.y})`).join(' ')}`,
+          `EGFX: ${name} von Surface ${pdu.surfaceIdSrc} ${EgfxSession.masse(q)} ${R(pdu.rectSrc)} ` +
+            `nach Surface ${pdu.surfaceIdDest} ${EgfxSession.masse(z)}, Zielpunkte ` +
+            `${pdu.destPts.map((p) => `(${p.x}, ${p.y})`).join(' ')}`,
         );
         return;
-      case egfx.RDPGFX_CMDID_SURFACETOCACHE:
+      }
+      case egfx.RDPGFX_CMDID_SURFACETOCACHE: {
+        const s = this.surfaces.get(pdu.surfaceId);
         this.opts.log.debug(
-          `EGFX: ${name} Surface ${pdu.surfaceId} ${R(pdu.rectSrc)} -> Slot ${pdu.cacheSlot}, ` +
-            `Schluessel 0x${pdu.cacheKey.toString(16)}`,
+          `EGFX: ${name} Surface ${pdu.surfaceId} ${EgfxSession.masse(s)} ${R(pdu.rectSrc)} -> Slot ` +
+            `${pdu.cacheSlot}, Schluessel 0x${pdu.cacheKey.toString(16)}`,
         );
         return;
-      case egfx.RDPGFX_CMDID_CACHETOSURFACE:
+      }
+      case egfx.RDPGFX_CMDID_CACHETOSURFACE: {
+        const e = this.cache.get(pdu.cacheSlot);
+        const s = this.surfaces.get(pdu.surfaceId);
         this.opts.log.debug(
-          `EGFX: ${name} Slot ${pdu.cacheSlot} -> Surface ${pdu.surfaceId}, Zielpunkte ` +
-            `${pdu.destPts.map((q) => `(${q.x}, ${q.y})`).join(' ')}`,
+          `EGFX: ${name} Slot ${pdu.cacheSlot} (${e ? `${e.width}x${e.height}` : 'leer'}) -> Surface ` +
+            `${pdu.surfaceId} ${EgfxSession.masse(s)}, Zielpunkte ` +
+            `${pdu.destPts.map((p) => `(${p.x}, ${p.y})`).join(' ')}`,
         );
         return;
+      }
       case egfx.RDPGFX_CMDID_EVICTCACHEENTRY: {
         // Auf info: der Befehl kam im Mitschnitt vom 12.09. kein einziges Mal
         // vor. Taucht er auf, aendert das die Lebensdauer jedes Cacheeintrags

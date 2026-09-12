@@ -225,7 +225,10 @@ describe('Graphics Pipeline - Auffaelligkeiten der Kopierbefehle', () => {
     m.sitzung.handle(surfaceToSurface(1, 2, [0, 0, 32, 32], [[0, 0]]));
     assert.match(m.auf('warn'), /kopiert aus Surface 1, in die noch nie etwas gemalt wurde/);
     assert.match(m.auf('warn'), /der Zielbereich bleibt stehen/);
-    assert.match(m.auf('debug'), /SURFACETOSURFACE von Surface 1 32x32\+0\+0 nach Surface 2, Zielpunkte \(0, 0\)/);
+    assert.match(
+      m.auf('debug'),
+      /SURFACETOSURFACE von Surface 1 \(64x64, unbemalt\) 32x32\+0\+0 nach Surface 2 \(64x64, unbemalt\), Zielpunkte \(0, 0\)/,
+    );
   });
 
   test('Ein Quellrechteck ausserhalb der Surface wird benannt', () => {
@@ -242,7 +245,10 @@ describe('Graphics Pipeline - Auffaelligkeiten der Kopierbefehle', () => {
     m.sitzung.handle(createSurface(1, 64, 64, egfx.PIXEL_FORMAT_XRGB_8888));
     m.sitzung.handle(unkomprimiert(1, [0, 0, 64, 64], 0x20));
     m.sitzung.handle(surfaceToCache(1, 5, [0, 0, 16, 16]));
-    assert.match(m.auf('debug'), /SURFACETOCACHE Surface 1 16x16\+0\+0 -> Slot 5, Schluessel 0x11223344/);
+    assert.match(
+      m.auf('debug'),
+      /SURFACETOCACHE Surface 1 \(64x64, bemalt\) 16x16\+0\+0 -> Slot 5, Schluessel 0x11223344/,
+    );
   });
 
   test('Ein Cacheeintrag aus einer unbemalten Surface wird gar nicht erst angelegt', () => {
@@ -759,3 +765,24 @@ describe('Graphics Pipeline - Cacheverwaltung (MS-RDPEGFX 3.3.5.8 und 3.3.5.17)'
   });
 });
 
+/**
+ * Ein STARTFRAME ohne vorangegangenes ENDFRAME warf bisher alles weg, was der
+ * offene Frame schon gesammelt hatte - lautlos. Genau die Flaechen waeren dann
+ * stehengeblieben, die der Server gerade aktualisiert hat.
+ */
+describe('Graphics Pipeline - Frame ohne Abschluss', () => {
+  test('Ein zweites STARTFRAME gibt die gesammelten Kacheln aus, statt sie zu verwerfen', () => {
+    const m = baueSitzung();
+    const gesehen: number[] = [];
+    m.bilder = (tiles) => gesehen.push(tiles.length);
+    m.sitzung.handle(createSurface(1, 64, 64, egfx.PIXEL_FORMAT_XRGB_8888));
+    m.sitzung.handle(mapToOutput(1, 0, 0));
+    m.sitzung.handle(startFrame(1));
+    m.sitzung.handle(unkomprimiert(1, [0, 0, 16, 16], 0x33));
+    m.sitzung.handle(unkomprimiert(1, [16, 0, 32, 16], 0x44));
+    // Kein ENDFRAME - der naechste Frame beginnt einfach.
+    m.sitzung.handle(startFrame(2));
+    assert.deepEqual(gesehen, [2], 'die beiden Kacheln des offenen Frames haetten ausgegeben werden muessen');
+    assert.match(m.auf('warn'), /obwohl der vorige Frame nie mit ENDFRAME geschlossen wurde - 2 bereits fertige Kachel/);
+  });
+});
