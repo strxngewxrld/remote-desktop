@@ -20,22 +20,37 @@ Client, ohne native Module.
 |---|---|
 | `RDP: Verbinden mit…` | Einmalige Verbindung ohne zu speichern |
 | `RDP: Verbindung hinzufügen` | Verbindung dauerhaft anlegen |
+| `RDP: Sitzung trennen` | Laufende Sitzung beenden |
 | `RDP: Strg+Alt+Entf senden` | Tastenkombination, die der Browser nicht durchlässt (`Strg+Alt+Ende`) |
 | `RDP: Bildschirm neu anfordern` | Vollbild vom Server neu übertragen lassen |
 | `RDP: Skalierung umschalten` | Zwischen Einpassen und Originalgröße wechseln |
 | `RDP: Gespeichertes Passwort löschen` | Zugangsdaten aus dem sicheren Speicher entfernen |
 | `RDP: Protokoll anzeigen` | Ausgabekanal mit dem Verbindungsverlauf |
 
+Über das Kontextmenü der Verbindungsliste kommen `Gespeicherte Verbindung öffnen`,
+`Verbindung bearbeiten`, `Verbindung löschen` und `Liste aktualisieren` dazu; sie
+sind in der Befehlspalette absichtlich ausgeblendet.
+
 ## Einstellungen
 
-Wichtige Schalter unter `rdp.*`:
+Alle Schalter liegen unter `rdp.*`:
 
-- `rdp.scaling` – Bild einpassen oder Originalgröße mit Bildlaufleisten
-- `rdp.defaultKeyboardLayout` – Layout, das dem Server gemeldet wird (Standard `de-DE`)
-- `rdp.defaultColorDepth` – 15, 16 oder 24 Bit
-- `rdp.certificateTrust` – `trust-on-first-use`, `always-ask` oder `ignore`
-- `rdp.highDpi` – volle Pixeldichte auf hochauflösenden Bildschirmen
-- `rdp.performance.*` – Hintergrundbild, Themes, Animationen, Schriftglättung
+| Einstellung | Standard | Wirkung |
+|---|---|---|
+| `rdp.connections` | `[]` | Gespeicherte Verbindungen (ohne Passwörter) |
+| `rdp.defaultKeyboardLayout` | `de-DE` | Layout, das dem Server gemeldet wird |
+| `rdp.defaultColorDepth` | `32` | Angeforderte Farbtiefe: 15, 16, 24 oder 32 |
+| `rdp.graphicsPipeline` | `true` | Graphics Pipeline (MS-RDPEGFX) anfordern – für Windows Server 2019+ nötig |
+| `rdp.scaling` | `fit` | Bild einpassen oder Originalgröße mit Bildlaufleisten |
+| `rdp.smoothScaling` | `false` | Beim Skalieren glätten; aus wirkt bei Text meist schärfer |
+| `rdp.certificateTrust` | `trust-on-first-use` | Alternativ `always-ask` oder `ignore` |
+| `rdp.highDpi` | `false` | Volle Pixeldichte auf hochauflösenden Bildschirmen |
+| `rdp.connectTimeout` | `15000` | Zeitlimit für den Verbindungsaufbau in Millisekunden |
+| `rdp.logLevel` | `info` | `error`, `warn`, `info`, `debug` oder `trace` |
+| `rdp.performance.*` | – | Hintergrundbild (aus), Themes (an), Menüanimationen (aus), Fensterinhalt beim Ziehen (aus), Schriftglättung (an) |
+
+Die Farbtiefe ist nur ein Wunsch: der Server gibt sie im Demand Active PDU vor,
+und diese Vorgabe wird übernommen.
 
 ## Tastatur
 
@@ -46,6 +61,10 @@ Panel den Fokus hat.
 
 ## Bekannte Grenzen
 
-Keine Zwischenablage, kein Audio, keine Laufwerksweiterleitung, keine
-Auflösungsänderung im laufenden Betrieb. Server, die eine Terminalserver-Lizenz
+Keine Zwischenablage, kein Audio, keine Laufwerksweiterleitung. Kein
+Multi-Monitor und kein RemoteApp/RAIL – es wird immer der ganze Desktop
+übertragen. Die Auflösung wird beim Verbinden aus der Panelgröße bestimmt und
+vom Client danach nicht mehr geändert; gibt der Server eine neue Größe vor,
+folgt die Sitzung ihr. Bildbereiche, die ein Server in H.264 sendet, bleiben
+leer – es gibt keinen H.264-Decoder. Server, die eine Terminalserver-Lizenz
 (Per-Device-CAL) verlangen, werden nicht unterstützt.

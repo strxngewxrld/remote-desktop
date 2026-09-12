@@ -43,9 +43,15 @@ VS Code Webview  ──Eingaben──▶  Extension-Host  ──TCP/TLS──▶
 - MCS-Domain, Capability Exchange, Lizenzphase
 - Bildschirmaktualisierungen über Fastpath und Slowpath, inklusive Reassemblierung
   fragmentierter Updates
-- **Interleaved-RLE-Dekomprimierung** (MS-RDPEGDI) für 8/15/16/24 bpp
-- **Surface Commands** mit unkomprimierten Pixeln – der Weg, über den aktuelle
-  Windows-Versionen (RDP-Stack 10.x) Grafik liefern
+- **Interleaved-RLE-Dekomprimierung** (MS-RDPEGDI) für 8/15/16/24 bpp und der
+  **planare Codec** (RDP 6.0/6.1) für 32 bpp – im Bitmap-Update wie in den
+  Surface Commands
+- **Surface Commands** mit unkomprimierten und planar komprimierten Pixeln
+- **Graphics Pipeline (MS-RDPEGFX)** auf dem dynamischen Kanal `drdynvc`
+  (MS-RDPEDYC): Surface-Verwaltung, Cache, ZGFX-Dekompression und die Codecs
+  **planar**, **ClearCodec** (samt NSCodec-Subcodec, MS-RDPNSC) und
+  **RemoteFX Progressive**. Das ist der Weg, über den Windows Server 2019+
+  ab Werk sendet – siehe unten.
 - Zeigerformen (Farb-, New- und Cached-Pointer) werden als echter Mauszeiger dargestellt
 - Tastatur als Set-1-Scancodes plus Unicode-Ersatzweg, Maus inklusive Rad,
   Seitentasten und Feststelltasten-Abgleich
@@ -53,7 +59,10 @@ VS Code Webview  ──Eingaben──▶  Extension-Host  ──TCP/TLS──▶
 **Extension**
 - Verbindungsverwaltung in der Seitenleiste, Passwörter im sicheren Speicher von VS Code
 - Zertifikatsprüfung **vor** der Anmeldung (Trust on first use mit Fingerabdruck)
-- Automatische Auflösung nach Panelgröße, Skalierung ein-/ausschaltbar
+- Automatische Auflösung nach Panelgröße, Skalierung ein-/ausschaltbar,
+  optional volle Pixeldichte auf HiDPI-Bildschirmen
+- Graphics Pipeline standardmäßig eingeschaltet (`rdp.graphicsPipeline`),
+  Farbtiefe standardmäßig 32 bpp (`rdp.defaultColorDepth`)
 - Strg+Alt+Entf, Bildschirm neu anfordern, Leistungsoptionen (Hintergrundbild, Themes …)
 
 ## Loslegen
@@ -67,6 +76,10 @@ npm test
 Danach in VS Code **F5** drücken – es startet ein zweites Fenster mit geladener
 Extension. Dort `RDP: Verbinden mit…` aus der Befehlspalette aufrufen.
 
+Weitere Skripte im Wurzelverzeichnis: `npm run package` baut das VSIX,
+`npm run test:vscode` startet die Integrationstests in einer echten
+VS-Code-Instanz.
+
 Die Library lässt sich auch ohne VS Code prüfen:
 
 ```bash
@@ -76,15 +89,27 @@ node packages/ts-rdp/examples/connect.mjs --host 10.0.0.5 --user admin --passwor
 Das Programm verbindet sich, zeigt den Zertifikatsfingerabdruck, sammelt einige
 Sekunden Bildschirmaktualisierungen und schreibt ein PPM-Bild – ein schneller
 Weg, um Protokollprobleme von Darstellungsproblemen zu trennen.
+`examples/diagnose.mjs` geht einen Schritt weiter und vergleicht mehrere
+Capability-Sätze gegen denselben Server, wenn ein Server sich ungewöhnlich
+verhält.
 
 ## Tests
 
-106 Tests, `npm test`:
+359 Tests, `npm test` – 313 in `ts-rdp`, 46 in `vscode-rdp`:
 
 - **Krypto gegen offizielle Testvektoren**: MD4 (RFC 1320), RC4,
   NTLMv2 inklusive Session Base Key aus MS-NLMP 4.2.4
 - **Protokollkodierung**: X.224, BER/PER, GCC, MCS, Share-PDUs, Client Info
 - **RLE-Decoder**: jede Lauf- und Bildart einzeln, gegen handgebaute Ströme
+- **Codecs gegen die durchgerechneten Beispiele der Spezifikation**: planar
+  (MS-RDPEGDI), ClearCodec mit allen drei Schichten und dem NSCodec-Subcodec,
+  RemoteFX Progressive mit RLGR1/RLGR3, inverser DWT und Aufwertungskacheln,
+  dazu ZGFX und die AVC-Bitstream-Zerlegung. ClearCodec und Progressive werden
+  zusätzlich gegen **echte Aufzeichnungen** eines Windows-Servers geprüft
+  (`test/fixtures/`)
+- **Graphics Pipeline**: Kopf- und Nachrichtenzerlegung beider Richtungen,
+  DVC-Rahmen (MS-RDPEDYC) und ein Test, der festhält, dass Client-Nachrichten
+  **nicht** in ZGFX verpackt werden – die Hülle ist einseitig
 - **TLS-Verträglichkeit**: Erkennung der BoringSSL-Meldung und ein Mock-Server,
   der den ersten Handshake scheitern lässt – der zweite Versuch muss durchkommen,
   ohne dass nach außen ein Fehler sichtbar wird
@@ -92,10 +117,13 @@ Weg, um Protokollprobleme von Darstellungsproblemen zu trennen.
   gefolgt von einem neuen Demand Active. Ein Test spielt das nach und prüft, dass
   der Client erneut bestätigt und die Sitzung weiterläuft
 - **Integration**: ein Mock-Server spricht die komplette Servergegenseite –
-  Handshake, Lizenz, Capability Exchange, Bitmaps, Eingaben. Für NLA rechnet er
-  die NTLMv2-Antwort mit dem bekannten Passwort nach und prüft Proof, MIC und
-  Kanalbindung. Die Clientseite wird also gegen eine unabhängige Umsetzung
-  derselben Spezifikation geprüft.
+  Handshake, Lizenz, Capability Exchange, Bitmaps, Eingaben, dynamische Kanäle
+  und Graphics Pipeline. Für NLA rechnet er die NTLMv2-Antwort mit dem bekannten
+  Passwort nach und prüft Proof, MIC und Kanalbindung. Die Clientseite wird also
+  gegen eine unabhängige Umsetzung derselben Spezifikation geprüft.
+
+Die Integrationstests gegen eine echte VS-Code-Instanz liegen getrennt unter
+`npm run test:vscode` und sind in den 359 nicht enthalten.
 
 ## TLS mit Windows-Zertifikaten
 
@@ -133,15 +161,25 @@ einfach Stille. Nachgemessen mit `examples/diagnose.mjs`: acht verschiedene
 Capability-Sätze, immer dasselbe Ergebnis; sobald `drdynvc` angemeldet wird,
 beginnt derselbe Server sofort zu senden.
 
-Dieser Client beherrscht die Pipeline **noch nicht**. Zwei Wege:
+**Dieser Client spricht die Pipeline inzwischen.** `rdp.graphicsPipeline` ist
+in der Extension standardmäßig aktiv; der Client meldet `drdynvc` an, nimmt die
+drei Kanäle des modernen Stapels an, handelt EGFX-Capabilities aus und dekodiert
+die eingehenden Kacheln. Zwei Dinge, die dabei teuer gelernt wurden und in Tests
+festgehalten sind:
 
-- **Auf dem Server** die Gruppenrichtlinie *Remotedesktopdienste →
-  Remotedesktop-Sitzungshost → Remotesitzungsumgebung → „WDDM-Grafikanzeigetreiber
-  für Remotedesktopverbindungen verwenden"* auf **Deaktiviert** setzen und neu
-  starten. Windows fällt dann auf den klassischen Weg zurück.
-- **Im Client** die Pipeline implementieren: `drdynvc` mit DVC-Protokoll
-  (MS-RDPEDYC), darauf EGFX mit Surface-Verwaltung, ZGFX-Dekompression und den
-  planaren Codec RDP 6.1. Steht auf der Liste.
+- **Die ZGFX-Hülle ist einseitig.** MS-RDPEGFX 3.2.5.1: Nachrichten vom Client
+  zum Server sind „not encapsulated within any external structure“. Wer sie
+  symmetrisch verpackt, verschiebt dem Server den Nachrichtenkopf – sein
+  Grafik-Subsystem steigt dann mit `ERRINFO_GRAPHICSSUBSYSTEMFAILED` (0x112F) aus.
+- **Ein Server sendet, was er will.** Der Testserver schickt praktisch alles in
+  ClearCodec – und darin zu einem guten Teil NSCodec als Subcodec. Zusätzlich
+  kommt RemoteFX Progressive über `WIRE_TO_SURFACE_PDU_2`; ohne diesen Decoder
+  fehlen ganze Bildbereiche. Nur EGFX 8.0 anzumelden hilft nicht, der Server
+  bleibt bei seiner Wahl.
+
+Wo die Pipeline unerwünscht ist – etwa zur Fehlersuche – schaltet
+`rdp.graphicsPipeline: false` sie ab; der Server fällt dann auf den klassischen
+Weg zurück, sofern seine Gruppenrichtlinie das zulässt.
 
 ## Grenzen
 
@@ -152,19 +190,32 @@ Ehrlich benannt, statt später zu überraschen:
 - **Keine Terminalserver-Lizenzausstellung.** Server mit Per-Device-CALs melden
   eine Lizenzanforderung, die dieser Client nicht bedienen kann. Windows ohne
   RDS-Rolle und xrdp sind nicht betroffen.
-- **Keine Zwischenablage, kein Audio, keine Laufwerksweiterleitung.** Dafür wären
-  virtuelle Kanäle (`cliprdr`, `rdpsnd`, `rdpdr`) nötig – die Kanalinfrastruktur
-  ist vorbereitet, die Kanäle selbst fehlen.
-- **Keine Auflösungsänderung im laufenden Betrieb.** Die Sitzung wird mit der
-  Panelgröße beim Verbinden aufgebaut.
-- **Keine Graphics Pipeline (MS-RDPEGFX).** Siehe den Abschnitt oben – betrifft
-  Windows Server 2019+ in der Standardkonfiguration.
-- **Kein planarer Codec (RDP 6.0).** Deshalb ist 16 bpp die Voreinstellung: bis
-  24 bpp komprimiert der Server mit Interleaved RLE, ab 32 bpp planar.
-- **Keine Zeichenbefehle (Drawing Orders), keine Bitmap-Codecs (RemoteFX, NSCodec,
-  H.264).** Der Client meldet bewusst keine Order- und Codec-Unterstützung. Der
-  Server fällt dadurch auf Bitmap-Updates bzw. unkomprimierte Surface Bits zurück –
-  robust, aber bandbreitenhungriger als ein Vollausbau.
+- **Keine Zwischenablage, kein Audio, keine Laufwerksweiterleitung.** Die
+  Kanalinfrastruktur steht – statische Kanäle und DVC laufen für die Graphics
+  Pipeline –, aber `cliprdr`, `rdpsnd` und `rdpdr` selbst sind nicht umgesetzt.
+- **Kein H.264.** AVC420 und AVC444 werden nur zerlegt, nicht dekodiert; die
+  Bibliothek reicht den Bitstream durch, die Extension nimmt ihn nicht entgegen.
+  Bildbereiche, die ein Server in H.264 sendet, bleiben leer. Die angebotenen
+  EGFX-Capabilities (V8 und V8.1 ohne Flags) sind deshalb bewusst so gewählt,
+  dass Windows nicht auf H.264 ausweicht.
+- **Keine Auflösungsänderung durch den Client.** Die Sitzung wird mit der
+  Panelgröße beim Verbinden aufgebaut; MS-RDPEDISP (Display Control) fehlt.
+  Gibt der *Server* eine neue Größe vor, folgt der Client ihr.
+- **Kein Multi-Monitor.** Die Client Monitor Data meldet genau einen primären
+  Monitor.
+- **Kein RemoteApp/RAIL.** Es wird immer der ganze Desktop übertragen.
+- **Keine Zeigerform über den Pipeline-Kanal.** `Microsoft::Windows::RDS::MouseCursor`
+  wird angenommen, damit das Grafik-Subsystem des Servers startet, aber nicht
+  ausgewertet; der Zeiger kommt weiterhin aus den klassischen Pointer-Updates.
+- **Keine Zeichenbefehle (Drawing Orders)** und **keine Bitmap-Codecs auf dem
+  klassischen Weg** (RemoteFX, NSCodec und H.264 als `CAPSETTYPE_BITMAP_CODECS`).
+  Der Client meldet dort bewusst keine Unterstützung; NSCodec und RemoteFX
+  Progressive sind nur innerhalb der Graphics Pipeline nutzbar. Auf dem
+  klassischen Weg fällt der Server dadurch auf Bitmap-Updates bzw. Surface Bits
+  zurück – robust, aber bandbreitenhungriger als ein Vollausbau.
+- **Die Library selbst nimmt weiterhin 16 bpp als Voreinstellung** (`RdpClient`
+  ohne `colorDepth`). Die Extension fordert 32 bpp an. Der Server darf die
+  Farbtiefe ohnehin vorgeben, und seine Angabe gewinnt.
 
 ## Lizenz
 
