@@ -352,10 +352,43 @@ export class EgfxSession {
         break;
 
       case egfx.RDPGFX_CMDID_DELETEENCODINGCONTEXT:
-        // 3.3.1.1: Der Kodierkontext ist danach ungueltig. Wuerden wir die
-        // Kachelzustaende behalten, wuerde eine spaetere Aufwertungskachel auf
-        // Werten aufbauen, die der Server bereits verworfen hat.
-        this.progressive.reset(pdu.surfaceId);
+        // Hier ist bewusst nichts zu tun - und das ist der Kern einer
+        // Fehlersuche, die uns graue Bloecke im Bild gekostet hat.
+        //
+        // Die Spezifikation kennt drei getrennte Zustandsbehaelter beim
+        // Client, und dieser Befehl raeumt nur den ersten davon:
+        //
+        //   - Codec Contexts (3.3.1.1): je Kodierkontext der Stand einer
+        //     laufenden progressiven Uebertragung. 3.3.5.3 sagt woertlich, was
+        //     zu tun ist: "the codec context identified by the codecContextId
+        //     field [...] MUST be removed from the Codec Contexts [...] ADM
+        //     element". Mehr nicht. Wir fuehren diese Liste gar nicht erst,
+        //     weil wir aus ihr nichts ableiten - also bleibt nichts zu loeschen.
+        //   - Progressive Tile Contexts (3.3.1.2): Vorzeichen und Bitposition
+        //     je Kachel. Sie "can be discarded" - eine Erlaubnis, keine
+        //     Pflicht -, und zwar erst, wenn *alle* zugehoerigen Kodierkontexte
+        //     weg sind. Welche das sind, wissen wir nicht; Wegwerfen auf
+        //     Verdacht wuerde einen noch laufenden Aufwertungslauf zerstoeren.
+        //   - Sub-Band Diffing Tile Contexts (3.3.1.3): die DWT-Koeffizienten
+        //     (DecDwtQ), gegen die eine Differenzkachel rechnet. Fuer sie gilt
+        //     das Gegenteil: "MUST be preserved for the duration of the RDP
+        //     connection or until the off-screen surface [...] has been
+        //     deleted".
+        //
+        // Genau dagegen verstiess der frueherere reset(surfaceId) an dieser
+        // Stelle: er warf die Kachelhistorie der ganzen Flaeche weg. Der echte
+        // Server legt fuer praktisch jede progressive Aktualisierung einen
+        // eigenen Kodierkontext an und loescht ihn sofort wieder (im Mitschnitt
+        // logs/dump.txt 329 Mal in einer Minute), also radierten wir die
+        // Historie 329 Mal aus. Jede darauf folgende RFX_TILE_DIFFERENCE rechnete
+        // ihre Differenz auf lauter Nullen - und Y = Cb = Cr = 0 ergibt nach dem
+        // Level-Shift exakt RGB(128, 128, 128), das mittelgraue Rechteck ueber
+        // jedem Bereich, der sich gerade aenderte.
+        //
+        // FreeRDP haelt es genauso: gdi_DeleteEncodingContext in
+        // libfreerdp/gdi/gfx.c ist ein leeres CHANNEL_RC_OK, und der
+        // progressive Zustand faellt dort allein in gdi_DeleteSurface
+        // (progressive_delete_surface_context).
         break;
 
       default:
@@ -428,12 +461,13 @@ export class EgfxSession {
         );
         return;
       case egfx.RDPGFX_CMDID_DELETEENCODINGCONTEXT:
-        // Wirft den progressiven Kachelzustand weg. Kommt der Befehl, waehrend
-        // der Server noch Aufwertungen fuer dieselbe Flaeche schickt, malt der
-        // Decoder danach grau - deshalb steht er auf info.
+        // Bleibt auf info: der Befehl kommt selten genug, und die Frage "wie
+        // viele Kodierkontexte macht dieser Server auf?" hat uns den grauen
+        // Bildfehler ueberhaupt erst erklaert. Die Kachelhistorie ueberlebt ihn
+        // (3.3.1.3), deshalb steht hier nichts mehr von "verworfen".
         this.opts.log.info(
           `EGFX: ${name} Surface ${pdu.surfaceId}, Kodierkontext ${pdu.codecContextId} - ` +
-            'progressiver Kachelzustand wird verworfen',
+            'Kachelhistorie bleibt erhalten (3.3.1.3)',
         );
         return;
 
