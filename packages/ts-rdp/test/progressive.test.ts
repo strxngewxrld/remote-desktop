@@ -636,6 +636,46 @@ describe('Progressive - Erstdurchgang, Aufwertung und Differenzkacheln', () => {
     ]);
     assert.throws(() => decoder.decode(nachricht, 7), istProtokollfehler(/kann die Qualitaet nicht verringern/));
   });
+
+  /**
+   * Die Diagnose ist kein Beiwerk, sondern das Werkzeug fuer die Fehlersuche an
+   * grauen Flaechen: mittleres Grau entsteht genau dann, wenn eine Kachel ohne
+   * Vorzustand gezeichnet wird, und nur diese Zaehler machen das im Mitschnitt
+   * eines fremden Servers sichtbar.
+   */
+  test('eine Aufwertung ohne Erstdurchgang wird gezaehlt und ergibt Grau', () => {
+    const { decoder, nachrichten } = ablauf();
+    const kacheln = decoder.decode(nachrichten[1], 7);
+    const d = decoder.letzteDiagnose();
+    assert.equal(d.aufwertung, 1);
+    assert.equal(d.aufwertungOhneErstdurchgang, 1);
+    assert.equal(d.grau, 1);
+    assert.deepEqual([...farben(kacheln[0])], [['128,128,128,255', 4096]]);
+  });
+
+  test('eine Differenzkachel ohne Vorzustand wird gezaehlt', () => {
+    const { decoder, nachrichten } = ablauf();
+    decoder.decode(nachrichten[2], 7);
+    const d = decoder.letzteDiagnose();
+    assert.equal(d.erstdurchgang, 1);
+    assert.equal(d.differenzOhneVorzustand, 1);
+    assert.equal(d.grau, 1);
+  });
+
+  test('nach einem vollstaendigen Ablauf meldet die Diagnose keinen fehlenden Vorzustand', () => {
+    const { decoder, nachrichten } = ablauf();
+    decoder.decode(nachrichten[0], 7);
+    assert.deepEqual(
+      { erst: decoder.letzteDiagnose().erstdurchgang, grau: decoder.letzteDiagnose().grau },
+      { erst: 1, grau: 1 },
+    );
+    decoder.decode(nachrichten[1], 7);
+    const d = decoder.letzteDiagnose();
+    assert.equal(d.aufwertungOhneErstdurchgang, 0);
+    assert.equal(d.grau, 0);
+    assert.equal(d.regionen, 1);
+    assert.equal(d.stuecke, 1);
+  });
 });
 
 describe('Progressive - abgeschnittene und widerspruechliche Stroeme', () => {

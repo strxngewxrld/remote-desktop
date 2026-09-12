@@ -53,6 +53,7 @@
  *     planar.ts/clear.ts wird hier *nicht* getauscht, siehe ycbcrNachRgba.
  */
 import { RdpProtocolError } from '../core/errors.js';
+import { Logger, nullLogger } from '../core/log.js';
 
 // --- Blocktypen (2.2.4.2.1) -------------------------------------------------
 
@@ -793,6 +794,18 @@ interface KachelZustand {
   readonly koeffizienten: Int32Array[];
   readonly vorzeichen: Int8Array[];
   readonly bitPos: Int32Array[];
+  /**
+   * Hat diese Kachel schon einen Erstdurchgang gesehen - WBT_TILE_SIMPLE oder
+   * WBT_TILE_PROGRESSIVE_FIRST?
+   *
+   * Wichtig fuer die Fehlersuche: eine Aufwertung ohne Erstdurchgang schiebt
+   * Bits auf lauter Nullen. Y = Cb = Cr = 0 ergibt in ycbcrNachRgba durch den
+   * Level-Shift exakt RGB(128, 128, 128) - eine mittelgraue Flaeche. Dasselbe
+   * gilt fuer eine Differenzkachel ohne Vorzustand.
+   */
+  erstdurchgang: boolean;
+  /** Steht ueberhaupt ein Koeffizient ungleich null? Sonst wird grau gemalt. */
+  hatInhalt: boolean;
 }
 
 function neueKachel(): KachelZustand {
@@ -804,7 +817,7 @@ function neueKachel(): KachelZustand {
     vorzeichen.push(new Int8Array(KOEFFIZIENTEN));
     bitPos.push(new Int32Array(BAENDER));
   }
-  return { koeffizienten, vorzeichen, bitPos };
+  return { koeffizienten, vorzeichen, bitPos, erstdurchgang: false, hatInhalt: false };
 }
 
 /**
@@ -861,8 +874,63 @@ const VOLLE_QUALITAET: Quanttabelle[] = [
  * Eine Instanz je Verbindung. Der gesamte Zustand haengt an der surfaceId, weil
  * der Server denselben Kachelraster fuer jede Flaeche getrennt fortschreibt.
  */
+/**
+ * Was in einer Nachricht steckte - ausschliesslich fuer die Fehlersuche.
+ *
+ * Die drei Zaehler mit "OhneVorzustand"/"OhneErstdurchgang" und `grau` sind
+ * die eigentliche Aussage: sie benennen genau die Faelle, in denen dieser
+ * Decoder mittelgraue Flaechen malt, weil ihm der Vorzustand fehlt.
+ */
+export interface ProgressiveDiagnose {
+  /** RFX_PROGRESSIVE_REGION-Bloecke in dieser Nachricht. */
+  regionen: number;
+  /** Rechtecke aller Regionen zusammen. */
+  rechtecke: number;
+  /** WBT_TILE_SIMPLE. */
+  einfach: number;
+  /** WBT_TILE_PROGRESSIVE_FIRST. */
+  erstdurchgang: number;
+  /** WBT_TILE_PROGRESSIVE_UPGRADE. */
+  aufwertung: number;
+  /** Aufwertung auf eine Kachel, die nie einen Erstdurchgang hatte. */
+  aufwertungOhneErstdurchgang: number;
+  /** Differenzkachel (RFX_TILE_DIFFERENCE) ohne Vorzustand. */
+  differenzOhneVorzustand: number;
+  /** Gezeichnete Kacheln, deren Koeffizienten samt und sonders null sind. */
+  grau: number;
+  /** Ausgegebene, an den Regionsrechtecken beschnittene Kachelstuecke. */
+  stuecke: number;
+}
+
+function leereDiagnose(): ProgressiveDiagnose {
+  return {
+    regionen: 0,
+    rechtecke: 0,
+    einfach: 0,
+    erstdurchgang: 0,
+    aufwertung: 0,
+    aufwertungOhneErstdurchgang: 0,
+    differenzOhneVorzustand: 0,
+    grau: 0,
+    stuecke: 0,
+  };
+}
+
 export class ProgressiveDecoder {
   private readonly flaechen = new Map<number, Flaechenzustand>();
+  private diagnose: ProgressiveDiagnose = leereDiagnose();
+
+  /**
+   * Der Logger dient allein der Fehlersuche an Bildfehlern. Alles, was hier
+   * herausfaellt, liegt auf der Stufe `trace` - eine Zeile je Kachel waere im
+   * Normalbetrieb schlicht zu viel (ein Vollbildaufbau bringt Tausende).
+   */
+  constructor(private readonly log: Logger = nullLogger) {}
+
+  /** Was die letzte decode()-Nachricht enthielt. Nur zur Fehlersuche. */
+  letzteDiagnose(): ProgressiveDiagnose {
+    return this.diagnose;
+  }
 
   /**
    * Verwirft den Zustand einer Flaeche - oder aller, wenn surfaceId fehlt.
@@ -895,6 +963,7 @@ export class ProgressiveDecoder {
   decode(src: Buffer, surfaceId: number): ProgressiveTile[] {
     const flaeche = this.flaeche(surfaceId);
     const ergebnis: ProgressiveTile[] = [];
+    this.diagnose = leereDiagnose();
     let o = 0;
 
     while (o < src.length) {
@@ -1098,6 +1167,13 @@ export class ProgressiveDecoder {
       quantProgVals,
       reduceExtrapolate: (flags & RFX_DWT_REDUCE_EXTRAPOLATE) !== 0,
     };
+    this.diagnose.regionen++;
+    this.diagnose.rechtecke += rects.length;
+    this.log.trace(
+      `Progressive: Region mit ${numTiles} Kacheln, ${rects.length} Rechteck(en) ` +
+        `${rects.map((k) => `${k.w}x${k.h}+${k.x}+${k.y}`).join(' ')}, ` +
+        `reduceExtrapolate ${region.reduceExtrapolate ? 'ja' : 'nein'}`,
+    );
 
     const kachelDaten = r.bytes(tileDataSize, 'RFX_PROGRESSIVE_REGION::tiles');
     const gezaehlt = this.liesKacheln(kachelDaten, region, flaeche, ergebnis);
@@ -1209,6 +1285,16 @@ export class ProgressiveDecoder {
     const zustand = this.kachel(flaeche, kopf);
     const baender = region.reduceExtrapolate ? BAENDER_EXTRAPOLIERT : BAENDER_KLASSISCH;
 
+    if (progressiv) this.diagnose.erstdurchgang++;
+    else this.diagnose.einfach++;
+    // Eine Differenzkachel rechnet gegen einen Stand, den es hier geben muss.
+    // Fehlt er, sind die Koeffizienten anschliessend nicht der Bildinhalt,
+    // sondern nur die Differenz - und bei kleiner Differenz heisst das grau.
+    if (differenz && !zustand.erstdurchgang) this.diagnose.differenzOhneVorzustand++;
+    if (!differenz) zustand.hatInhalt = false;
+    zustand.erstdurchgang = true;
+    let inhalt = false;
+
     for (let k = 0; k < KOMPONENTEN; k++) {
       const koeff = zustand.koeffizienten[k];
       const vorzeichen = zustand.vorzeichen[k];
@@ -1241,12 +1327,19 @@ export class ProgressiveDecoder {
         for (let i = b.offset; i < ende; i++) {
           const wert = roh[i];
           koeff[i] += wert * pqf;
+          if (wert !== 0) inhalt = true;
           if (!istLL3) vorzeichen[i] = wert < 0 ? -1 : wert > 0 ? 1 : 0;
         }
         bitPos[b.quant] = pos;
       }
     }
 
+    if (inhalt) zustand.hatInhalt = true;
+    this.log.trace(
+      `Progressive: Kachel (${kopf.xIdx}, ${kopf.yIdx}) ` +
+        `${progressiv ? 'Erstdurchgang' : 'einfach'}${differenz ? ', Differenz' : ''}` +
+        `${zustand.hatInhalt ? '' : ', ohne Inhalt (wird grau)'}`,
+    );
     this.zeichne(zustand, kopf, quant, region, ergebnis);
   }
 
@@ -1287,6 +1380,14 @@ export class ProgressiveDecoder {
     const zustand = this.kachel(flaeche, kopf);
     const baender = region.reduceExtrapolate ? BAENDER_EXTRAPOLIERT : BAENDER_KLASSISCH;
 
+    this.diagnose.aufwertung++;
+    // Der entscheidende Fall fuer graue Flaechen: eine Aufwertung schiebt nur
+    // weitere Bits nach. Ohne Erstdurchgang stehen darunter lauter Nullen, und
+    // Y = Cb = Cr = 0 wird durch den Level-Shift zu RGB(128, 128, 128).
+    const ohneErstdurchgang = !zustand.erstdurchgang;
+    if (ohneErstdurchgang) this.diagnose.aufwertungOhneErstdurchgang++;
+    let inhalt = false;
+
     for (let k = 0; k < KOMPONENTEN; k++) {
       const koeff = zustand.koeffizienten[k];
       const vorzeichen = zustand.vorzeichen[k];
@@ -1318,13 +1419,16 @@ export class ProgressiveDecoder {
           if (istLL3) {
             // 3.3.8.2.1.2: "When an LL3 element is decoded, input is always read
             // from the raw buffer and added to DecDwtQ." Kein Vorzeichen.
-            koeff[i] += rohLeser.lies(nBits) * pqf;
+            const ll3Wert = rohLeser.lies(nBits);
+            koeff[i] += ll3Wert * pqf;
+            if (ll3Wert !== 0) inhalt = true;
             continue;
           }
           const s = vorzeichen[i];
           if (s === 0) {
             const wert = srlLeser.naechster(nBits);
             koeff[i] += wert * pqf;
+            if (wert !== 0) inhalt = true;
             vorzeichen[i] = wert < 0 ? -1 : wert > 0 ? 1 : 0;
           } else {
             // Das Vorzeichen bleibt, was es war: im Rohstrom steht nur der
@@ -1333,12 +1437,19 @@ export class ProgressiveDecoder {
             // der gelesene Betrag positiv ist.
             const betrag = rohLeser.lies(nBits);
             koeff[i] += s > 0 ? betrag * pqf : -betrag * pqf;
+            if (betrag !== 0) inhalt = true;
           }
         }
         bitPos[b.quant] = pos;
       }
     }
 
+    if (inhalt) zustand.hatInhalt = true;
+    this.log.trace(
+      `Progressive: Kachel (${kopf.xIdx}, ${kopf.yIdx}) Aufwertung` +
+        `${ohneErstdurchgang ? ' OHNE Erstdurchgang' : ''}` +
+        `${zustand.hatInhalt ? '' : ', ohne Inhalt (wird grau)'}`,
+    );
     this.zeichne(zustand, kopf, quant, region, ergebnis);
   }
 
@@ -1407,6 +1518,8 @@ export class ProgressiveDecoder {
       if (xa < xe && ya < ye) ausschnitte.push({ x: xa, y: ya, w: xe - xa, h: ye - ya });
     }
     if (ausschnitte.length === 0) return;
+    this.diagnose.stuecke += ausschnitte.length;
+    if (!zustand.hatInhalt) this.diagnose.grau++;
 
     const ebenen: Int32Array[] = [];
     for (let k = 0; k < KOMPONENTEN; k++) {
