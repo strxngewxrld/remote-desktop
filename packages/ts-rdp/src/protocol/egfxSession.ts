@@ -16,6 +16,7 @@ import { planarDecompress } from '../codec/planar.js';
 import { ClearCodecDecoder } from '../codec/clear.js';
 import { ProgressiveDecoder } from '../codec/progressive.js';
 import * as avc from '../codec/avcMeta.js';
+import { analysiereBitstrom, AvcBitstromAnalyse, AvcSurfaceLage } from '../codec/avcFrame.js';
 import * as egfx from './egfx.js';
 
 /** Eine Surface: Zeichenflaeche des Servers, RGBA von oben nach unten. */
@@ -56,6 +57,26 @@ export interface EgfxVideoFrame {
   chroma420?: avc.Avc420Stream;
   /** Rohwert des LC-Felds; bei AVC420 nicht belegt. */
   lc?: number;
+  /**
+   * Lage und Groesse der Ziel-Surface.
+   *
+   * Der Decoder steht im Webview und kennt die Surfaces nicht. Er braucht sie
+   * aber, denn die regionRects sind surface-relativ und das dekodierte Bild
+   * liegt am Surface-Ursprung - ohne diese Angabe koennte er das Bild nicht
+   * auf dem Bildschirm platzieren.
+   */
+  surface: AvcSurfaceLage;
+  /**
+   * Ist die Surface ueberhaupt auf den Ausgabebereich abgebildet? Wenn nicht,
+   * gehoert nichts davon auf den Bildschirm; `outputX`/`outputY` sind dann
+   * bedeutungslos.
+   */
+  abgebildet: boolean;
+  /**
+   * Was im Bitstream des YUV420-Teilrahmens steht: Codecname, Schluesselbild,
+   * Parametersaetze. Fehlt genau dann, wenn auch `yuv420` fehlt.
+   */
+  analyse?: AvcBitstromAnalyse;
 }
 
 export interface EgfxSessionOptions {
@@ -108,6 +129,34 @@ export interface EgfxSessionOptions {
 export const DEFAULT_EGFX_CAPS: egfx.EgfxCapsSet[] = [
   { version: egfx.RDPGFX_CAPVERSION_8, flags: 0 },
   { version: egfx.RDPGFX_CAPVERSION_81, flags: 0 },
+];
+
+/**
+ * Derselbe Satz, nur mit angemeldetem H.264 in YUV420p.
+ *
+ * Warum genau diese beiden Flags: MS-RDPEGFX 2.2.3.2 zaehlt fuer das
+ * flags-Feld von RDPGFX_CAPSET_VERSION81 die erlaubten Kombinationen auf, und
+ * AVC420_ENABLED kommt dort ausschliesslich zusammen mit SMALL_CACHE vor
+ * ("SMALL_CACHE | AVC420_ENABLED" bzw. dasselbe noch mit THINCLIENT).
+ * AVC420_ENABLED allein steht nicht in der Liste.
+ *
+ * THINCLIENT bleibt weg - es weist den Server auf RemoteFX statt RemoteFX
+ * Progressive, und RemoteFX ist in neueren Windows-Versionen entfernt; deren
+ * Grafik-Subsystem steigt dann mit ERRINFO_GRAPHICSSUBSYSTEMFAILED aus.
+ *
+ * Ebenso bewusst *keine* Version ab 10: dort bedeutet ein nicht gesetztes
+ * AVC_DISABLED die Zusage, H.264 auch in YUV444 zu koennen. Solange nur 420
+ * gebaut ist, waere das eine Luege, die der Server beim Wort nimmt.
+ *
+ * V8 ohne Flags bleibt als Rueckfall im Satz: waehlt der Server es aus, laeuft
+ * alles wie bisher ueber ClearCodec, Progressive und Planar weiter.
+ */
+export const AVC420_EGFX_CAPS: egfx.EgfxCapsSet[] = [
+  { version: egfx.RDPGFX_CAPVERSION_8, flags: 0 },
+  {
+    version: egfx.RDPGFX_CAPVERSION_81,
+    flags: egfx.RDPGFX_CAPS_FLAG_SMALL_CACHE | egfx.RDPGFX_CAPS_FLAG_AVC420_ENABLED,
+  },
 ];
 
 export class EgfxSession {
@@ -290,7 +339,7 @@ export class EgfxSession {
     // H.264 geht einen eigenen Weg: es entsteht hier keine RGBA-Kachel, weil
     // dekodiert wird, wo ein Decoder steht.
     if (istAvc(pdu.codecId)) {
-      this.wireToSurfaceAvc(pdu);
+      this.wireToSurfaceAvc(pdu, surface);
       return;
     }
 
@@ -349,23 +398,36 @@ export class EgfxSession {
    * gleich den naechsten Rahmen, und ein verlorenes Teilbild ist allemal besser
    * als eine abgebrochene Verbindung.
    */
-  private wireToSurfaceAvc(pdu: egfx.EgfxWireToSurface1): void {
+  private wireToSurfaceAvc(pdu: egfx.EgfxWireToSurface1, surface: Surface): void {
     this.codecCounts.set(pdu.codecId, (this.codecCounts.get(pdu.codecId) ?? 0) + 1);
+
+    const lage: AvcSurfaceLage = {
+      width: surface.width,
+      height: surface.height,
+      outputX: surface.output?.x ?? 0,
+      outputY: surface.output?.y ?? 0,
+    };
+    const rumpf = {
+      surfaceId: pdu.surfaceId,
+      codecId: pdu.codecId,
+      destRect: pdu.destRect,
+      surface: lage,
+      abgebildet: surface.output !== undefined,
+    };
 
     let frame: EgfxVideoFrame;
     try {
       if (pdu.codecId === egfx.RDPGFX_CODECID_AVC420) {
-        frame = { surfaceId: pdu.surfaceId, codecId: pdu.codecId, destRect: pdu.destRect,
-          yuv420: avc.parseAvc420(pdu.bitmapData) };
+        frame = { ...rumpf, yuv420: avc.parseAvc420(pdu.bitmapData) };
       } else {
         const strom = avc.parseAvc444(pdu.bitmapData);
-        frame = { surfaceId: pdu.surfaceId, codecId: pdu.codecId, destRect: pdu.destRect,
-          yuv420: strom.luma, chroma420: strom.chroma, lc: strom.lc };
+        frame = { ...rumpf, yuv420: strom.luma, chroma420: strom.chroma, lc: strom.lc };
       }
     } catch (err) {
       this.opts.log.warn(`Graphics Pipeline: AVC-Nutzlast unlesbar - ${(err as Error).message}`);
       return;
     }
+    if (frame.yuv420) frame.analyse = analysiereBitstrom(frame.yuv420.bitstream);
 
     this.avcRegionen += (frame.yuv420?.regions.length ?? 0) + (frame.chroma420?.regions.length ?? 0);
     this.avcBytes += (frame.yuv420?.bitstream.length ?? 0) + (frame.chroma420?.bitstream.length ?? 0);
@@ -380,6 +442,17 @@ export class EgfxSession {
       }
       return;
     }
+
+    // Die Reihenfolge entscheidet ueber das Bild: AVC ergaenzt die uebrigen
+    // Codecpfade, es ersetzt sie nicht, und beide schreiben auf dieselbe
+    // Flaeche. Was vor diesem Teilbild dekodiert wurde, muss also auch vorher
+    // beim Empfaenger ankommen - sonst uebermalt eine gebuendelte ClearCodec-
+    // Kachel hinterher ein Videobild, das eigentlich juenger ist.
+    //
+    // Deshalb hier die Buendelung bis zum ENDFRAME aufbrechen. Das kostet ein
+    // paar Nachrichten mehr, aber nur in Sitzungen, in denen ueberhaupt AVC
+    // ankommt; ohne AVC wird diese Zeile nie erreicht.
+    this.flush();
     this.opts.onVideo(frame);
   }
 
