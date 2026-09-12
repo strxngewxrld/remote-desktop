@@ -319,3 +319,26 @@ describe('Webview - AVC ergaenzt den Kachelweg, es ersetzt ihn nicht', () => {
     assert.equal(w.videobilder.length, 0, 'das ausgebliebene Videobild wird nicht gezeichnet');
   });
 });
+
+describe('Die Einstellung rdp.graphics.avc420', () => {
+  const manifest = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8')) as {
+    contributes: { configuration: { properties: Record<string, { type: string; default: unknown }> } };
+  };
+
+  test('steht im Manifest und ist standardmaessig aus', () => {
+    // Das ist keine Formsache. Der bestehende EGFX-Pfad funktioniert
+    // nachweislich; ein versehentlich auf true gesetzter Standard wuerde jede
+    // Sitzung auf einen Weg schicken, der ohne WebCodecs leere Flaechen liefert.
+    const eintrag = manifest.contributes.configuration.properties['rdp.graphics.avc420'];
+    assert.ok(eintrag, 'die Einstellung fehlt im Manifest');
+    assert.equal(eintrag.type, 'boolean');
+    assert.equal(eintrag.default, false);
+  });
+
+  test('aendert keine der bestehenden Grafikeinstellungen', () => {
+    const eigenschaften = manifest.contributes.configuration.properties;
+    assert.equal(eigenschaften['rdp.graphicsPipeline'].default, true);
+    assert.equal(eigenschaften['rdp.smoothScaling'].default, false);
+    assert.equal(eigenschaften['rdp.scaling'].default, 'fit');
+  });
+});
