@@ -1046,7 +1046,8 @@ export class EgfxSession {
       this.meldeEinmal(
         'c2s-slot',
         `Graphics Pipeline: CACHETOSURFACE zeigt auf Slot ${pdu.cacheSlot}, den diese Sitzung nie ` +
-          `gefuellt hat. Der Zielbereich auf Surface ${pdu.surfaceId} bleibt unveraendert stehen.`,
+          'gefuellt hat - oder der seit EVICTCACHEENTRY wieder leer ist, oder dessen SURFACETOCACHE ' +
+          `nichts abzulegen hatte. Der Zielbereich auf Surface ${pdu.surfaceId} bleibt unveraendert stehen.`,
       );
       return;
     }
