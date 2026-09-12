@@ -1,0 +1,24 @@
+# Abhaengigkeiten
+node_modules/
+
+# Build- und Testausgaben (alle reproduzierbar)
+dist/
+dist-test/
+dist-integration/
+out/
+*.tsbuildinfo
+
+# Verpackte Extension
+*.vsix
+
+# Heruntergeladenes VS Code fuer die Integrationstests (~2 GB)
+.vscode-test/
+
+# Diagnosematerial: der Ordner und seine Erklaerung bleiben, der Inhalt nicht
+logs/*
+!logs/README.md
+*.log
+
+# Betriebssystem
+.DS_Store
+Thumbs.db

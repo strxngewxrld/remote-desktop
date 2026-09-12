@@ -1,0 +1,130 @@
+:root {
+  --rdp-bg: #1b1b1b;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--rdp-bg);
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+#stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+
+#stage.scroll {
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+canvas {
+  display: block;
+  outline: none;
+  image-rendering: pixelated;
+  background: #000;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+canvas.smooth {
+  image-rendering: auto;
+}
+
+canvas.focused {
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+
+#overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 20, 20, 0.92);
+  backdrop-filter: blur(2px);
+}
+
+#overlay.visible {
+  display: flex;
+}
+
+.overlay-card {
+  max-width: 30rem;
+  padding: 2rem 2.5rem;
+  text-align: center;
+}
+
+.overlay-card h2 {
+  margin: 0.75rem 0 0.5rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.overlay-card p {
+  margin: 0;
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.overlay-card button {
+  margin-top: 1.25rem;
+  padding: 0.4rem 1rem;
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.overlay-card button:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  margin: 0 auto;
+  border: 2px solid var(--vscode-descriptionForeground);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+.spinner[hidden] {
+  display: none;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+#hint {
+  position: absolute;
+  bottom: 0.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.3rem 0.75rem;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #ddd;
+  font-size: 0.75rem;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+#hint.show {
+  opacity: 1;
+}
