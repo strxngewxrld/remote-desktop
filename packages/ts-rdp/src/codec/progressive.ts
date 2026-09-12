@@ -16,7 +16,13 @@
  *
  * Der Zustand haengt deshalb an der surfaceId und darin an der Kachelposition
  * (3.3.1.2 "Progressive Tile Contexts", 3.3.1.3 "Sub-Band Diffing Tile
- * Contexts"). Eine Nachricht enthaelt beliebig viele Kacheln mit eigenen
+ * Contexts") - und *nicht* am Kodierkontext aus RDPGFX_WIRE_TO_SURFACE_PDU_2.
+ * Das sind zwei verschiedene Dinge: der Kodierkontext (3.3.1.1) lebt nur, bis
+ * der Server ihn mit RDPGFX_DELETE_ENCODING_CONTEXT_PDU wieder loescht; die
+ * Kachelhistorie ueberlebt das und endet erst mit der Flaeche. Ein Windows-11-
+ * Server legt fuer praktisch jede Aktualisierung einen eigenen Kodierkontext an,
+ * also ist der Unterschied nicht theoretisch. Eine Nachricht enthaelt beliebig
+ * viele Kacheln mit eigenen
  * Koordinaten; RDPGFX_WIRE_TO_SURFACE_PDU_2 traegt selbst kein Zielrechteck.
  * decode() liefert darum verortete Kacheln.
  *
@@ -935,11 +941,18 @@ export class ProgressiveDecoder {
   /**
    * Verwirft den Zustand einer Flaeche - oder aller, wenn surfaceId fehlt.
    *
-   * Aufzurufen, wenn der Server eine Flaeche loescht oder
-   * RDPGFX_DELETE_ENCODING_CONTEXT_PDU schickt (3.3.1.1): die Kachelzustaende
-   * duerfen eine geloeschte Flaeche nicht ueberleben, sonst wuerde eine spaeter
-   * unter derselben Nummer angelegte Flaeche Differenzen gegen fremde Bilddaten
-   * rechnen.
+   * Aufzurufen genau dann, wenn der Server die Flaeche loescht
+   * (RDPGFX_DELETE_SURFACE_PDU), und wenn die Sitzung endet. Dann *muss* der
+   * Zustand weg: eine spaeter unter derselben Nummer angelegte Flaeche wuerde
+   * sonst Differenzen gegen fremde Bilddaten rechnen.
+   *
+   * Ausdruecklich *nicht* aufzurufen bei RDPGFX_DELETE_ENCODING_CONTEXT_PDU.
+   * Dieser Befehl raeumt die Codec Contexts (3.3.1.1), nicht die Kachelhistorie;
+   * fuer die Sub-Band Diffing Tile Contexts (3.3.1.3) gilt das genaue Gegenteil:
+   * "MUST be preserved for the duration of the RDP connection or until the
+   * off-screen surface with which it is associated has been deleted". Wer hier
+   * doch raeumt, bekommt mittelgraue Rechtecke ueber jedem Bereich, den der
+   * Server per Differenzkachel aktualisiert - siehe egfxSession.ts.
    */
   reset(surfaceId?: number): void {
     if (surfaceId === undefined) this.flaechen.clear();
