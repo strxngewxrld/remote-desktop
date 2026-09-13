@@ -28,6 +28,12 @@ import {
   RDPGFX_CODECID_UNCOMPRESSED,
   parseEgfxPdus,
 } from '../src/protocol/egfx.js';
+import { CLIPRDR_CHANNEL_DEF } from '../src/protocol/cliprdr.js';
+import {
+  CHANNEL_FLAG_FIRST,
+  CHANNEL_FLAG_LAST,
+  CHANNEL_FLAG_SHOW_PROTOCOL,
+} from '../src/protocol/virtualChannel.js';
 import { probeServerCertificate } from '../src/probe.js';
 import { LEGACY_TLS_PROFILE, isTlsCompatibilityError } from '../src/protocol/tlsProfiles.js';
 import {
@@ -1166,6 +1172,74 @@ describe('Statische virtuelle Kanäle', () => {
     const nachricht = await empfangen;
     assert.equal(nachricht.data.toString(), 'Zwischenablage');
     assert.equal(server.statischeBloecke.length, 1);
+  });
+
+  test('Ohne CHANNEL_OPTION_SHOW_PROTOCOL bleibt der Kanalkopf unsichtbar', async () => {
+    // `kanalSitzung` meldet den Kanal nur mit Namen an, also ohne die Option.
+    // Gegenprobe zum Test darunter: die Flags haengen am Kanal, nicht an uns.
+    const { server, client } = await kanalSitzung();
+    const empfangen = naechstesEreignis<{ name: string }>(
+      server,
+      'staticChannelData',
+      (e) => e.name === 'cliprdr',
+    );
+    client.sendVirtualChannel('cliprdr', Buffer.from('ohne Option'));
+    await empfangen;
+    assert.equal(server.statischeBloecke[0].flags, CHANNEL_FLAG_FIRST | CHANNEL_FLAG_LAST);
+  });
+
+  test('Mit CHANNEL_OPTION_SHOW_PROTOCOL traegt jeder Block das Flag - drdynvc nicht', async () => {
+    // Der Kern des Zwischenablage-Fehlers: cliprdr wird mit
+    // CHANNEL_OPTION_SHOW_PROTOCOL angemeldet, also muss jeder Block
+    // CHANNEL_FLAG_SHOW_PROTOCOL tragen - auch der einzelne einer 20 Byte
+    // langen Formatliste. drdynvc meldet die Option nicht an und darf sich
+    // deshalb nicht mitaendern, sonst faengt die Grafikpipeline Muell ein.
+    const server = neuerServer({
+      ...certificate,
+      width: WIDTH,
+      height: HEIGHT,
+      dynamicChannels: [GRAPHICS_CHANNEL_NAME],
+    });
+    const port = await server.listen();
+    const client = neuerClient({
+      host: '127.0.0.1',
+      port,
+      useNla: false,
+      width: WIDTH,
+      height: HEIGHT,
+      extraStaticChannels: [CLIPRDR_CHANNEL_DEF],
+      enableGraphicsPipeline: true,
+    });
+    // Auf die DVC-Antwort warten, nicht nur auf die Aktivierung: erst danach
+    // hat der Client ueberhaupt etwas auf drdynvc geschickt.
+    const dvcAntwort = once(server, 'dvcCapsResponse');
+    await client.connect();
+    await dvcAntwort;
+
+    const empfangen = naechstesEreignis<{ name: string }>(
+      server,
+      'staticChannelData',
+      (e) => e.name === 'cliprdr',
+    );
+    // 20 Byte, so lang wie die Formatliste aus dem Mitschnitt: ein Block.
+    client.sendVirtualChannel(CLIPRDR_CHANNEL_DEF.name, Buffer.alloc(20, 0x42));
+    await empfangen;
+
+    assert.equal(server.statischeBloecke.length, 1);
+    assert.equal(
+      server.statischeBloecke[0].flags,
+      CHANNEL_FLAG_FIRST | CHANNEL_FLAG_LAST | CHANNEL_FLAG_SHOW_PROTOCOL,
+      'cliprdr: FIRST | LAST | SHOW_PROTOCOL',
+    );
+
+    assert.ok(server.dynvcBloecke.length > 0, 'der Client muss auf drdynvc gesendet haben');
+    for (const block of server.dynvcBloecke) {
+      assert.equal(
+        block.flags & CHANNEL_FLAG_SHOW_PROTOCOL,
+        0,
+        `drdynvc darf kein SHOW_PROTOCOL tragen, sah aber 0x${block.flags.toString(16)}`,
+      );
+    }
   });
 
   test('Eine lange Nachricht wird in Blöcke zerlegt und wieder zusammengesetzt', async () => {

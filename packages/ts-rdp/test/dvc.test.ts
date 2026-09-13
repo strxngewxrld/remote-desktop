@@ -25,11 +25,32 @@ describe('Statische virtuelle Kanaele', () => {
     assert.equal(chunk.data.toString(), 'hallo');
   });
 
-  test('Einteilige Nachrichten tragen kein SHOW_PROTOCOL', () => {
-    // Sonst reicht der Empfaenger den Kanalkopf an den Endpunkt weiter, und
-    // der sieht acht Byte Muell vor seinen Nutzdaten (MS-RDPBCGR 3.1.5.2.1).
+  test('Ohne CHANNEL_OPTION_SHOW_PROTOCOL traegt ein einzelner Block kein Flag', () => {
+    // Der Fall drdynvc: dort gehoert der Kanalkopf uns, nicht dem Endpunkt.
+    // Der Empfaenger reicht die Nutzdaten nackt durch (MS-RDPBCGR 3.1.5.2.2).
     const [block] = buildChannelChunks(Buffer.from('kurz'), 1600);
     assert.equal(parseChannelChunk(block).flags & CHANNEL_FLAG_SHOW_PROTOCOL, 0);
+  });
+
+  test('Mit CHANNEL_OPTION_SHOW_PROTOCOL traegt auch ein einzelner Block das Flag', () => {
+    // Der Fall cliprdr. Die Gegenprobe zum Test darueber: bis diese Zeile hier
+    // stand, hing das Flag allein an der Aufteilung - eine 20-Byte-Formatliste
+    // ging damit ohne Flag raus, und der Windows-Endpunkt (rdpclip) las die
+    // ersten acht Nutzbyte als Kanalkopf und verstummte.
+    const [block] = buildChannelChunks(Buffer.from('kurz'), 1600, true);
+    const zerlegt = parseChannelChunk(block);
+    assert.equal(
+      zerlegt.flags,
+      CHANNEL_FLAG_FIRST | CHANNEL_FLAG_LAST | CHANNEL_FLAG_SHOW_PROTOCOL,
+      'FIRST | LAST | SHOW_PROTOCOL, genau wie FreeRDP und rdesktop es senden',
+    );
+    assert.equal(zerlegt.data.toString(), 'kurz');
+  });
+
+  test('Mit CHANNEL_OPTION_SHOW_PROTOCOL traegt jeder Block das Flag', () => {
+    for (const block of buildChannelChunks(Buffer.alloc(3000), 1000, true)) {
+      assert.ok(parseChannelChunk(block).flags & CHANNEL_FLAG_SHOW_PROTOCOL);
+    }
   });
 
   test('Aufgeteilte Nachrichten tragen SHOW_PROTOCOL in jedem Block', () => {
@@ -84,7 +105,11 @@ describe('Statische virtuelle Kanaele', () => {
     assert.equal(block.data.length, 1000);
     assert.ok(block.flags & CHANNEL_FLAG_FIRST);
     assert.ok(block.flags & CHANNEL_FLAG_LAST);
-    assert.equal(block.flags & CHANNEL_FLAG_SHOW_PROTOCOL, 0, 'einteilig, also kein SHOW_PROTOCOL');
+    assert.equal(
+      block.flags & CHANNEL_FLAG_SHOW_PROTOCOL,
+      0,
+      'einteilig und ohne CHANNEL_OPTION_SHOW_PROTOCOL, also kein SHOW_PROTOCOL',
+    );
   });
 
   test('Ein Byte mehr als eine Chunkgroesse ergibt zwei Bloecke', () => {

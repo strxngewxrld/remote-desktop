@@ -122,15 +122,19 @@ describe('Zwischenablage - Einstellungen', () => {
 function speicher(start = ''): ZwischenablageSpeicher & {
   inhalt: string;
   geschrieben: string[];
+  gelesen: number;
   lesefehler?: Error;
   schreibfehler?: Error;
 } {
   return {
     inhalt: start,
     geschrieben: [] as string[],
+    // Gezaehlt, weil "gar nicht erst lesen" bei "nur lesen" eine Zusage ist.
+    gelesen: 0,
     lesefehler: undefined as Error | undefined,
     schreibfehler: undefined as Error | undefined,
-    lesen(this: { inhalt: string; lesefehler?: Error }) {
+    lesen(this: { inhalt: string; gelesen: number; lesefehler?: Error }) {
+      this.gelesen++;
       return this.lesefehler ? Promise.reject(this.lesefehler) : Promise.resolve(this.inhalt);
     },
     schreiben(this: { inhalt: string; geschrieben: string[]; schreibfehler?: Error }, text: string) {
@@ -146,17 +150,26 @@ function einstellungen(teil: Partial<ZwischenablageEinstellungen> = {}): Zwische
   return { aktiv: true, richtung: 'beide', maxBytes: 1024 * 1024, abfrageIntervallMs: 0, ...teil };
 }
 
-function neueBruecke(teil: Partial<ZwischenablageEinstellungen> = {}, start = '') {
+function neueBruecke(
+  teil: Partial<ZwischenablageEinstellungen> = {},
+  start = '',
+  extra: { warnzeitMs?: number } = {},
+) {
   const abl = speicher(start);
   const gesendet: Buffer[] = [];
   const anWebview: ZwischenablageWebviewNachricht[] = [];
   const protokoll: string[] = [];
+  const stufen: { stufe: string; text: string }[] = [];
   const bruecke = new Zwischenablagebruecke({
     einstellungen: einstellungen(teil),
     send: (d) => gesendet.push(d),
     speicher: abl,
     anWebview: (n) => anWebview.push(n),
-    log: (n) => protokoll.push(n),
+    log: (n, stufe) => {
+      protokoll.push(n);
+      stufen.push({ stufe: stufe ?? 'info', text: n });
+    },
+    ...extra,
   });
   const typen = () => gesendet.map((d) => parseCliprdrPdu(d).msgType);
   const letztes = (typ: number) => {
@@ -166,13 +179,25 @@ function neueBruecke(teil: Partial<ZwischenablageEinstellungen> = {}, start = ''
     }
     return undefined;
   };
-  return { bruecke, speicher: abl, gesendet, anWebview, protokoll, typen, letztes };
+  return { bruecke, speicher: abl, gesendet, anWebview, protokoll, stufen, typen, letztes };
 }
 
 /** Serverauftakt aus MS-RDPECLIP 1.3.2.1. */
 function auftakt(bruecke: Zwischenablagebruecke): void {
   bruecke.verarbeite(buildClipboardCapabilities(CB_USE_LONG_FORMAT_NAMES));
   bruecke.verarbeite(buildMonitorReady());
+}
+
+/**
+ * Den Auftakt samt der Lesung abwarten, die er anstoesst.
+ *
+ * Der Handshake liest die lokale Zwischenablage nach, weil sie beim
+ * MONITOR_READY noch nicht bekannt sein muss. Wer danach etwas ueber den
+ * *eingeschwungenen* Zustand behauptet, muss diese Lesung abwarten.
+ */
+async function auftaktUndLesung(bruecke: Zwischenablagebruecke): Promise<void> {
+  auftakt(bruecke);
+  await new Promise((r) => setImmediate(r));
 }
 
 describe('Zwischenablage - Brücke zum Server', () => {
@@ -208,7 +233,7 @@ describe('Zwischenablage - Brücke zum Server', () => {
 
   test('Eine Änderung der lokalen Zwischenablage wird gemeldet', async () => {
     const u = neueBruecke({}, 'anfang');
-    auftakt(u.bruecke);
+    await auftaktUndLesung(u.bruecke);
     u.gesendet.length = 0;
 
     u.speicher.inhalt = 'neuer Text';
@@ -219,16 +244,17 @@ describe('Zwischenablage - Brücke zum Server', () => {
 
   test('Unveränderter Inhalt wird nicht gemeldet', async () => {
     const u = neueBruecke({}, 'gleich');
-    auftakt(u.bruecke);
-    assert.equal(await u.bruecke.pruefeLokal(), true);
+    // Der Handshake hat den Text bereits gelesen und gemeldet.
+    await auftaktUndLesung(u.bruecke);
     u.gesendet.length = 0;
+    assert.equal(await u.bruecke.pruefeLokal(), false);
     assert.equal(await u.bruecke.pruefeLokal(), false);
     assert.equal(u.gesendet.length, 0);
   });
 
   test('Ein Lesefehler beendet die Abfrage, statt sie endlos zu wiederholen', async () => {
     const u = neueBruecke({ abfrageIntervallMs: 1000 });
-    auftakt(u.bruecke);
+    await auftaktUndLesung(u.bruecke);
     u.bruecke.starteAbfrage();
     u.speicher.lesefehler = new Error('kein Zugriff');
     assert.equal(await u.bruecke.pruefeLokal(), false);
@@ -326,15 +352,18 @@ describe('Zwischenablage - Richtung und Grenze in der Brücke', () => {
 
   test('zuruecksetzen() macht die Brücke für einen neuen Handshake bereit', async () => {
     const u = neueBruecke({}, 'derselbe');
-    auftakt(u.bruecke);
-    await u.bruecke.pruefeLokal();
+    await auftaktUndLesung(u.bruecke);
     u.bruecke.zuruecksetzen();
     assert.equal(u.bruecke.istBereit, false);
 
-    auftakt(u.bruecke);
     u.gesendet.length = 0;
-    // Derselbe Inhalt gilt nach dem Zurücksetzen wieder als neu.
-    assert.equal(await u.bruecke.pruefeLokal(), true);
+    await auftaktUndLesung(u.bruecke);
+    // Derselbe Inhalt gilt nach dem Zurücksetzen wieder als neu: der zweite
+    // Handshake kündigt ihn von sich aus wieder an.
+    assert.deepEqual(
+      parseFormatList(u.letztes(CB_FORMAT_LIST)!.body, { longFormatNames: true }).map((f) => f.formatId),
+      [CF_UNICODETEXT, cliprdr.CF_TEXT],
+    );
   });
 });
 
@@ -573,5 +602,145 @@ describe('Zwischenablage - Befehl fürs Rückfallfeld', () => {
       aktiv: true,
       richtung: 'both',
     });
+  });
+});
+
+// -------------------------------------------------- Protokoll des Handshakes
+
+/**
+ * Warum diese Tests: Beim Nutzer stand der Kanal, und trotzdem tat sich
+ * nichts. Aus dem Mitschnitt liess sich nicht ablesen, an welcher Stelle von
+ * MS-RDPECLIP 1.3.2.1 der Ablauf haengen blieb - weil ein stiller Kanal
+ * genauso aussieht wie ein ruhiger. Diese Zeilen muessen also da sein.
+ */
+describe('Zwischenablage - Formatliste beim Handshake', () => {
+  test('Kommt MONITOR_READY vor der ersten Lesung, wird die Formatliste nachgereicht', async () => {
+    // Genau der Fall aus dem Betrieb: der Server ist mit seinem Auftakt
+    // schneller als vscode.env.clipboard.readText(). Ohne Nachreichen glaubt
+    // der Server, die Zwischenablage sei leer, und fragt nie nach Daten.
+    const u = neueBruecke({}, 'schon vorhanden');
+    auftakt(u.bruecke);
+    assert.deepEqual(
+      parseFormatList(u.letztes(CB_FORMAT_LIST)!.body, { longFormatNames: true }).map((f) => f.formatId),
+      [],
+      'zuerst geht notgedrungen eine leere Liste hinaus',
+    );
+
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(
+      parseFormatList(u.letztes(CB_FORMAT_LIST)!.body, { longFormatNames: true }).map((f) => f.formatId),
+      [CF_UNICODETEXT, cliprdr.CF_TEXT],
+      'danach stehen die tatsaechlich vorhandenen Formate beim Server',
+    );
+    assert.equal(u.typen().filter((t) => t === CB_FORMAT_LIST).length, 2);
+  });
+
+  test('War der Text schon gelesen, bleibt es bei einer einzigen Formatliste', async () => {
+    const u = neueBruecke({}, 'schon vorhanden');
+    await u.bruecke.pruefeLokal();
+    await auftaktUndLesung(u.bruecke);
+    assert.equal(
+      u.typen().filter((t) => t === CB_FORMAT_LIST).length,
+      1,
+      'kein zweites, gleichlautendes Melden',
+    );
+    assert.deepEqual(
+      parseFormatList(u.letztes(CB_FORMAT_LIST)!.body, { longFormatNames: true }).map((f) => f.formatId),
+      [CF_UNICODETEXT, cliprdr.CF_TEXT],
+    );
+  });
+
+  test('Ohne lokalen Text bleibt die Liste leer und wird nicht nachgereicht', async () => {
+    const u = neueBruecke({}, '');
+    await auftaktUndLesung(u.bruecke);
+    assert.equal(u.typen().filter((t) => t === CB_FORMAT_LIST).length, 1);
+    assert.deepEqual(
+      parseFormatList(u.letztes(CB_FORMAT_LIST)!.body, { longFormatNames: true }),
+      [],
+    );
+  });
+
+  test('Bei "nur lesen" wird die lokale Zwischenablage gar nicht erst angefasst', async () => {
+    const u = neueBruecke({ richtung: 'nurLesen' }, 'geheim');
+    await auftaktUndLesung(u.bruecke);
+    assert.equal(u.speicher.gelesen, 0, 'kein Blick in fremde Zwischenablagen');
+  });
+});
+
+describe('Zwischenablage - Protokoll des Handshakes', () => {
+  test('Jedes PDU steht mit Namen und Richtung im Protokoll', async () => {
+    const u = neueBruecke({}, 'lokal');
+    // Die Zwischenablage wird asynchron gelesen; die volle Formatliste geht
+    // deshalb erst nach dem Auftakt hinaus.
+    await auftaktUndLesung(u.bruecke);
+    const debug = u.stufen.filter((z) => z.stufe === 'debug').map((z) => z.text);
+    assert.ok(
+      debug.some((z) => z.includes('empfangen CLIP_CAPS')),
+      `CLIP_CAPS fehlt: ${debug.join(' | ')}`,
+    );
+    assert.ok(debug.some((z) => z.includes('empfangen MONITOR_READY')));
+    assert.ok(debug.some((z) => z.includes('gesendet CLIP_CAPS')));
+    assert.ok(debug.some((z) => z.includes('gesendet FORMAT_LIST')));
+    assert.ok(
+      debug.some((z) => z.includes('melde 2 Format(e)') && z.includes('lange Formatnamen')),
+      `die gemeldeten Formate fehlen: ${debug.join(' | ')}`,
+    );
+  });
+
+  test('Eine bestätigte Formatliste beendet das Warten', async () => {
+    const u = neueBruecke({}, 'lokal');
+    await auftaktUndLesung(u.bruecke);
+    assert.equal(u.bruecke.wartetAufFormatlistenAntwort, true, 'nach dem Handshake wird gewartet');
+    u.bruecke.verarbeite(cliprdr.buildFormatListResponse(true));
+    assert.equal(u.bruecke.wartetAufFormatlistenAntwort, false);
+    assert.ok(u.stufen.some((z) => z.stufe === 'debug' && /bestaetigt/.test(z.text)));
+    assert.equal(u.stufen.filter((z) => z.stufe === 'warn').length, 0);
+  });
+
+  test('Bleibt die Antwort aus, steht es genau einmal als Warnung da', async () => {
+    const u = neueBruecke({}, 'lokal', { warnzeitMs: 5 });
+    await auftaktUndLesung(u.bruecke);
+    await new Promise((r) => setTimeout(r, 20));
+    const warnungen = u.stufen.filter((z) => z.stufe === 'warn');
+    assert.equal(warnungen.length, 1, `genau eine Warnung erwartet: ${JSON.stringify(warnungen)}`);
+    assert.match(warnungen[0].text, /FORMAT_LIST_RESPONSE/);
+    assert.match(warnungen[0].text, /PDU gesendet, 2 empfangen/);
+
+    // Eine zweite unbeantwortete Formatliste darf die Zeile nicht wiederholen.
+    u.speicher.inhalt = 'etwas Neues';
+    await u.bruecke.pruefeLokal();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(u.stufen.filter((z) => z.stufe === 'warn').length, 1);
+    u.bruecke.dispose();
+  });
+
+  test('Eine abgelehnte Formatliste ist eine Warnung, keine Beiläufigkeit', async () => {
+    const u = neueBruecke({}, 'lokal');
+    await auftaktUndLesung(u.bruecke);
+    u.bruecke.verarbeite(cliprdr.buildFormatListResponse(false));
+    const warnungen = u.stufen.filter((z) => z.stufe === 'warn');
+    assert.equal(warnungen.length, 1);
+    assert.match(warnungen[0].text, /abgelehnt/);
+  });
+
+  test('Die Formate des Servers und die Datenanfrage stehen im Protokoll', () => {
+    const u = neueBruecke();
+    auftakt(u.bruecke);
+    u.bruecke.verarbeite(
+      buildFormatList([{ formatId: CF_UNICODETEXT, name: '' }], { longFormatNames: true }),
+    );
+    const debug = u.stufen.filter((z) => z.stufe === 'debug').map((z) => z.text);
+    assert.ok(debug.some((z) => z.includes('der Server bietet 1 Format(e) an')));
+    assert.ok(debug.some((z) => z.includes(`frage die Daten von Format ${CF_UNICODETEXT}`)));
+  });
+
+  test('Ohne regelmäßige Abfrage sagt das Protokoll, dass lokal niemand mitliest', () => {
+    const u = neueBruecke({ abfrageIntervallMs: 0 });
+    auftakt(u.bruecke);
+    u.bruecke.starteAbfrage();
+    assert.ok(
+      u.stufen.some((z) => z.stufe === 'debug' && /keine regelmaessige Abfrage/.test(z.text)),
+      `Hinweis fehlt: ${u.protokoll.join(' | ')}`,
+    );
   });
 });

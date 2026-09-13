@@ -19,6 +19,20 @@
   const diagnoseTitel = document.getElementById('diagnose-titel');
   const diagnoseWerte = document.getElementById('diagnose-werte');
 
+  // Die Plattform des Nutzers - einmal, gleich zu Beginn. Sie kommt bewusst
+  // von hier und nicht aus dem Extension-Host: unter Remote-SSH laeuft der auf
+  // dem Sprungbrett und meldet dessen Betriebssystem. Das Webview dagegen
+  // laeuft laut VS-Code-Doku immer auf dem Rechner des Nutzers ("Like the
+  // clipboard API, the Webview API is always run on the user's local
+  // machine"). Gedeutet wird die Zeichenkette im Host, nicht hier.
+  vscode.postMessage({
+    type: 'plattform',
+    plattform:
+      (typeof navigator !== 'undefined' &&
+        ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform)) ||
+      undefined,
+  });
+
   let desktopWidth = canvas.width;
   let desktopHeight = canvas.height;
   let scaling = 'fit';
@@ -713,12 +727,27 @@
     pressedKeys.clear();
   }
 
-  /** Tasten, die VS Code selbst braucht und die wir nicht abfangen. */
+  /**
+   * Tasten, die VS Code selbst braucht und die wir nicht abfangen.
+   *
+   * Ohne diese Liste kaeme der Nutzer aus einer Vollbildsitzung nicht mehr
+   * heraus. Cmd+Q, Cmd+W und Cmd+N holt sich macOS bzw. Electron ohnehin
+   * ueber das Menue, bevor das Webview das Ereignis sieht - sie stehen hier,
+   * damit es auch dann stimmt, wenn eine Fassung das einmal nicht tut.
+   */
   function passThroughToVsCode(event) {
     // Strg+Umschalt+P und F1 bleiben der Befehlspalette vorbehalten.
     if (event.key === 'F1') return true;
     if (event.ctrlKey && event.shiftKey && event.code === 'KeyP') return true;
-    return false;
+    if (!event.metaKey) return false;
+    // Die Befehlspalette auf macOS.
+    if (event.shiftKey && event.code === 'KeyP') return true;
+    // Cmd+Alt+V oeffnet das Rueckfallfeld der Zwischenablage. Es darf nicht
+    // als Cmd+V in der Sitzung landen - deshalb gilt hier wie in der
+    // Abbildung: Cmd mit Alt wird nie uebersetzt.
+    if (event.altKey) return true;
+    // Fenster und Anwendung schliessen, neues Fenster, Einstellungen.
+    return ['KeyQ', 'KeyW', 'KeyN', 'Comma'].indexOf(event.code) >= 0;
   }
 
   window.addEventListener('keydown', (event) => {

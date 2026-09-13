@@ -33,19 +33,38 @@ export function parseChannelChunk(payload: Buffer): ChannelChunk {
   return { totalLength, flags, data: r.rest() };
 }
 
-export function buildChannelChunks(data: Buffer, chunkSize = DEFAULT_CHUNK_SIZE): Buffer[] {
+/**
+ * Zerlegt eine Nachricht in Bloecke fuer einen statischen virtuellen Kanal.
+ *
+ * `zeigeProtokoll` gehoert zum Kanal, nicht zur einzelnen Nachricht: es ist
+ * genau dann zu setzen, wenn der Kanal im Client Network Data mit
+ * CHANNEL_OPTION_SHOW_PROTOCOL angemeldet wurde (MS-RDPBCGR 2.2.1.3.4.1).
+ * Dann traegt *jeder* Block CHANNEL_FLAG_SHOW_PROTOCOL, auch ein einzelner.
+ *
+ * Der Grund steht in der Beschreibung von WTSVirtualChannelRead: die
+ * Gegenstelle legt dem Endpunkt den 8 Byte langen CHANNEL_PDU_HEADER genau
+ * dann vor die Nutzdaten, wenn der Kanal mit CHANNEL_OPTION_SHOW_PROTOCOL
+ * angemeldet ist. Der Endpunkt (bei der Zwischenablage rdpclip) rechnet dann
+ * fest mit dem Kopf. Kommt ein Block ohne CHANNEL_FLAG_SHOW_PROTOCOL, reicht
+ * der Empfaenger nach MS-RDPBCGR 3.1.5.2.2 die nackten Nutzdaten durch - der
+ * Endpunkt liest dann die ersten acht Nutzbyte als Kanalkopf, findet darin
+ * weder FIRST noch LAST und wartet stumm auf einen Anfang, der nie kommt.
+ *
+ * Unabhaengig davon gilt MS-RDPBCGR 3.1.5.2.1: aufgeteilte Nachrichten
+ * *muessen* das Flag tragen, damit der Empfaenger zusammensetzen kann.
+ */
+export function buildChannelChunks(
+  data: Buffer,
+  chunkSize = DEFAULT_CHUNK_SIZE,
+  zeigeProtokoll = false,
+): Buffer[] {
   const out: Buffer[] = [];
   const total = data.length;
-  // CHANNEL_FLAG_SHOW_PROTOCOL ist ausschliesslich fuer aufgeteilte Nachrichten
-  // gedacht (MS-RDPBCGR 3.1.5.2.1). Wer es bei einer einteiligen Nachricht
-  // setzt, bekommt vom Empfaenger den 8 Byte langen Kanalkopf mit an den
-  // Endpunkt gereicht - der sieht dann Muell vor seinen Nutzdaten und verwirft
-  // die Nachricht stillschweigend.
   const aufgeteilt = total > chunkSize;
 
   for (let offset = 0; offset < total || offset === 0; offset += chunkSize) {
     const stueck = data.subarray(offset, Math.min(offset + chunkSize, total));
-    let flags = aufgeteilt ? CHANNEL_FLAG_SHOW_PROTOCOL : 0;
+    let flags = zeigeProtokoll || aufgeteilt ? CHANNEL_FLAG_SHOW_PROTOCOL : 0;
     if (offset === 0) flags |= CHANNEL_FLAG_FIRST;
     if (offset + chunkSize >= total) flags |= CHANNEL_FLAG_LAST;
     out.push(writer().uint32le(total).uint32le(flags).bytes(stueck).toBuffer());
