@@ -51,143 +51,173 @@
     "commands": [
       {
         "command": "rdp.connect",
-        "title": "RDP: Verbinden mit…",
+        "title": "Verbinden mit…",
+        "category": "RDP",
         "icon": "$(plug)"
       },
       {
         "command": "rdp.addConnection",
-        "title": "RDP: Verbindung hinzufügen",
+        "title": "Verbindung hinzufügen",
+        "category": "RDP",
         "icon": "$(add)"
       },
       {
         "command": "rdp.connectSaved",
-        "title": "RDP: Gespeicherte Verbindung öffnen",
+        "title": "Gespeicherte Verbindung öffnen",
+        "category": "RDP",
         "icon": "$(play)"
       },
       {
         "command": "rdp.editConnection",
-        "title": "RDP: Verbindung bearbeiten",
+        "title": "Verbindung bearbeiten",
+        "category": "RDP",
         "icon": "$(edit)"
       },
       {
         "command": "rdp.deleteConnection",
-        "title": "RDP: Verbindung löschen",
+        "title": "Verbindung löschen",
+        "category": "RDP",
         "icon": "$(trash)"
       },
       {
         "command": "rdp.refreshConnections",
-        "title": "RDP: Liste aktualisieren",
+        "title": "Liste aktualisieren",
+        "category": "RDP",
         "icon": "$(refresh)"
       },
       {
         "command": "rdp.addFolder",
-        "title": "RDP: Ordner hinzufügen",
+        "title": "Ordner hinzufügen",
+        "category": "RDP",
         "icon": "$(new-folder)"
       },
       {
         "command": "rdp.renameFolder",
-        "title": "RDP: Ordner umbenennen",
+        "title": "Ordner umbenennen",
+        "category": "RDP",
         "icon": "$(edit)"
       },
       {
         "command": "rdp.deleteFolder",
-        "title": "RDP: Ordner löschen",
+        "title": "Ordner löschen",
+        "category": "RDP",
         "icon": "$(trash)"
       },
       {
         "command": "rdp.editFolderSettings",
-        "title": "RDP: Vererbte Einstellungen des Ordners…",
+        "title": "Vererbte Einstellungen des Ordners…",
+        "category": "RDP",
         "icon": "$(settings-gear)"
       },
       {
         "command": "rdp.moveToFolder",
-        "title": "RDP: In Ordner verschieben",
+        "title": "In Ordner verschieben",
+        "category": "RDP",
         "icon": "$(move)"
       },
       {
         "command": "rdp.editTags",
-        "title": "RDP: Tags bearbeiten",
+        "title": "Tags bearbeiten",
+        "category": "RDP",
         "icon": "$(tag)"
       },
       {
         "command": "rdp.searchConnections",
-        "title": "RDP: Verbindung suchen (Name, Host, Tag)",
+        "title": "Verbindung suchen (Name, Host, Tag)",
+        "category": "RDP",
         "icon": "$(search)"
       },
       {
         "command": "rdp.filterConnections",
-        "title": "RDP: Baumansicht filtern",
+        "title": "Baumansicht filtern",
+        "category": "RDP",
         "icon": "$(filter)"
       },
       {
         "command": "rdp.clearConnectionFilter",
-        "title": "RDP: Filter der Baumansicht aufheben",
+        "title": "Filter der Baumansicht aufheben",
+        "category": "RDP",
         "icon": "$(clear-all)"
       },
       {
         "command": "rdp.setBandwidthProfile",
-        "title": "RDP: Bandbreitenprofil setzen",
+        "title": "Bandbreitenprofil setzen",
+        "category": "RDP",
         "icon": "$(dashboard)"
       },
       {
         "command": "rdp.setColor",
-        "title": "RDP: Farbe festlegen…",
+        "title": "Farbe festlegen…",
+        "category": "RDP",
         "icon": "$(symbol-color)"
       },
       {
         "command": "rdp.importRdpFile",
-        "title": "RDP: .rdp-Datei importieren",
+        "title": ".rdp-Datei importieren",
+        "category": "RDP",
         "icon": "$(cloud-download)"
       },
       {
         "command": "rdp.exportRdpFile",
-        "title": "RDP: Als .rdp-Datei exportieren",
+        "title": "Als .rdp-Datei exportieren",
+        "category": "RDP",
         "icon": "$(cloud-upload)"
       },
       {
         "command": "rdp.disconnect",
-        "title": "RDP: Sitzung trennen"
+        "category": "RDP",
+        "title": "Sitzung trennen"
       },
       {
         "command": "rdp.sendCtrlAltDel",
-        "title": "RDP: Strg+Alt+Entf senden"
+        "category": "RDP",
+        "title": "Strg+Alt+Entf senden"
       },
       {
         "command": "rdp.toggleScaling",
-        "title": "RDP: Skalierung umschalten"
+        "category": "RDP",
+        "title": "Skalierung umschalten"
       },
       {
         "command": "rdp.toggleDiagnostics",
-        "title": "RDP: Diagnose-Overlay ein-/ausblenden"
+        "category": "RDP",
+        "title": "Diagnose-Overlay ein-/ausblenden"
       },
       {
         "command": "rdp.toggleClipboardPanel",
-        "title": "RDP: Zwischenablage-Feld ein-/ausblenden"
+        "category": "RDP",
+        "title": "Zwischenablage-Feld ein-/ausblenden"
       },
       {
         "command": "rdp.refreshScreen",
-        "title": "RDP: Bildschirm neu anfordern"
+        "category": "RDP",
+        "title": "Bildschirm neu anfordern"
       },
       {
         "command": "rdp.screenshot",
-        "title": "RDP: Screenshot der Sitzung speichern…",
+        "title": "Screenshot der Sitzung speichern…",
+        "category": "RDP",
         "icon": "$(device-camera)"
       },
       {
         "command": "rdp.clearCredentials",
-        "title": "RDP: Gespeichertes Passwort löschen"
+        "category": "RDP",
+        "title": "Gespeichertes Passwort löschen"
       },
       {
         "command": "rdp.showLog",
-        "title": "RDP: Protokoll anzeigen"
+        "category": "RDP",
+        "title": "Protokoll anzeigen"
       },
       {
         "command": "rdp.showEnvironment",
-        "title": "RDP: Laufzeitumgebung anzeigen (lokal oder entfernt)"
+        "category": "RDP",
+        "title": "Laufzeitumgebung anzeigen (lokal oder entfernt)"
       },
       {
         "command": "rdp.forgetDriveApprovals",
-        "title": "RDP: Laufwerksfreigaben vergessen"
+        "category": "RDP",
+        "title": "Laufwerksfreigaben vergessen"
       }
     ],
     "menus": {
