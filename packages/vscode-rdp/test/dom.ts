@@ -71,6 +71,13 @@ export interface WebviewUmgebung {
   readonly canvas: { width: number; height: number; style: Record<string, string> };
   /** Das Diagnose-Overlay, so wie es im Webview aussaehe. */
   readonly diagnose: { sichtbar: boolean; titel: string; text: string };
+  /** Der farbige Rahmen um die Sitzungsflaeche. */
+  readonly rahmen: { sichtbar: boolean; breite: string; farbe: string };
+  /**
+   * Steuert, was `canvas.toDataURL` liefert. `wirft` laesst den Aufruf
+   * scheitern - so verhaelt sich eine Zeichenflaeche, die als "tainted" gilt.
+   */
+  readonly bild: { datenUrl: string; wirft?: string };
   /** Die Buehne auf eine neue Groesse bringen und 'resize' ausloesen. */
   groesseAendern(breite: number, hoehe: number): void;
   /** Ein Fensterereignis ausloesen, ohne die Groesse anzufassen. */
@@ -144,6 +151,17 @@ export function starteWebview(skript: string, videoOptionen: VideoOptionen = {})
   /** Alle Fensterhorcher, nach Ereignisart - damit Tests sie ausloesen koennen. */
   const fensterHorcher = new Map<string, ((e: unknown) => void)[]>();
 
+  /**
+   * Eine gueltige 1x1-PNG-Datei. Der Host prueft die Signatur, bevor er
+   * schreibt - eine ausgedachte Zeichenkette kaeme also gar nicht erst an.
+   */
+  const bild = {
+    datenUrl:
+      'data:image/png;base64,' +
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+    wirft: undefined as string | undefined,
+  };
+
   const videobilder: GezeichnetesVideobild[] = [];
   const protokoll: string[] = [];
   const canvas = new ElementStub();
@@ -192,6 +210,10 @@ export function starteWebview(skript: string, videoOptionen: VideoOptionen = {})
     scale() {},
   };
   (canvas as unknown as { getContext: () => unknown }).getContext = () => kontext;
+  (canvas as unknown as { toDataURL: (typ?: string) => string }).toDataURL = () => {
+    if (bild.wirft) throw new Error(bild.wirft);
+    return bild.datenUrl;
+  };
 
   const elemente = new Map<string, ElementStub>([
     ['screen', canvas],
@@ -202,13 +224,15 @@ export function starteWebview(skript: string, videoOptionen: VideoOptionen = {})
     ['overlay-action', new ElementStub()],
     ['spinner', new ElementStub()],
     ['hint', new ElementStub()],
+    ['rahmen', new ElementStub()],
     ['diagnose', new ElementStub()],
     ['diagnose-titel', new ElementStub()],
     ['diagnose-werte', new ElementStub()],
   ]);
 
-  // Wie im HTML: das Overlay startet ausgeblendet.
+  // Wie im HTML: Overlay und Rahmen starten ausgeblendet.
   elemente.get('diagnose')!.hidden = true;
+  elemente.get('rahmen')!.hidden = true;
 
   class ImageDataStub {
     constructor(
@@ -369,6 +393,15 @@ export function starteWebview(skript: string, videoOptionen: VideoOptionen = {})
     // Ein Durchlauf der Mikrotasks reicht fuer den Normalfall; mit einer
     // Wartezeit laesst sich auch der Zeitgeber des Rueckfalls abwarten.
     ruhe: (ms = 0) => new Promise<void>((res) => setTimeout(res, ms)),
+    bild,
+    get rahmen() {
+      const element = elemente.get('rahmen')!;
+      return {
+        sichtbar: !element.hidden,
+        breite: element.style.borderWidth ?? '',
+        farbe: element.style.borderColor ?? '',
+      };
+    },
     get diagnose() {
       return {
         sichtbar: !elemente.get('diagnose')!.hidden,
