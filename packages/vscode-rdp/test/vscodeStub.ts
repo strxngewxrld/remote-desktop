@@ -204,6 +204,11 @@ export interface TreeDataProvider<T> {
   getChildren(element?: T): ProviderResult<T[]>;
 }
 
+export class DataTransferItem {
+  constructor(public value: any) {}
+}
+export class DataTransfer extends Map<string, DataTransferItem> {}
+
 export class MarkdownString {
   isTrusted?: boolean;
   supportThemeIcons?: boolean;
@@ -940,6 +945,11 @@ export const window = {
 
   registerTreeDataProvider<T>(sicht: string, anbieter: TreeDataProvider<T>): Disposable {
     notizen.baumAnbieter.set(sicht, anbieter as TreeDataProvider<unknown>);
+    return new Disposable(() => notizen.baumAnbieter.delete(sicht));
+  },
+
+  createTreeView<T>(sicht: string, options: { treeDataProvider: TreeDataProvider<T>; dragAndDropController?: unknown }): Disposable {
+    notizen.baumAnbieter.set(sicht, options.treeDataProvider as TreeDataProvider<unknown>);
     return new Disposable(() => notizen.baumAnbieter.delete(sicht));
   },
 

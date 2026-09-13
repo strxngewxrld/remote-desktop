@@ -592,3 +592,24 @@ function enthaeltTreffer(ordner: RdpFolder, kette: RdpFolder[], filter: string):
   }
   return false;
 }
+  readonly dragMimeTypes = ['application/vnd.code.tree.rdpconnections'];
+  readonly dropMimeTypes = this.dragMimeTypes;
+  private drag?: { snapshot: string; source: number[] };
+
+  handleDrag(source: readonly BaumKnoten[], data: vscode.DataTransfer): void {
+    if (source.length !== 1) return;
+    this.drag = { snapshot: JSON.stringify(getBaum()), source: [...source[0]!.pfad] };
+    data.set(this.dragMimeTypes[0]!, new vscode.DataTransferItem(this.drag));
+  }
+
+  async handleDrop(target: BaumKnoten | undefined, data: vscode.DataTransfer): Promise<void> {
+    const drag = data.get(this.dragMimeTypes[0]!)?.value;
+    if (!this.drag || drag !== this.drag) return;
+    this.drag = undefined;
+    if (drag.snapshot !== JSON.stringify(getBaum())) {
+      await vscode.window.showWarningMessage('Der Baum wurde inzwischen geändert. Bitte erneut ziehen.');
+      return;
+    }
+    const ziel = target instanceof FolderNode ? target.pfad : target?.pfad.slice(0, -1) ?? [];
+    if (await verschiebeEintrag(drag.source, ziel)) this.refresh();
+  }
