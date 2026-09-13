@@ -647,6 +647,33 @@ export class RdpSession {
         // Rueckfallebene: der Anwender hat Text ins Feld gelegt.
         await this.zwischenablage?.ausRueckfallfeld(String(message.text ?? ''));
         break;
+      case 'clipboardFiles': {
+        const limit = Math.min(256, Math.max(1, vscode.workspace.getConfiguration('rdp').get<number>('clipboard.maxFileSizeMb', 64))) * 1024 * 1024;
+        const raw = message.files;
+        if (!Array.isArray(raw) || !raw.length || raw.length > 256) break;
+        let encodedSize = 0;
+        const valid = raw.every((f: any) => f && typeof f.name === 'string' && typeof f.base64 === 'string' && (encodedSize += f.base64.length) <= Math.ceil(limit / 3) * 4 + raw.length * 4);
+        if (!valid) { vscode.window.showWarningMessage('Die Dateien überschreiten die Clipboard-Größenbegrenzung.'); break; }
+        const files = raw.map((f: any) => ({ name: f.name, data: Buffer.from(f.base64, 'base64') }));
+        const ok = await this.zwischenablage?.ausDateien(files, limit);
+        if (ok && this.client) {
+          this.client.sendKeyScancode(0x1d, true);
+          this.client.sendKeyScancode(0x2f, true);
+          this.client.sendKeyScancode(0x2f, false);
+          this.client.sendKeyScancode(0x1d, false);
+        } else vscode.window.showWarningMessage('Dateien konnten nicht bereitgestellt werden. Bitte erneut einfügen; Clipboard muss zum Server freigegeben sein.');
+        break;
+      }
+      case 'clipboardPaste': {
+        const ok = this.zwischenablage ? await this.zwischenablage.ausEinfuegen(typeof message.text === 'string' ? message.text : undefined) : true;
+        if (ok && this.client) {
+          this.client.sendKeyScancode(0x1d, true);
+          this.client.sendKeyScancode(0x2f, true);
+          this.client.sendKeyScancode(0x2f, false);
+          this.client.sendKeyScancode(0x1d, false);
+        }
+        break;
+      }
       case 'screenshot':
         // Nur die Antwort auf die zuletzt gestellte Bitte zaehlt - eine alte
         // wuerde sonst einen zweiten Speicherdialog aufmachen.
@@ -902,7 +929,24 @@ export class RdpSession {
     return berechnePerformanceFlags(profil, (schluessel, standard) => config.get(schluessel, standard));
   }
 
+  private anmeldeSecretKey?: string;
+
   private async resolveCredentials(): Promise<{ username: string; password: string; shouldSave: boolean } | undefined> {
+    this.anmeldeSecretKey = undefined;
+    const profiles = this.connection.promptCredentials ? [] : this.connection.credentials ?? [];
+    let profile = profiles.find(c => c.id === this.connection.defaultCredential);
+    if (!profile && profiles.length === 1) profile = profiles[0];
+    if (!profile && profiles.length > 1) {
+      const selected = await vscode.window.showQuickPick(profiles.map(c => ({ label: c.name, description: `${c.domain ? c.domain + '\\' : ''}${c.username}`, profile: c })), { title: `Zugangsdaten für ${this.connection.host}`, ignoreFocusOut: true });
+      if (!selected) return undefined;
+      profile = selected.profile;
+    }
+    const prompt = this.connection.promptCredentials || (!profile && !this.connection.username);
+    if (profile) {
+      this.connection.username = profile.username;
+      this.connection.domain = profile.domain;
+      this.anmeldeSecretKey = credentialSecretKey(profile.id);
+    }
     let username = this.connection.username;
     if (prompt || !username) {
       username = await vscode.window.showInputBox({
@@ -920,6 +964,7 @@ export class RdpSession {
       domain = d;
       username = u;
     }
+    this.connection.domain = domain;
 
     // Den tatsächlich verwendeten Benutzernamen auch dem Passwortschlüssel zugrunde legen.
     if (!prompt) this.connection.username = username;
@@ -932,25 +977,10 @@ export class RdpSession {
       prompt: `Passwort für ${domain ? domain + '\\' : ''}${username}`,
       password: true,
       ignoreFocusOut: true,
-  private anmeldeSecretKey?: string;
-
     });
-    this.anmeldeSecretKey = undefined;
-    const profiles = this.connection.promptCredentials ? [] : this.connection.credentials ?? [];
-    let profile = profiles.find(c => c.id === this.connection.defaultCredential);
-    if (!profile && profiles.length === 1) profile = profiles[0];
-    if (!profile && profiles.length > 1) {
-      const selected = await vscode.window.showQuickPick(profiles.map(c => ({ label: c.name, description: `${c.domain ? c.domain + '\\' : ''}${c.username}`, profile: c })), { title: `Zugangsdaten für ${this.connection.host}`, ignoreFocusOut: true });
-      if (!selected) return undefined;
-      profile = selected.profile;
-    }
-    const prompt = this.connection.promptCredentials || (!profile && !this.connection.username);
-    if (profile) {
-      this.connection.username = profile.username;
-      this.connection.domain = profile.domain;
-      this.anmeldeSecretKey = credentialSecretKey(profile.id);
-    }
     if (password === undefined) return undefined;
+
+    if (prompt) return { username, password, shouldSave: false };
 
     const save = await vscode.window.showQuickPick(
       [
@@ -967,7 +997,6 @@ export class RdpSession {
     const config = vscode.workspace.getConfiguration('rdp');
 
     client.on('connect', () => {
-    this.connection.domain = domain;
       this.verbindungSteht = true;
       this.verbundenSeit = Date.now();
       this.post({
@@ -980,8 +1009,6 @@ export class RdpSession {
       });
       // Die Verbindung steht, aber gezeichnet ist noch nichts. Bis zur ersten
       // Kachel bleibt die Einblendung stehen - eine schwarze Flaeche waere
-    if (prompt) return { username, password, shouldSave: false };
-
       // nicht von einem Fehler zu unterscheiden.
       this.setState('waiting', 'Verbunden', 'Warte auf den Bildschirminhalt des Servers…');
       this.updateStatusBar();

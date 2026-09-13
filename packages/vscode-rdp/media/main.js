@@ -753,6 +753,8 @@
   window.addEventListener('keydown', (event) => {
     if (!focused || !connected) return;
     if (passThroughToVsCode(event)) return;
+    // Die native Paste-Geste liefert File-Objekte vom Arbeitsplatz, auch bei Remote-SSH.
+    if (event.code === 'KeyV' && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) return;
     event.preventDefault();
     event.stopPropagation();
     pressedKeys.add(event.code);
@@ -768,6 +770,39 @@
         scrollLock: event.getModifierState('ScrollLock'),
       },
     });
+  });
+
+  window.addEventListener('paste', async (event) => {
+    if (!focused || !connected) return;
+    const files = Array.from(event.clipboardData?.files || []);
+    event.preventDefault();
+    event.stopPropagation();
+    if (!files.length) {
+      releaseAllKeys();
+      const text = event.clipboardData?.getData('text/plain');
+      vscode.postMessage({ type: 'clipboardPaste', text: text || undefined });
+      return;
+    }
+    releaseAllKeys();
+    if (files.length > 256 || files.reduce((sum, f) => sum + f.size, 0) > 256 * 1024 * 1024) {
+      vscode.postMessage({ type: 'clipboardFiles', files: [{ name: '', base64: '' }] });
+      return;
+    }
+    try {
+      const payload = [];
+      for (const file of files) {
+        const base64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(',')[1]);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+        payload.push({ name: file.name, base64 });
+      }
+      vscode.postMessage({ type: 'clipboardFiles', files: payload });
+    } catch {
+      vscode.postMessage({ type: 'clipboardFiles', files: [{ name: '', base64: '' }] });
+    }
   });
 
   window.addEventListener('keyup', (event) => {

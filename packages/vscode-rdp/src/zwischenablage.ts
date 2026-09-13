@@ -18,6 +18,7 @@
  */
 import {
   CliprdrSession,
+  cliprdr,
   STANDARD_MAX_BYTES,
   type CliprdrLogStufe,
   type ZwischenablageRichtung,
@@ -171,6 +172,8 @@ export const STILLE_WARNZEIT_MS = 5000;
  * `anWebview()` fuer die Rueckfallebene.
  */
 export class Zwischenablagebruecke {
+  private dateiAntwort?: (ok: boolean) => void;
+  private readonly antwortWartende = new Set<(ok: boolean) => void>();
   private readonly sitzung: CliprdrSession;
   /** Zuletzt gesehener Inhalt der lokalen Zwischenablage. */
   private lokalerText: string | undefined;
@@ -246,6 +249,11 @@ export class Zwischenablagebruecke {
   verarbeite(daten: Buffer): void {
     if (this.beendet) return;
     this.sitzung.verarbeite(daten);
+    if (daten.length >= 8 && daten.readUInt16LE(0) === cliprdr.CB_FORMAT_LIST_RESPONSE && !this.sitzung.wartetAufFormatlistenAntwort) {
+      const ok = (daten.readUInt16LE(2) & cliprdr.CB_RESPONSE_OK) !== 0;
+      this.dateiAntwort?.(ok);
+      for (const done of this.antwortWartende) done(ok);
+    }
     this.stelleStilleUhr();
   }
 
@@ -309,9 +317,46 @@ export class Zwischenablagebruecke {
     return naechste;
   }
 
+  async ausDateien(files: cliprdr.ClipboardFile[], maxBytes: number): Promise<boolean> {
+    if (this.beendet || !this.sitzung.darfSchreiben || this.dateiAntwort) return false;
+    // Nicht mit einer noch offenen Textankündigung oder Lesung überlappen.
+    await this.pruefeLokal();
+    if (this.dateiAntwort || this.beendet) return false;
+    if (!await this.warteAufFormatAntwort() || this.beendet || this.dateiAntwort) return false;
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => done(false), 5000);
+      const done = (ok: boolean) => { clearTimeout(timer); this.dateiAntwort = undefined; resolve(ok); };
+      this.dateiAntwort = done;
+      try {
+        if (!this.sitzung.meldeDateien(files, maxBytes)) done(false);
+      } catch (error) {
+        this.opts.log(`Dateien nicht übertragen: ${(error as Error).message}`);
+        done(false);
+      }
+    });
+  }
+
+  private warteAufFormatAntwort(): Promise<boolean> {
+    if (!this.sitzung.wartetAufFormatlistenAntwort) return Promise.resolve(true);
+    return new Promise(resolve => {
+      const timer = setTimeout(() => done(false), 5000);
+      const done = (ok: boolean) => { clearTimeout(timer); this.antwortWartende.delete(done); resolve(ok); };
+      this.antwortWartende.add(done);
+    });
+  }
+
+  async ausEinfuegen(text?: string): Promise<boolean> {
+    if (this.beendet) return false;
+    if (!this.sitzung.darfSchreiben) return true; // Nur die Remote-Zwischenablage einfügen.
+    if (text !== undefined && Buffer.byteLength(cliprdr.zeilenendenNachWindows(text) + '\0', 'utf16le') > this.opts.einstellungen.maxBytes) return false;
+    if (!await this.warteAufFormatAntwort()) return false;
+    if (text !== undefined) await this.ausRueckfallfeld(text);
+    return this.warteAufFormatAntwort();
+  }
+
   /** Eine einzelne Lesung samt Meldung; Fehler bleiben hier. */
   private async leseUndMelde(): Promise<boolean> {
-    if (this.beendet || !this.sitzung.darfSchreiben) return false;
+    if (this.beendet || !this.sitzung.darfSchreiben || this.dateiAntwort) return false;
     try {
       const text = await this.opts.speicher.lesen();
       if (typeof text !== 'string' || text === this.lokalerText) return false;
@@ -403,6 +448,8 @@ export class Zwischenablagebruecke {
 
   /** Nach einem Verbindungsverlust: Handshake vergessen, Abfrage anhalten. */
   zuruecksetzen(): void {
+    this.dateiAntwort?.(false);
+    for (const done of this.antwortWartende) done(false);
     this.sitzung.zuruecksetzen();
     this.lokalerText = undefined;
     this.stoppeAbfrage();
@@ -410,6 +457,8 @@ export class Zwischenablagebruecke {
   }
 
   dispose(): void {
+    this.dateiAntwort?.(false);
+    for (const done of this.antwortWartende) done(false);
     this.beendet = true;
     this.stoppeAbfrage();
     if (this.stilleUhr) {

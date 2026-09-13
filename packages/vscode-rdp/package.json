@@ -478,6 +478,10 @@
             "promptCredentials": { "type": "boolean", "description": "Bei jeder Verbindung nach Zugangsdaten fragen." }
           }
         },
+        "rdp.clipboard.maxFileSizeMb": {
+          "type": "number", "default": 64, "minimum": 1, "maximum": 256,
+          "description": "Maximale Gesamtgröße eingefügter Dateien in MiB. Dateien im Sitzungsfenster einfügen, anschließend im Zielordner auf dem Server einfügen."
+        },
         "rdp.connections": {
           "type": "array",
           "default": [],
@@ -507,10 +511,6 @@
                   "username": {
                     "type": "string"
                   },
-                  "domain": {
-                    "type": "string"
-                  },
-                  "width": {
                   "credentials": {
                     "type": "array",
                     "description": "Eigene Profile zusätzlich zu geerbten Profilen; Verwaltung über Zugangsdaten verwalten.",
@@ -518,6 +518,10 @@
                   },
                   "defaultCredential": { "type": "string", "description": "ID des Standardprofils; leer: Auswahl beim Verbinden." },
                   "promptCredentials": { "type": "boolean", "description": "Jedes Mal Benutzername und Passwort abfragen." },
+                  "domain": {
+                    "type": "string"
+                  },
+                  "width": {
                     "type": "number",
                     "description": "Leer lassen für automatische Größe"
                   },
@@ -623,10 +627,6 @@
                       "username": {
                         "type": "string"
                       },
-                      "domain": {
-                        "type": "string"
-                      },
-                      "width": {
                       "credentials": {
                         "type": "array",
                         "description": "Profile dieses Ordners, zusätzlich zu geerbten Profilen.",
@@ -634,6 +634,10 @@
                       },
                       "defaultCredential": { "type": "string", "description": "ID des Standardprofils; leer: Auswahl beim Verbinden." },
                       "promptCredentials": { "type": "boolean", "description": "Jedes Mal Benutzername und Passwort abfragen." },
+                      "domain": {
+                        "type": "string"
+                      },
+                      "width": {
                         "type": "number"
                       },
                       "height": {
@@ -860,7 +864,7 @@
         "rdp.clipboard.enabled": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Zwischenablage zwischen VS Code und der Sitzung austauschen (**MS-RDPECLIP**, Kanal `cliprdr`). Aus bedeutet: der Kanal wird gar nicht erst angemeldet. Nur Text – Dateien werden nicht übertragen."
+          "markdownDescription": "Zwischenablage zwischen VS Code und der Sitzung austauschen (**MS-RDPECLIP**, Kanal `cliprdr`). Text in beide Richtungen; Dateien vom Arbeitsplatz zum Server durch Einfügen im Sitzungsfenster."
         },
         "rdp.clipboard.direction": {
           "type": "string",
