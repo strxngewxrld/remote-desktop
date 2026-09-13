@@ -16,6 +16,29 @@ Client, ohne native Module.
 
 ## Befehle
 
+Die Befehle verwenden die Kategorie `RDP`. VS Code zeigt diese in der
+Befehlspalette an; Kontextmenüs enthalten nur den jeweiligen Befehlsnamen.
+
+Verbindungen und Ordner lassen sich im Baum per Drag-and-drop in einen Ordner
+oder auf die freie Fläche der obersten Ebene verschieben. Ein farbig markierter
+Server bekommt beim Öffnen einen gefüllten Farbpunkt im Tab.
+
+Über **Zugangsdaten verwalten…** im Ansichtsmenü werden Profile auf oberster
+Ebene gepflegt; derselbe Befehl im Kontextmenü verwaltet Profile am Ordner oder
+Server. Profile werden zusätzlich zu den übergeordneten Profilen vererbt.
+**Standard auswählen** legt den bevorzugten Login fest. Bei mehreren Profilen
+ohne Standard erscheint beim Verbinden eine Auswahl. **Immer nach Zugangsdaten
+fragen** unterbricht die Vererbung und fragt jedes Mal Benutzername und Passwort
+ab. Server ohne Profil und ohne bisherigen Benutzernamen fragen ebenfalls jedes
+Mal. Passwörter liegen ausschließlich im SecretStorage.
+
+Dateien vom Arbeitsplatz lassen sich im Sitzungsfenster mit Cmd+V/Strg+V in den
+geöffneten Remote-Zielordner einfügen. Die Übertragung nutzt Dateiobjekte des
+nativen Paste-Ereignisses und funktioniert damit auch unabhängig vom Dateisystem
+des Extension-Hosts. Das Standardlimit ist insgesamt 64 MiB
+(`rdp.clipboard.maxFileSizeMb`). Ordner und Dateien in Gegenrichtung sind noch
+nicht unterstützt; Text bleibt in beide Richtungen verfügbar.
+
 | Befehl | Wirkung |
 |---|---|
 | `RDP: Verbinden mit…` | Einmalige Verbindung ohne zu speichern |
@@ -151,7 +174,7 @@ Server. `Developer: Show Running Extensions` zeigt den Ort unabhängig davon an.
 
 ## Bekannte Grenzen
 
-Keine Zwischenablage, kein Audio, keine Laufwerksweiterleitung. Kein
+Kein Audio. Kein
 Multi-Monitor und kein RemoteApp/RAIL – es wird immer der ganze Desktop
 übertragen. Die Auflösung wird beim Verbinden aus der Panelgröße bestimmt und
 vom Client danach nicht mehr geändert; gibt der Server eine neue Größe vor,
