@@ -1342,3 +1342,1048 @@ export function trenneSuchmuster(pfad: string): { pfad: string; muster?: string 
   }
   return { pfad };
 }
+
+// ======================================================================
+//  Dateisystem-Schnittstelle
+// ======================================================================
+
+/**
+ * Das Dateisystem, das hinter einem umgeleiteten Laufwerk steht.
+ *
+ * Alle Pfade sind *relativ* und mit Schraegstrichen geschrieben; die Wurzel
+ * ist die leere Zeichenkette. Sie kommen ausschliesslich aus `zerlegePfad()`,
+ * sind also bereits gegen "..", Nullzeichen und Geraetenamen geprueft. Eine
+ * Umsetzung darf sich darauf verlassen - muss aber trotzdem dafuer sorgen,
+ * dass sie ihre eigene Wurzel nicht verlaesst (Gurt *und* Hosentraeger).
+ *
+ * Die Schreibmethoden sind allesamt optional. Fehlt eine, beantwortet die
+ * Sitzung die zugehoerige Anfrage mit STATUS_ACCESS_DENIED - das ist der
+ * Nur-Lesen-Betrieb, und er ist der Standard.
+ */
+export interface RdpdrDateisystem {
+  /** Metadaten zu einem Pfad, oder `undefined`, wenn es ihn nicht gibt. */
+  stat(pfad: string): Promise<DateiEintrag | undefined>;
+  /** Inhalt eines Verzeichnisses. Bereits gefiltert, falls der Aufrufer filtert. */
+  liste(pfad: string): Promise<DateiEintrag[]>;
+  /** Bytes aus einer Datei lesen. Weniger als `laenge` zurueckzugeben ist erlaubt. */
+  lies(pfad: string, offset: number, laenge: number): Promise<Buffer>;
+
+  /** Bytes schreiben; liefert die Zahl der geschriebenen Bytes. */
+  schreibe?(pfad: string, offset: number, daten: Buffer): Promise<number>;
+  /** Datei oder Verzeichnis anlegen. */
+  erzeuge?(pfad: string, istVerzeichnis: boolean): Promise<void>;
+  /** Datei oder (leeres) Verzeichnis loeschen. */
+  loesche?(pfad: string): Promise<void>;
+  /** Umbenennen oder verschieben. */
+  benenneUm?(von: string, nach: string, ersetzen: boolean): Promise<void>;
+  /** Datei auf die angegebene Laenge bringen (FileEndOfFileInformation). */
+  kuerze?(pfad: string, laenge: number): Promise<void>;
+}
+
+/** Ein Laufwerk, das dem Server angekuendigt wird. */
+export interface RdpdrLaufwerk {
+  /** Eindeutig je Sitzung; wird in jeder I/O-Anfrage mitgeschickt. */
+  deviceId: number;
+  /** Name, den der Explorer anzeigt. */
+  name: string;
+  dateisystem: RdpdrDateisystem;
+  /** Angaben fuer die Volumenklassen; fehlende Felder werden ergaenzt. */
+  volumen?: Partial<VolumenAngaben>;
+}
+
+// ======================================================================
+//  Sitzung
+// ======================================================================
+
+/** Zustand einer vom Server geoeffneten Datei oder eines Verzeichnisses. */
+interface OffeneDatei {
+  fileId: number;
+  deviceId: number;
+  /** Relativer Pfad mit Schraegstrichen; die Wurzel ist "". */
+  pfad: string;
+  istVerzeichnis: boolean;
+  /** FILE_DELETE_ON_CLOSE stand in den CreateOptions. */
+  loeschBeimSchliessen: boolean;
+  /** FileDispositionInformation ist gekommen. */
+  loeschVorgemerkt: boolean;
+  /** Der Server hat Schreibzugriff angefragt. */
+  schreibend: boolean;
+  /** Aufzaehlung: die Eintraege der ersten Anfrage, danach fortlaufend. */
+  eintraege?: DateiEintrag[];
+  index: number;
+  /** CompletionIds offener NotifyChange-Anfragen auf diesem Handle. */
+  offeneBenachrichtigungen: number[];
+}
+
+export interface RdpdrSessionOptions {
+  /** Fertige RDPDR-Nachricht auf den Kanal geben. */
+  send(daten: Buffer): void;
+  /** Rechnername fuer DR_CORE_CLIENT_NAME_REQ (2.2.2.4). */
+  computerName: string;
+  /**
+   * Die Laufwerke, die angekuendigt werden sollen.
+   *
+   * Wird genau einmal je Sitzung aufgerufen, und zwar erst dann, wenn der
+   * Handshake so weit ist, dass die Ankuendigung ueberhaupt hinausgehen darf.
+   * Genau hier gehoert die Rueckfrage beim Benutzer hin: eine leere Liste
+   * heisst "nichts freigeben", und die Sitzung laeuft ohne Laufwerk weiter.
+   */
+  laufwerke(): Promise<readonly RdpdrLaufwerk[]> | readonly RdpdrLaufwerk[];
+  /**
+   * Nur lesen. Standard `true` - der Server bekommt Quelltext zu sehen, und
+   * das Schreibrecht dazu muss ausdruecklich erteilt werden.
+   */
+  nurLesen?: boolean;
+  /**
+   * Obergrenze fuer eine einzelne Leseantwort in Byte. Standard 4 MiB.
+   * 2.2.3.4.3 erlaubt ausdruecklich, weniger zu liefern als angefragt.
+   */
+  maxLeseBytes?: number;
+  /** Meldungen fuer das Sitzungsprotokoll. */
+  log?(nachricht: string): void;
+}
+
+/** Standardgrenze fuer eine Leseantwort: 4 MiB. */
+export const STANDARD_MAX_LESE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Von uns unterstuetzte Nebenversion des Protokolls (2.2.2.3).
+ *
+ * 0x000C und nicht 0x000D: erst ab 13 verlangt der Server das Anhaengen per
+ * Offset 0xFFFFFFFFFFFFFFFF (2.2.1.4.4), und dafuer muesste das Dateisystem
+ * eine eigene Anhaengeoperation mitbringen. Version 12 kennen alle
+ * Windows-Server seit Windows 7.
+ */
+export const RDPDR_VERSION_MINOR = 0x000c;
+
+/** Nebenversionen, die 2.2.2.3 ueberhaupt zulaesst. */
+const ERLAUBTE_NEBENVERSIONEN = [0x0002, 0x0005, 0x000a, 0x000c, 0x000d] as const;
+
+/**
+ * Die hoechste zulaessige Nebenversion waehlen, die der Server auch versteht.
+ *
+ * Ein Server, der 0x0005 ankuendigt, bekommt von uns 0x0005 - eine hoehere
+ * Zahl waere eine Behauptung ueber ihn, nicht ueber uns.
+ */
+export function waehleNebenversion(serverMinor: number): number {
+  const obergrenze = Math.min(serverMinor, RDPDR_VERSION_MINOR);
+  let gewaehlt: number = ERLAUBTE_NEBENVERSIONEN[0];
+  for (const kandidat of ERLAUBTE_NEBENVERSIONEN) {
+    if (kandidat <= obergrenze) gewaehlt = kandidat;
+  }
+  return gewaehlt;
+}
+
+/**
+ * Zustandsmaschine des Clients auf dem Kanal `rdpdr`.
+ *
+ * Der Ablauf folgt MS-RDPEFS 3.2.5.1:
+ *
+ *  1. Der Server schickt DR_CORE_SERVER_ANNOUNCE_REQ. Wir antworten sofort
+ *     mit DR_CORE_CLIENT_ANNOUNCE_RSP und direkt danach mit
+ *     DR_CORE_CLIENT_NAME_REQ.
+ *  2. Der Server schickt DR_CORE_CAPABILITY_REQ. Wir antworten mit unseren
+ *     Faehigkeiten (General- und Drive-Satz).
+ *  3. Der Server bestaetigt die ClientId (DR_CORE_SERVER_CLIENTID_CONFIRM)
+ *     und meldet spaeter die Anmeldung (DR_CORE_USER_LOGGEDON).
+ *  4. Sobald Faehigkeiten und Bestaetigung da sind - oder spaetestens bei der
+ *     Anmeldung - kuendigen wir die Laufwerke an. Genau einmal: 3.2.5.1.9
+ *     schreibt vor, dass eine Ankuendigung nur bisher unbekannte Geraete
+ *     enthalten darf.
+ *  5. Danach beantworten wir Device-I/O-Anfragen, bis der Kanal endet.
+ */
+export class RdpdrSession {
+  private serverVersionMinor = 0;
+  private nebenversion = RDPDR_VERSION_MINOR;
+  private clientId = 0;
+  private capsGesehen = false;
+  private clientIdBestaetigt = false;
+  private angekuendigt = false;
+  /** Laeuft die Ankuendigung gerade (die Rueckfrage ist asynchron)? */
+  private kuendigtGerade = false;
+  private readonly laufwerke = new Map<number, RdpdrLaufwerk>();
+  private readonly offeneDateien = new Map<number, OffeneDatei>();
+  private naechsteFileId = 1;
+  private beendet = false;
+
+  constructor(private readonly opts: RdpdrSessionOptions) {}
+
+  get nurLesen(): boolean {
+    return this.opts.nurLesen !== false;
+  }
+
+  get maxLeseBytes(): number {
+    const wert = this.opts.maxLeseBytes;
+    return wert !== undefined && Number.isFinite(wert) && wert > 0 ? Math.floor(wert) : STANDARD_MAX_LESE_BYTES;
+  }
+
+  /** Sind die Laufwerke bereits angekuendigt? */
+  get istBereit(): boolean {
+    return this.angekuendigt;
+  }
+
+  /** Zahl der gerade offenen Datei-Handles - fuer Protokoll und Tests. */
+  get offeneHandles(): number {
+    return this.offeneDateien.size;
+  }
+
+  private protokoll(nachricht: string): void {
+    this.opts.log?.(nachricht);
+  }
+
+  private sende(daten: Buffer): void {
+    if (this.beendet) return;
+    this.opts.send(daten);
+  }
+
+  /**
+   * Die Sitzung stilllegen.
+   *
+   * Danach geht nichts mehr hinaus - wichtig, wenn die Verbindung weg ist und
+   * noch asynchrone Dateioperationen unterwegs sind, deren Antwort ins Leere
+   * liefe.
+   */
+  dispose(): void {
+    this.beendet = true;
+    this.offeneDateien.clear();
+  }
+
+  /**
+   * Alles auf Anfang.
+   *
+   * 3.2.5.1.2: Kommt ein Server Announce mitten in einer laufenden Sitzung,
+   * hat der Server neu verbunden. Dann sind alle Anfragen hinfaellig und alle
+   * Geraetereferenzen freizugeben.
+   */
+  zuruecksetzen(): void {
+    this.serverVersionMinor = 0;
+    this.nebenversion = RDPDR_VERSION_MINOR;
+    this.clientId = 0;
+    this.capsGesehen = false;
+    this.clientIdBestaetigt = false;
+    this.angekuendigt = false;
+    this.kuendigtGerade = false;
+    this.laufwerke.clear();
+    this.offeneDateien.clear();
+    this.naechsteFileId = 1;
+    this.beendet = false;
+  }
+
+  // -------------------------------------------------------------- Eingang
+
+  /**
+   * Eine vollstaendig zusammengesetzte Nachricht des Kanals verarbeiten.
+   *
+   * Wirft nicht: ein unverstaendliches PDU wird protokolliert und verworfen.
+   * Ein kaputtes Laufwerk darf keine Sitzung beenden.
+   */
+  verarbeite(daten: Buffer): void {
+    if (this.beendet) return;
+    let pdu: RdpdrPdu;
+    try {
+      pdu = parseRdpdrPdu(daten);
+    } catch (err) {
+      this.protokoll(`RDPDR: Nachricht verworfen - ${(err as Error).message}`);
+      return;
+    }
+
+    if (pdu.component !== RDPDR_CTYP_CORE) {
+      // RDPDR_CTYP_PRN gehoert zur Druckerumleitung (MS-RDPEPC). Wir kuendigen
+      // keine Drucker an, also kommt das hoechstens von einem Server, der sich
+      // vertut - stillschweigend verwerfen ist richtig.
+      this.protokoll(`RDPDR: Komponente 0x${pdu.component.toString(16)} wird nicht bedient`);
+      return;
+    }
+
+    try {
+      switch (pdu.packetId) {
+        case PAKID_CORE_SERVER_ANNOUNCE:
+          this.behandleServerAnnounce(pdu.body);
+          break;
+        case PAKID_CORE_SERVER_CAPABILITY:
+          this.behandleCapabilities(pdu.body);
+          break;
+        case PAKID_CORE_CLIENTID_CONFIRM:
+          this.behandleClientIdConfirm(pdu.body);
+          break;
+        case PAKID_CORE_USER_LOGGEDON:
+          this.protokoll('RDPDR: der Server meldet die Anmeldung');
+          this.kuendigeAn();
+          break;
+        case PAKID_CORE_DEVICE_REPLY:
+          this.behandleDeviceReply(pdu.body);
+          break;
+        case PAKID_CORE_DEVICE_IOREQUEST:
+          this.behandleIoRequest(pdu.body);
+          break;
+        default:
+          this.protokoll(`RDPDR: PacketId 0x${pdu.packetId.toString(16)} wird nicht behandelt`);
+      }
+    } catch (err) {
+      this.protokoll(
+        `RDPDR: Fehler beim Verarbeiten von 0x${pdu.packetId.toString(16)} - ${(err as Error).message}`,
+      );
+    }
+  }
+
+  // ------------------------------------------------------------ Handshake
+
+  private behandleServerAnnounce(body: Buffer): void {
+    if (this.angekuendigt || this.capsGesehen) {
+      // 3.2.5.1.2: ein zweites Announce heisst "neue Sitzung".
+      this.protokoll('RDPDR: erneutes Server Announce - die Sitzung faengt von vorn an');
+      this.zuruecksetzen();
+    }
+    const announce = parseServerAnnounce(body);
+    this.serverVersionMinor = announce.versionMinor;
+    this.nebenversion = waehleNebenversion(announce.versionMinor);
+
+    // 3.2.5.1.3: ab Nebenversion 12 uebernimmt der Client die ClientId des
+    // Servers, darunter zieht er eine eigene Zufallszahl.
+    this.clientId =
+      announce.versionMinor >= 0x000c ? announce.clientId : Math.floor(Math.random() * 0xffffffff) >>> 0;
+
+    this.protokoll(
+      `RDPDR: Server-Version ${announce.versionMajor}.${announce.versionMinor}, ` +
+        `wir antworten mit 1.${this.nebenversion} (ClientId 0x${this.clientId.toString(16)})`,
+    );
+    this.sende(buildClientAnnounceReply(1, this.nebenversion, this.clientId));
+    // 3.2.5.1.4: der Rechnername folgt unmittelbar.
+    this.sende(buildClientNameRequest(this.opts.computerName));
+  }
+
+  private behandleCapabilities(body: Buffer): void {
+    const saetze = parseCapabilities(body);
+    const namen = saetze
+      .map((s) => `0x${s.capabilityType.toString(16)} (v${s.version})`)
+      .join(', ');
+    this.protokoll(`RDPDR: Server-Faehigkeiten: ${namen || 'keine'}`);
+    const drive = saetze.find((s) => s.capabilityType === CAP_DRIVE_TYPE);
+    if (!drive) {
+      // Kein Drive-Satz heisst: der Server will keine Laufwerke. Wir kuendigen
+      // trotzdem an - manche Server lassen den Satz weg und nehmen Laufwerke
+      // dennoch entgegen; die Device Announce Response sagt es uns dann.
+      this.protokoll('RDPDR: der Server nennt keinen Drive-Satz - wir kuendigen trotzdem an');
+    }
+    this.capsGesehen = true;
+    this.sende(buildClientCapabilities({ versionMinor: this.nebenversion }));
+    this.kuendigeAn();
+  }
+
+  private behandleClientIdConfirm(body: Buffer): void {
+    const bestaetigt = parseServerAnnounce(body); // gleicher Aufbau wie 2.2.2.2
+    if (bestaetigt.clientId !== this.clientId) {
+      // Kein Grund abzubrechen: 2.2.2.6 verlangt Gleichheit, aber ein
+      // abweichender Wert bringt nichts durcheinander - die ClientId kommt in
+      // keiner weiteren Nachricht vor.
+      this.protokoll(
+        `RDPDR: der Server bestaetigt ClientId 0x${bestaetigt.clientId.toString(16)}, ` +
+          `wir hatten 0x${this.clientId.toString(16)} geschickt`,
+      );
+    }
+    this.clientIdBestaetigt = true;
+    this.kuendigeAn();
+  }
+
+  /**
+   * Die Laufwerke ankuendigen - genau einmal.
+   *
+   * 3.2.5.1.9 nennt zwei Ausloeser: unmittelbar nach der Anmeldung, oder nach
+   * Faehigkeiten *und* ClientId-Bestaetigung. Welcher zuerst eintritt, ist
+   * dem Server ueberlassen; wir nehmen den frueheren und sperren danach.
+   */
+  private kuendigeAn(): void {
+    if (this.angekuendigt || this.kuendigtGerade) return;
+    if (!this.capsGesehen || !this.clientIdBestaetigt) return;
+    this.kuendigtGerade = true;
+
+    void (async () => {
+      let liste: readonly RdpdrLaufwerk[] = [];
+      try {
+        liste = await this.opts.laufwerke();
+      } catch (err) {
+        this.protokoll(`RDPDR: die Laufwerksliste konnte nicht ermittelt werden - ${(err as Error).message}`);
+      }
+      if (this.beendet) return;
+      this.kuendigtGerade = false;
+      this.angekuendigt = true;
+
+      if (liste.length === 0) {
+        // Voellig in Ordnung: abgeschaltet, leerer Arbeitsbereich oder
+        // verneinte Rueckfrage. Der Server bekommt dann gar keine
+        // Geraeteliste, und die Sitzung laeuft wie ohne diese Erweiterung.
+        this.protokoll('RDPDR: keine Laufwerke freigegeben - der Kanal bleibt leer');
+        return;
+      }
+
+      this.laufwerke.clear();
+      for (const laufwerk of liste) this.laufwerke.set(laufwerk.deviceId, laufwerk);
+      this.sende(buildDeviceListAnnounce(liste.map((l) => ({ deviceId: l.deviceId, name: l.name }))));
+      this.protokoll(
+        `RDPDR: ${liste.length} Laufwerk(e) angekuendigt (${liste.map((l) => l.name).join(', ')})` +
+          `${this.nurLesen ? ', nur lesen' : ', lesen und schreiben'}`,
+      );
+    })();
+  }
+
+  private behandleDeviceReply(body: Buffer): void {
+    const antwort = parseDeviceAnnounceResponse(body);
+    const laufwerk = this.laufwerke.get(antwort.deviceId);
+    const name = laufwerk?.name ?? `Geraet ${antwort.deviceId}`;
+    if (antwort.resultCode === STATUS_SUCCESS) {
+      this.protokoll(`RDPDR: "${name}" ist im Explorer verfuegbar`);
+      return;
+    }
+    // 3.2.5.1.1: alles ausser STATUS_SUCCESS heisst, dass das Geraet nicht
+    // umgeleitet wird. Wir vergessen es, damit spaetere Anfragen darauf nicht
+    // ins Leere laufen.
+    this.laufwerke.delete(antwort.deviceId);
+    this.protokoll(
+      `RDPDR: der Server hat "${name}" abgelehnt (NTSTATUS 0x${antwort.resultCode.toString(16)})`,
+    );
+  }
+
+  // ----------------------------------------------------- Device I/O (2.2.3.3)
+
+  /**
+   * Eine Serveranfrage an ein Laufwerk bearbeiten.
+   *
+   * Die eigentliche Arbeit ist asynchron (das Dateisystem kann entfernt sein),
+   * der Eingang aber nicht. Deshalb wird hier nur ausgeloest; jede Antwort
+   * findet ueber die CompletionId zurueck zu ihrer Anfrage (2.2.1.5).
+   */
+  private behandleIoRequest(body: Buffer): void {
+    let anfrage: RdpdrRequest;
+    try {
+      anfrage = parseDeviceIoRequest(body);
+    } catch (err) {
+      // Ohne CompletionId koennen wir gar nicht antworten. Der Server laeuft
+      // dann in einen Zeitablauf - besser als eine Antwort auf gut Glueck.
+      this.protokoll(`RDPDR: unlesbare I/O-Anfrage verworfen - ${(err as Error).message}`);
+      return;
+    }
+
+    const laufwerk = this.laufwerke.get(anfrage.deviceId);
+    if (!laufwerk) {
+      this.protokoll(`RDPDR: Anfrage fuer unbekanntes Geraet ${anfrage.deviceId} abgelehnt`);
+      this.sende(buildDeviceIoResponse(anfrage.deviceId, anfrage.completionId, STATUS_INVALID_DEVICE_REQUEST));
+      return;
+    }
+
+    void this.bearbeite(laufwerk, anfrage).catch((err: Error) => {
+      // Eine unerwartete Ausnahme darf keine offene Anfrage hinterlassen:
+      // Windows blockiert den Explorer, bis die Antwort da ist.
+      this.protokoll(`RDPDR: ${anfrage.art} fehlgeschlagen - ${err.message}`);
+      this.sende(this.fehlerAntwort(anfrage, STATUS_UNSUCCESSFUL));
+    });
+  }
+
+  /**
+   * Eine Fehlerantwort im Rahmen der jeweiligen Anfrageart.
+   *
+   * Die Rahmen unterscheiden sich: Windows liest die Antwort nach der Art der
+   * Anfrage, nicht nach dem IoStatus. Eine blosse 16-Byte-Antwort auf ein
+   * IRP_MJ_CREATE laesst manche Server den Kanal abbrechen.
+   */
+  private fehlerAntwort(anfrage: RdpdrRequest, status: number): Buffer {
+    const { deviceId, completionId } = anfrage;
+    switch (anfrage.art) {
+      case 'create':
+        return buildCreateResponse(deviceId, completionId, status, 0, 0);
+      case 'close':
+        return buildCloseResponse(deviceId, completionId, status);
+      case 'read':
+        return buildReadResponse(deviceId, completionId, status, Buffer.alloc(0));
+      case 'write':
+        return buildWriteResponse(deviceId, completionId, status, 0);
+      case 'control':
+        return buildControlResponse(deviceId, completionId, status);
+      case 'setInformation':
+        return buildSetInformationResponse(deviceId, completionId, status, anfrage.length);
+      case 'setVolumeInformation':
+        return buildSetInformationResponse(deviceId, completionId, status, anfrage.buffer.length);
+      case 'lockControl':
+        return buildLockResponse(deviceId, completionId, status);
+      case 'queryInformation':
+      case 'queryVolumeInformation':
+      case 'queryDirectory':
+      case 'notifyChangeDirectory':
+        return buildLaengeUndPuffer(deviceId, completionId, status, Buffer.alloc(0));
+      default:
+        return buildDeviceIoResponse(deviceId, completionId, status);
+    }
+  }
+
+  private async bearbeite(laufwerk: RdpdrLaufwerk, anfrage: RdpdrRequest): Promise<void> {
+    switch (anfrage.art) {
+      case 'create':
+        return this.bearbeiteCreate(laufwerk, anfrage);
+      case 'close':
+        return this.bearbeiteClose(laufwerk, anfrage);
+      case 'read':
+        return this.bearbeiteRead(laufwerk, anfrage);
+      case 'write':
+        return this.bearbeiteWrite(laufwerk, anfrage);
+      case 'queryInformation':
+        return this.bearbeiteQueryInformation(laufwerk, anfrage);
+      case 'setInformation':
+        return this.bearbeiteSetInformation(laufwerk, anfrage);
+      case 'queryVolumeInformation':
+        return this.bearbeiteQueryVolumeInformation(laufwerk, anfrage);
+      case 'queryDirectory':
+        return this.bearbeiteQueryDirectory(laufwerk, anfrage);
+      case 'notifyChangeDirectory':
+        return this.bearbeiteNotifyChange(anfrage);
+      case 'lockControl':
+        // Ohne echte Sperrverwaltung: wir melden Erfolg. Eine Ablehnung
+        // laesst Programme, die vor dem Schreiben sperren, gar nicht erst
+        // starten - und Nebenlaeufigkeit gibt es hier ohnehin keine, weil
+        // ENABLE_ASYNCIO nicht angekuendigt ist.
+        this.protokoll(`RDPDR: Sperranfrage (Operation ${anfrage.operation}) bestaetigt, ohne zu sperren`);
+        this.sende(buildLockResponse(anfrage.deviceId, anfrage.completionId, STATUS_SUCCESS));
+        return;
+      case 'control':
+        // 2.2.3.3.5 zaehlt die moeglichen FSCTL-Codes auf; wir setzen keinen
+        // davon um. STATUS_NOT_SUPPORTED mit leerem Ausgabepuffer ist die
+        // ehrliche Antwort - und Windows kommt damit zurecht.
+        this.protokoll(`RDPDR: FSCTL 0x${anfrage.ioControlCode.toString(16)} wird nicht unterstuetzt`);
+        this.sende(
+          buildControlResponse(anfrage.deviceId, anfrage.completionId, STATUS_NOT_SUPPORTED, Buffer.alloc(0)),
+        );
+        return;
+      case 'setVolumeInformation':
+        // Die einzige Klasse waere FileFsLabelInformation (2.2.3.3.7). Den
+        // Namen des Laufwerks bestimmt der Arbeitsbereich, nicht der Server.
+        this.protokoll('RDPDR: Umbenennen des Datentraegers abgelehnt');
+        this.sende(
+          buildSetInformationResponse(
+            anfrage.deviceId,
+            anfrage.completionId,
+            STATUS_ACCESS_DENIED,
+            anfrage.buffer.length,
+          ),
+        );
+        return;
+      default:
+        this.protokoll(
+          `RDPDR: MajorFunction 0x${anfrage.majorFunction.toString(16)}` +
+            `/0x${anfrage.minorFunction.toString(16)} wird nicht unterstuetzt`,
+        );
+        this.sende(buildDeviceIoResponse(anfrage.deviceId, anfrage.completionId, STATUS_NOT_SUPPORTED));
+    }
+  }
+
+  // ------------------------------------------------------------ Create
+
+  private async bearbeiteCreate(laufwerk: RdpdrLaufwerk, anfrage: CreateRequest): Promise<void> {
+    const antwort = (status: number, fileId = 0, information = 0): void => {
+      this.sende(buildCreateResponse(anfrage.deviceId, anfrage.completionId, status, fileId, information));
+    };
+
+    const zerlegt = zerlegePfad(anfrage.path);
+    if (!zerlegt.ok) {
+      this.protokoll(`RDPDR: Create abgewiesen - ${zerlegt.grund} (Pfad "${anfrage.path}")`);
+      antwort(zerlegt.status);
+      return;
+    }
+    const pfad = fuegePfad(zerlegt.segmente);
+
+    const willSchreiben =
+      (anfrage.desiredAccess & SCHREIBZUGRIFF_BITS) !== 0 ||
+      anfrage.createDisposition !== FILE_OPEN ||
+      (anfrage.createOptions & FILE_DELETE_ON_CLOSE) !== 0;
+
+    if (willSchreiben && this.nurLesen) {
+      this.protokoll(`RDPDR: Schreibzugriff auf "${pfad || '\\'}" abgelehnt - das Laufwerk ist nur lesbar`);
+      antwort(STATUS_ACCESS_DENIED);
+      return;
+    }
+
+    const vorhanden = pfad === '' ? { name: '', istVerzeichnis: true, groesse: 0 } : await laufwerk.dateisystem.stat(pfad);
+
+    if (vorhanden) {
+      if ((anfrage.createOptions & FILE_DIRECTORY_FILE) !== 0 && !vorhanden.istVerzeichnis) {
+        antwort(STATUS_NOT_A_DIRECTORY);
+        return;
+      }
+      if ((anfrage.createOptions & FILE_NON_DIRECTORY_FILE) !== 0 && vorhanden.istVerzeichnis) {
+        antwort(STATUS_FILE_IS_A_DIRECTORY);
+        return;
+      }
+      if (anfrage.createDisposition === FILE_CREATE) {
+        antwort(STATUS_OBJECT_NAME_COLLISION);
+        return;
+      }
+      // Ueberschreiben heisst: Inhalt weg, Handle bleibt.
+      const ueberschreiben =
+        anfrage.createDisposition === FILE_OVERWRITE ||
+        anfrage.createDisposition === FILE_OVERWRITE_IF ||
+        anfrage.createDisposition === FILE_SUPERSEDE;
+      if (ueberschreiben && !vorhanden.istVerzeichnis) {
+        if (!laufwerk.dateisystem.kuerze) {
+          antwort(STATUS_ACCESS_DENIED);
+          return;
+        }
+        await laufwerk.dateisystem.kuerze(pfad, 0);
+      }
+    } else {
+      if (anfrage.createDisposition === FILE_OPEN || anfrage.createDisposition === FILE_OVERWRITE) {
+        // Kein Fehlerprotokoll: der Explorer fragt bei jedem Verzeichniswechsel
+        // nach desktop.ini, Thumbs.db und autorun.inf. Das ist der Normalfall.
+        antwort(STATUS_OBJECT_NAME_NOT_FOUND);
+        return;
+      }
+      if (!laufwerk.dateisystem.erzeuge) {
+        antwort(STATUS_ACCESS_DENIED);
+        return;
+      }
+      const alsVerzeichnis = (anfrage.createOptions & FILE_DIRECTORY_FILE) !== 0;
+      await laufwerk.dateisystem.erzeuge(pfad, alsVerzeichnis);
+      this.protokoll(`RDPDR: "${pfad}" ${alsVerzeichnis ? 'als Verzeichnis' : ''} angelegt`);
+    }
+
+    const eintrag = pfad === '' ? { name: '', istVerzeichnis: true, groesse: 0 } : await laufwerk.dateisystem.stat(pfad);
+    if (!eintrag) {
+      // Angelegt und trotzdem nicht da - das ist ein Fehler des Dateisystems.
+      antwort(STATUS_UNSUCCESSFUL);
+      return;
+    }
+
+    const fileId = this.naechsteFileId++;
+    this.offeneDateien.set(fileId, {
+      fileId,
+      deviceId: anfrage.deviceId,
+      pfad,
+      istVerzeichnis: eintrag.istVerzeichnis,
+      loeschBeimSchliessen: (anfrage.createOptions & FILE_DELETE_ON_CLOSE) !== 0,
+      loeschVorgemerkt: false,
+      schreibend: willSchreiben,
+      index: 0,
+      offeneBenachrichtigungen: [],
+    });
+
+    // 2.2.3.4.1: FILE_OPENED nur bei FILE_OPEN_IF, FILE_OVERWRITTEN nur bei
+    // FILE_OVERWRITE_IF, sonst FILE_SUPERSEDED. Das haengt allein an der
+    // CreateDisposition, nicht daran, was tatsaechlich passiert ist.
+    const information =
+      anfrage.createDisposition === FILE_OPEN_IF
+        ? FILE_OPENED
+        : anfrage.createDisposition === FILE_OVERWRITE_IF
+          ? FILE_OVERWRITTEN
+          : FILE_SUPERSEDED;
+    antwort(STATUS_SUCCESS, fileId, information);
+  }
+
+  // ------------------------------------------------------------- Close
+
+  private async bearbeiteClose(laufwerk: RdpdrLaufwerk, anfrage: CloseRequest): Promise<void> {
+    const datei = this.offeneDateien.get(anfrage.fileId);
+    if (!datei) {
+      // Ein Close auf ein unbekanntes Handle ist kein Drama - antworten muss
+      // man trotzdem, sonst wartet der Server.
+      this.sende(buildCloseResponse(anfrage.deviceId, anfrage.completionId, STATUS_SUCCESS));
+      return;
+    }
+    this.offeneDateien.delete(anfrage.fileId);
+
+    // 2.2.3.4.11: offene NotifyChange-Anfragen werden beim Schliessen mit
+    // leerem Puffer abgeschlossen. Wer sie liegen laesst, blockiert den
+    // Explorer-Thread, der auf die Benachrichtigung wartet.
+    for (const completionId of datei.offeneBenachrichtigungen) {
+      this.sende(buildLaengeUndPuffer(anfrage.deviceId, completionId, STATUS_SUCCESS, Buffer.alloc(0)));
+    }
+
+    if ((datei.loeschBeimSchliessen || datei.loeschVorgemerkt) && datei.pfad !== '') {
+      if (this.nurLesen || !laufwerk.dateisystem.loesche) {
+        this.protokoll(`RDPDR: Loeschen von "${datei.pfad}" beim Schliessen abgelehnt - nur lesen`);
+      } else {
+        try {
+          await laufwerk.dateisystem.loesche(datei.pfad);
+          this.protokoll(`RDPDR: "${datei.pfad}" geloescht`);
+        } catch (err) {
+          // Der Close muss trotzdem gelingen: 2.2.1.5.2 kennt keinen Weg,
+          // "geschlossen, aber nicht geloescht" zu melden.
+          this.protokoll(`RDPDR: "${datei.pfad}" konnte nicht geloescht werden - ${(err as Error).message}`);
+        }
+      }
+    }
+
+    this.sende(buildCloseResponse(anfrage.deviceId, anfrage.completionId, STATUS_SUCCESS));
+  }
+
+  // -------------------------------------------------------------- Read
+
+  private async bearbeiteRead(laufwerk: RdpdrLaufwerk, anfrage: ReadRequest): Promise<void> {
+    const datei = this.offeneDateien.get(anfrage.fileId);
+    if (!datei) {
+      this.sende(
+        buildReadResponse(anfrage.deviceId, anfrage.completionId, STATUS_INVALID_DEVICE_REQUEST, Buffer.alloc(0)),
+      );
+      return;
+    }
+    if (datei.istVerzeichnis) {
+      this.sende(
+        buildReadResponse(anfrage.deviceId, anfrage.completionId, STATUS_INVALID_DEVICE_REQUEST, Buffer.alloc(0)),
+      );
+      return;
+    }
+
+    const offset = Number(anfrage.offset);
+    const laenge = Math.min(anfrage.length, this.maxLeseBytes);
+    const daten = await laufwerk.dateisystem.lies(datei.pfad, offset, laenge);
+    if (daten.length === 0 && anfrage.length > 0) {
+      // NT-Semantik: am Dateiende liefert ein Lesen STATUS_END_OF_FILE, nicht
+      // Erfolg mit null Bytes. 2.2.3.4.3 nennt fuer den Erfolgsfall
+      // ausdruecklich "any number between one and ...".
+      this.sende(buildReadResponse(anfrage.deviceId, anfrage.completionId, STATUS_END_OF_FILE, Buffer.alloc(0)));
+      return;
+    }
+    this.sende(buildReadResponse(anfrage.deviceId, anfrage.completionId, STATUS_SUCCESS, daten));
+  }
+
+  // ------------------------------------------------------------- Write
+
+  private async bearbeiteWrite(laufwerk: RdpdrLaufwerk, anfrage: WriteRequest): Promise<void> {
+    const antwort = (status: number, geschrieben = 0): void => {
+      this.sende(buildWriteResponse(anfrage.deviceId, anfrage.completionId, status, geschrieben));
+    };
+    if (this.nurLesen || !laufwerk.dateisystem.schreibe) {
+      this.protokoll('RDPDR: Schreibanfrage abgelehnt - das Laufwerk ist nur lesbar');
+      antwort(STATUS_ACCESS_DENIED);
+      return;
+    }
+    const datei = this.offeneDateien.get(anfrage.fileId);
+    if (!datei || datei.istVerzeichnis) {
+      antwort(STATUS_INVALID_DEVICE_REQUEST);
+      return;
+    }
+    if (!datei.schreibend) {
+      // Der Server hat das Handle ohne Schreibrecht geoeffnet.
+      antwort(STATUS_ACCESS_DENIED);
+      return;
+    }
+
+    // 2.2.1.4.4: 0xFFFFFFFFFFFFFFFF heisst "anhaengen", aber erst ab
+    // Nebenversion 13. Wir kuendigen 12 an, also darf das nicht kommen - wenn
+    // es doch kommt, ist Ablehnen ehrlicher als an Offset 2^64 zu schreiben.
+    if (anfrage.offset === 0xffffffffffffffffn) {
+      this.protokoll('RDPDR: Anhaengen (Offset -1) wird nicht unterstuetzt - wir melden Version 1.12');
+      antwort(STATUS_NOT_SUPPORTED);
+      return;
+    }
+
+    const geschrieben = await laufwerk.dateisystem.schreibe(datei.pfad, Number(anfrage.offset), anfrage.data);
+    antwort(STATUS_SUCCESS, geschrieben);
+  }
+
+  // -------------------------------------------------- Query Information
+
+  private async bearbeiteQueryInformation(
+    laufwerk: RdpdrLaufwerk,
+    anfrage: QueryInformationRequest,
+  ): Promise<void> {
+    const antwort = (status: number, puffer: Buffer = Buffer.alloc(0)): void => {
+      this.sende(buildLaengeUndPuffer(anfrage.deviceId, anfrage.completionId, status, puffer));
+    };
+    const datei = this.offeneDateien.get(anfrage.fileId);
+    if (!datei) {
+      antwort(STATUS_INVALID_DEVICE_REQUEST);
+      return;
+    }
+    const eintrag = await this.eintragZu(laufwerk, datei);
+    if (!eintrag) {
+      antwort(STATUS_OBJECT_NAME_NOT_FOUND);
+      return;
+    }
+
+    switch (anfrage.fsInformationClass) {
+      case FileBasicInformation:
+        antwort(STATUS_SUCCESS, buildFileBasicInformation(eintrag));
+        return;
+      case FileStandardInformation:
+        antwort(STATUS_SUCCESS, buildFileStandardInformation(eintrag, datei.loeschVorgemerkt));
+        return;
+      case FileAttributeTagInformation:
+        antwort(STATUS_SUCCESS, buildFileAttributeTagInformation(eintrag));
+        return;
+      default:
+        // 2.2.3.3.8 nennt genau diese drei Klassen. Alles andere kommt von
+        // einem Server, der mehr versucht, als das Protokoll vorsieht.
+        this.protokoll(
+          `RDPDR: Informationsklasse 0x${anfrage.fsInformationClass.toString(16)} wird nicht unterstuetzt`,
+        );
+        antwort(STATUS_NOT_SUPPORTED);
+    }
+  }
+
+  // ---------------------------------------------------- Set Information
+
+  private async bearbeiteSetInformation(
+    laufwerk: RdpdrLaufwerk,
+    anfrage: SetInformationRequest,
+  ): Promise<void> {
+    const antwort = (status: number): void => {
+      this.sende(buildSetInformationResponse(anfrage.deviceId, anfrage.completionId, status, anfrage.length));
+    };
+    if (this.nurLesen) {
+      this.protokoll('RDPDR: Aenderungsanfrage abgelehnt - das Laufwerk ist nur lesbar');
+      antwort(STATUS_ACCESS_DENIED);
+      return;
+    }
+    const datei = this.offeneDateien.get(anfrage.fileId);
+    if (!datei) {
+      antwort(STATUS_INVALID_DEVICE_REQUEST);
+      return;
+    }
+
+    switch (anfrage.fsInformationClass) {
+      case FileRenameInformation: {
+        if (!laufwerk.dateisystem.benenneUm) {
+          antwort(STATUS_ACCESS_DENIED);
+          return;
+        }
+        const info = parseRenameInformation(anfrage.buffer);
+        const zerlegt = zerlegePfad(info.fileName);
+        if (!zerlegt.ok) {
+          this.protokoll(`RDPDR: Umbenennen abgewiesen - ${zerlegt.grund} (Ziel "${info.fileName}")`);
+          antwort(zerlegt.status);
+          return;
+        }
+        const ziel = fuegePfad(zerlegt.segmente);
+        if (ziel === '') {
+          // Die Wurzel laesst sich nicht umbenennen, und ein leeres Ziel
+          // wuerde beim Dateisystem als "alles" ankommen.
+          antwort(STATUS_ACCESS_DENIED);
+          return;
+        }
+        await laufwerk.dateisystem.benenneUm(datei.pfad, ziel, info.replaceIfExists);
+        this.protokoll(`RDPDR: "${datei.pfad}" heisst jetzt "${ziel}"`);
+        datei.pfad = ziel;
+        antwort(STATUS_SUCCESS);
+        return;
+      }
+      case FileDispositionInformation: {
+        // 2.2.3.3.9: der Puffer ist leer, DeletePending gilt als gesetzt.
+        // Geloescht wird erst beim Schliessen - so will es die NT-Semantik,
+        // und der Server schickt gleich darauf ein IRP_MJ_CLOSE.
+        if (!laufwerk.dateisystem.loesche) {
+          antwort(STATUS_ACCESS_DENIED);
+          return;
+        }
+        datei.loeschVorgemerkt = true;
+        this.protokoll(`RDPDR: "${datei.pfad}" ist zum Loeschen vorgemerkt`);
+        antwort(STATUS_SUCCESS);
+        return;
+      }
+      case FileEndOfFileInformation:
+      case FileAllocationInformation: {
+        if (!laufwerk.dateisystem.kuerze) {
+          antwort(STATUS_ACCESS_DENIED);
+          return;
+        }
+        const laenge = Number(parseEndOfFileInformation(anfrage.buffer));
+        if (laenge < 0) {
+          antwort(STATUS_INVALID_PARAMETER);
+          return;
+        }
+        await laufwerk.dateisystem.kuerze(datei.pfad, laenge);
+        antwort(STATUS_SUCCESS);
+        return;
+      }
+      case FileBasicInformation: {
+        // Zeiten und Attribute lassen sich ueber vscode.workspace.fs nicht
+        // setzen. Ein Fehler waere hier die schlechtere Antwort: Windows
+        // setzt die Zeitstempel am Ende jedes Kopiervorgangs, und ein
+        // abgelehntes SetInformation laesst den ganzen Kopiervorgang
+        // scheitern, obwohl die Daten vollstaendig angekommen sind.
+        this.protokoll(`RDPDR: Zeiten und Attribute von "${datei.pfad}" werden nicht uebernommen`);
+        antwort(STATUS_SUCCESS);
+        return;
+      }
+      default:
+        this.protokoll(
+          `RDPDR: Setzen der Klasse 0x${anfrage.fsInformationClass.toString(16)} wird nicht unterstuetzt`,
+        );
+        antwort(STATUS_NOT_SUPPORTED);
+    }
+  }
+
+  // --------------------------------------------- Query Volume Information
+
+  private async bearbeiteQueryVolumeInformation(
+    laufwerk: RdpdrLaufwerk,
+    anfrage: QueryVolumeInformationRequest,
+  ): Promise<void> {
+    const antwort = (status: number, puffer: Buffer = Buffer.alloc(0)): void => {
+      this.sende(buildLaengeUndPuffer(anfrage.deviceId, anfrage.completionId, status, puffer));
+    };
+    const volumen = this.volumenAngaben(laufwerk);
+
+    switch (anfrage.fsInformationClass) {
+      case FileFsVolumeInformation:
+        antwort(STATUS_SUCCESS, buildFsVolumeInformation(volumen));
+        return;
+      case FileFsSizeInformation:
+        antwort(STATUS_SUCCESS, buildFsSizeInformation(volumen));
+        return;
+      case FileFsFullSizeInformation:
+        antwort(STATUS_SUCCESS, buildFsFullSizeInformation(volumen));
+        return;
+      case FileFsAttributeInformation:
+        antwort(STATUS_SUCCESS, buildFsAttributeInformation(volumen));
+        return;
+      case FileFsDeviceInformation:
+        antwort(STATUS_SUCCESS, buildFsDeviceInformation(volumen));
+        return;
+      default:
+        // 2.2.3.3.6 nennt genau diese fuenf Klassen.
+        this.protokoll(
+          `RDPDR: Volumenklasse 0x${anfrage.fsInformationClass.toString(16)} wird nicht unterstuetzt`,
+        );
+        antwort(STATUS_NOT_SUPPORTED);
+    }
+  }
+
+  /** Volumenangaben eines Laufwerks, mit Vorgaben fuer alles Fehlende. */
+  private volumenAngaben(laufwerk: RdpdrLaufwerk): VolumenAngaben {
+    const eigen = laufwerk.volumen ?? {};
+    // Die gemeldete Groesse ist frei erfunden und muss es sein: der
+    // Arbeitsbereich hat keine eigene Partition, und `workspace.fs` kennt
+    // keinen freien Platz. Ein Wert von null wuerde den Explorer glauben
+    // lassen, das Laufwerk sei voll - dann verweigert er jedes Kopieren.
+    const gesamt = eigen.gesamtBytes ?? 64 * 1024 * 1024 * 1024;
+    return {
+      bezeichnung: eigen.bezeichnung ?? laufwerk.name,
+      seriennummer: eigen.seriennummer ?? this.seriennummerAus(laufwerk.name),
+      gesamtBytes: gesamt,
+      freieBytes: eigen.freieBytes ?? (this.nurLesen ? 0 : Math.floor(gesamt / 2)),
+      erstellt: eigen.erstellt,
+      nurLesen: eigen.nurLesen ?? this.nurLesen,
+    };
+  }
+
+  /**
+   * Eine stabile Seriennummer aus dem Laufwerksnamen ableiten.
+   *
+   * Stabil ist wichtiger als eindeutig: Windows merkt sich Ansichtsoptionen je
+   * Seriennummer. Eine Zufallszahl je Sitzung setzt die Spalteneinstellungen
+   * des Explorers bei jeder Verbindung zurueck.
+   */
+  private seriennummerAus(name: string): number {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < name.length; i++) {
+      h ^= name.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return h >>> 0;
+  }
+
+  // -------------------------------------------------------- Query Directory
+
+  private async bearbeiteQueryDirectory(
+    laufwerk: RdpdrLaufwerk,
+    anfrage: QueryDirectoryRequest,
+  ): Promise<void> {
+    const antwort = (status: number, puffer: Buffer = Buffer.alloc(0)): void => {
+      this.sende(buildLaengeUndPuffer(anfrage.deviceId, anfrage.completionId, status, puffer));
+    };
+    const datei = this.offeneDateien.get(anfrage.fileId);
+    if (!datei || !datei.istVerzeichnis) {
+      antwort(STATUS_INVALID_DEVICE_REQUEST);
+      return;
+    }
+
+    if (anfrage.initialQuery || datei.eintraege === undefined) {
+      const { muster } = trenneSuchmuster(anfrage.path);
+      // Das Verzeichnis steht im Handle, nicht im Pfad der Anfrage: das Handle
+      // hat die Pfadpruefung schon hinter sich, und nur der Musterteil der
+      // Anfrage ist hier ueberhaupt von Belang.
+      const passt = musterPasst(muster);
+      const inhalt = await laufwerk.dateisystem.liste(datei.pfad);
+      const eintraege = this.mitPunkteintraegen(inhalt).filter((e) => passt(e.name));
+      datei.eintraege = eintraege;
+      datei.index = 0;
+      if (eintraege.length === 0) {
+        // 2.2.3.3.10: bei InitialQuery ungleich null und keinem Treffer ist
+        // STATUS_NO_SUCH_FILE vorgeschrieben, nicht STATUS_NO_MORE_FILES.
+        antwort(STATUS_NO_SUCH_FILE);
+        return;
+      }
+    }
+
+    const eintrag = datei.eintraege[datei.index];
+    if (!eintrag) {
+      // 2.2.3.3.10: kein weiterer Eintrag.
+      antwort(STATUS_NO_MORE_FILES);
+      return;
+    }
+    const puffer = buildVerzeichnisEintrag(eintrag, anfrage.fsInformationClass);
+    if (!puffer) {
+      this.protokoll(
+        `RDPDR: Verzeichnisklasse 0x${anfrage.fsInformationClass.toString(16)} wird nicht unterstuetzt`,
+      );
+      antwort(STATUS_NOT_SUPPORTED);
+      return;
+    }
+    datei.index++;
+    antwort(STATUS_SUCCESS, puffer);
+  }
+
+  /**
+   * "." und ".." vor die Liste setzen.
+   *
+   * Windows erwartet sie: FindFirstFile liefert sie auf jedem Verzeichnis,
+   * auch auf der Wurzel eines Laufwerks. Fehlen sie, halten manche Programme
+   * das Verzeichnis fuer beschaedigt. Gefaehrlich sind sie nicht - ein
+   * spaeterer Zugriff auf den Pfad "\.." wird von `zerlegePfad()` abgewiesen.
+   */
+  private mitPunkteintraegen(inhalt: readonly DateiEintrag[]): DateiEintrag[] {
+    const jetzt = Date.now();
+    const punkt = (name: string): DateiEintrag => ({
+      name,
+      istVerzeichnis: true,
+      groesse: 0,
+      erstellt: jetzt,
+      geaendert: jetzt,
+      zugegriffen: jetzt,
+    });
+    return [punkt('.'), punkt('..'), ...inhalt];
+  }
+
+  // ------------------------------------------------- NotifyChange Directory
+
+  /**
+   * Eine Benachrichtigungsanfrage entgegennehmen und offen halten.
+   *
+   * Wir ueberwachen nichts: `workspace.fs` bietet keine Aenderungsmeldungen,
+   * die sich hier einhaengen liessen, und ein sofortiges
+   * STATUS_NOT_SUPPORTED bringt den Explorer dazu, es sofort wieder zu
+   * versuchen - eine Schleife, die nur CPU frisst.
+   *
+   * Die Anfrage offen zu lassen ist genau das, was 2.2.3.4.11 beschreibt: der
+   * Puffer der Antwort "MUST be empty when the Server Close Drive Request
+   * message has been issued and no drive-specific events have occurred".
+   * Beim Schliessen des Handles wird sie leer abgeschlossen. Die Folge ist
+   * nur, dass der Explorer nicht von selbst aktualisiert - F5 hilft.
+   */
+  private async bearbeiteNotifyChange(anfrage: NotifyChangeDirectoryRequest): Promise<void> {
+    const datei = this.offeneDateien.get(anfrage.fileId);
+    if (!datei) {
+      this.sende(
+        buildLaengeUndPuffer(anfrage.deviceId, anfrage.completionId, STATUS_INVALID_DEVICE_REQUEST, Buffer.alloc(0)),
+      );
+      return;
+    }
+    datei.offeneBenachrichtigungen.push(anfrage.completionId);
+  }
+
+  // ------------------------------------------------------------- Hilfen
+
+  /** Metadaten zu einem offenen Handle; die Wurzel gibt es immer. */
+  private async eintragZu(laufwerk: RdpdrLaufwerk, datei: OffeneDatei): Promise<DateiEintrag | undefined> {
+    if (datei.pfad === '') {
+      return { name: laufwerk.name, istVerzeichnis: true, groesse: 0 };
+    }
+    return laufwerk.dateisystem.stat(datei.pfad);
+  }
+}
