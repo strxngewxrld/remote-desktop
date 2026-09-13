@@ -10,8 +10,8 @@
  * Umgesetzt ist der Textteil des Protokolls: Handshake (CLIPRDR_CAPS,
  * CLIPRDR_MONITOR_READY, optional CLIPRDR_TEMP_DIRECTORY), die Ankuendigung
  * von Formaten (CLIPRDR_FORMAT_LIST samt Antwort) und der eigentliche
- * Datenaustausch (CLIPRDR_FORMAT_DATA_REQUEST/_RESPONSE). Dateiuebertragung
- * (FileGroupDescriptorW, CB_FILECONTENTS_*) ist ausdruecklich nicht dabei.
+ * Datenaustausch (CLIPRDR_FORMAT_DATA_REQUEST/_RESPONSE). Dateien werden vom
+ * Client zum Server als FileGroupDescriptorW und CB_FILECONTENTS_* übertragen.
  *
  * Quellen (alle Abschnittsnummern aus [MS-RDPECLIP] 16.0 vom 23.04.2024):
  *  - 2.1     Transport: statischer Kanal, Name "CLIPRDR"
@@ -161,6 +161,25 @@ export const CF_OEMTEXT = 7;
 export const CF_UNICODETEXT = 13;
 /** CF_LOCALE: Gebietsschema, das Windows neben CF_TEXT ablegt. */
 export const CF_LOCALE = 16;
+
+export const FILE_GROUP_DESCRIPTOR = 0xc001;
+export interface ClipboardFile { name: string; data: Buffer }
+
+export function buildFileList(files: readonly ClipboardFile[]): Buffer {
+  const body = Buffer.alloc(4 + files.length * 592);
+  body.writeUInt32LE(files.length, 0);
+  files.forEach((file, i) => {
+    if (!file.name || file.name.length > 259 || /[\\/\x00-\x1f:*?"<>|]/.test(file.name) || /[. ]$/.test(file.name)) {
+      throw new RdpProtocolError('Ungültiger Clipboard-Dateiname');
+    }
+    const offset = 4 + i * 592;
+    body.writeUInt32LE(0x44, offset); // FD_ATTRIBUTES | FD_FILESIZE
+    body.writeUInt32LE(0x80, offset + 36); // FILE_ATTRIBUTE_NORMAL
+    body.writeUInt32LE(file.data.length, offset + 68);
+    body.write(file.name, offset + 72, 518, 'utf16le');
+  });
+  return body;
+}
 
 /**
  * Textformate in der Reihenfolge, in der sie zu bevorzugen sind.
@@ -620,14 +639,16 @@ export const STANDARD_MAX_BYTES = 1024 * 1024;
  */
 export class CliprdrSession {
   /** Faehigkeiten, die wir selbst ankuendigen. */
-  private readonly eigeneFlags = CB_USE_LONG_FORMAT_NAMES;
+  private readonly eigeneFlags = CB_USE_LONG_FORMAT_NAMES | CB_STREAM_FILECLIP_ENABLED | CB_FILECLIP_NO_FILE_PATHS;
+  private dateien: ClipboardFile[] = [];
+  private offeneAnfragen: { format: number; revision: number }[] = [];
+  private lokaleRevision = 0;
   private serverFlags = 0;
   private serverCapsGesehen = false;
   private bereit = false;
   /** Formate, die der Server zuletzt angeboten hat. */
   private serverFormate: CliprdrFormat[] = [];
   /** Format, dessen Daten wir gerade angefragt haben. */
-  private offeneAnfrage: number | undefined;
   /** Zuletzt gemeldeter eigener Text - verhindert Endlosschleifen. */
   private zuletztGemeldet: string | undefined;
   /** Warnungen, die bereits herausgegangen sind (je Kennung nur einmal). */
@@ -643,6 +664,7 @@ export class CliprdrSession {
    * nicht zu sehen, weil ein stiller Kanal wie ein ruhiger Kanal aussieht.
    */
   private formatlisteUnbestaetigt = false;
+  private ausstehendeFormatlisten = 0;
 
   constructor(private readonly opts: CliprdrSessionOptions) {}
 
@@ -751,7 +773,8 @@ export class CliprdrSession {
           this.behandleFormatList(pdu);
           break;
         case CB_FORMAT_LIST_RESPONSE:
-          this.formatlisteUnbestaetigt = false;
+          this.ausstehendeFormatlisten = Math.max(0, this.ausstehendeFormatlisten - 1);
+          this.formatlisteUnbestaetigt = this.ausstehendeFormatlisten > 0;
           if ((pdu.msgFlags & CB_RESPONSE_FAIL) !== 0) {
             this.protokoll('CLIPRDR: der Server hat unsere Formatliste abgelehnt', 'warn');
           } else {
@@ -765,11 +788,7 @@ export class CliprdrSession {
           this.behandleFormatDataResponse(pdu);
           break;
         case CB_FILECONTENTS_REQUEST:
-          // Dateiuebertragung ist nicht umgesetzt. Wir kuendigen sie auch nicht
-          // an (kein CB_STREAM_FILECLIP_ENABLED), also sollte das nie kommen -
-          // wenn doch, darf der Server nicht in einen Zeitablauf laufen.
-          this.protokoll('CLIPRDR: Dateianfrage abgelehnt - Dateiuebertragung ist nicht umgesetzt');
-          this.sende(buildCliprdrPdu(CB_FILECONTENTS_RESPONSE, CB_RESPONSE_FAIL, writer().uint32le(0).toBuffer()));
+          this.behandleDateianfrage(pdu.body);
           break;
         default:
           this.protokoll(`CLIPRDR: PDU-Typ 0x${pdu.msgType.toString(16)} wird nicht behandelt`);
@@ -847,7 +866,8 @@ export class CliprdrSession {
       );
       return;
     }
-    this.offeneAnfrage = format;
+    if (this.offeneAnfragen.length >= 256) return;
+    this.offeneAnfragen.push({ format, revision: this.lokaleRevision });
     this.protokoll(`CLIPRDR: frage die Daten von Format ${format} beim Server an`, 'debug');
     this.sende(buildFormatDataRequest(format));
   }
@@ -859,7 +879,11 @@ export class CliprdrSession {
       this.sende(buildFormatDataResponseFehler());
       return;
     }
-    if (!istTextformat(formatId)) {
+    if (formatId === FILE_GROUP_DESCRIPTOR && this.dateien.length) {
+      this.sende(buildFormatDataResponse(buildFileList(this.dateien)));
+      return;
+    }
+    if (!istTextformat(formatId) || this.dateien.length > 0) {
       this.protokoll(`CLIPRDR: Format ${formatId} wird nicht angeboten`);
       this.sende(buildFormatDataResponseFehler());
       return;
@@ -883,8 +907,8 @@ export class CliprdrSession {
   }
 
   private behandleFormatDataResponse(pdu: CliprdrPdu): void {
-    const format = this.offeneAnfrage;
-    this.offeneAnfrage = undefined;
+    const anfrage = this.offeneAnfragen.shift();
+    const format = anfrage?.format;
     if ((pdu.msgFlags & CB_RESPONSE_OK) === 0) {
       this.protokoll('CLIPRDR: der Server konnte die angefragten Daten nicht liefern');
       return;
@@ -894,6 +918,7 @@ export class CliprdrSession {
       return;
     }
     if (!this.darfLesen) return;
+    if (anfrage!.revision !== this.lokaleRevision) return;
     if (pdu.body.length > this.maxBytes) {
       this.protokoll(
         `CLIPRDR: ${pdu.body.length} Byte vom Server ueberschreiten die Grenze von ${this.maxBytes} Byte - verworfen`,
@@ -904,6 +929,7 @@ export class CliprdrSession {
     // Der eigene Text gilt ab jetzt als der des Servers. Sonst meldet die
     // naechste Aenderungspruefung ihn zurueck und der Server fragt wieder an.
     this.zuletztGemeldet = text;
+    this.dateien = [];
     this.protokoll(`CLIPRDR: ${pdu.body.length} Byte vom Server uebernommen (Format ${format})`);
     this.opts.onServerText?.(text);
   }
@@ -917,7 +943,7 @@ export class CliprdrSession {
    */
   melde(text: string): boolean {
     if (!this.bereit || !this.darfSchreiben) return false;
-    if (text === this.zuletztGemeldet) return false;
+    if (text === this.zuletztGemeldet && this.dateien.length === 0) return false;
     const groesse = Buffer.byteLength(zeilenendenNachWindows(text) + '\0', 'ucs2');
     if (groesse > this.maxBytes) {
       this.protokoll(
@@ -926,6 +952,8 @@ export class CliprdrSession {
       return false;
     }
     this.zuletztGemeldet = text;
+    this.dateien = [];
+    this.lokaleRevision++;
     this.sendeFormatliste(text);
     return true;
   }
@@ -943,6 +971,7 @@ export class CliprdrSession {
             { formatId: CF_TEXT, name: '' },
           ];
     this.formatlisteUnbestaetigt = true;
+    this.ausstehendeFormatlisten++;
     this.protokoll(
       `CLIPRDR: melde ${formate.length} Format(e) an den Server ` +
         `(${formate.map((f) => f.formatId).join(', ') || 'leer'}, ` +
@@ -950,6 +979,44 @@ export class CliprdrSession {
       'debug',
     );
     this.sende(buildFormatList(formate, { longFormatNames: this.langeFormatnamen }));
+  }
+
+  meldeDateien(files: ClipboardFile[], maxBytes = 64 * 1024 * 1024): boolean {
+    if (!this.bereit || !this.darfSchreiben || !(this.serverFlags & CB_STREAM_FILECLIP_ENABLED)) return false;
+    if (!files.length || files.length > 256 || files.reduce((sum, f) => sum + f.data.length, 0) > maxBytes) return false;
+    buildFileList(files); // Namen prüfen, bevor wir den Clipboard-Zustand wechseln.
+    if (new Set(files.map(f => f.name.toLowerCase())).size !== files.length) return false;
+    this.dateien = files.map(f => ({ name: f.name, data: Buffer.from(f.data) }));
+    this.lokaleRevision++;
+    this.formatlisteUnbestaetigt = true;
+    this.ausstehendeFormatlisten++;
+    this.sende(buildFormatList([{ formatId: FILE_GROUP_DESCRIPTOR, name: 'FileGroupDescriptorW' }], { longFormatNames: this.langeFormatnamen, asciiNames: true }));
+    return true;
+  }
+
+  private behandleDateianfrage(body: Buffer): void {
+    const stream = body.length >= 4 ? body.readUInt32LE(0) : 0;
+    const fail = () => {
+      this.protokoll('CLIPRDR: Dateianfrage abgelehnt (ungültige Anfrage oder keine angebotene Datei)');
+      this.sende(buildCliprdrPdu(CB_FILECONTENTS_RESPONSE, CB_RESPONSE_FAIL, writer().uint32le(stream).toBuffer()));
+    };
+    if (!this.darfSchreiben || body.length !== 24) { fail(); return; }
+    const file = this.dateien[body.readInt32LE(4)];
+    const flags = body.readUInt32LE(8);
+    const offset = body.readUInt32LE(12);
+    const high = body.readUInt32LE(16);
+    const count = body.readUInt32LE(20);
+    if (!file || high !== 0 || (flags !== 1 && flags !== 2)) { fail(); return; }
+    let payload: Buffer;
+    if (flags === 1) {
+      if (offset !== 0 || count !== 8) { fail(); return; }
+      payload = Buffer.alloc(8);
+      payload.writeBigUInt64LE(BigInt(file.data.length));
+    } else {
+      if (offset > file.data.length || count > 4 * 1024 * 1024) { fail(); return; }
+      payload = file.data.subarray(offset, Math.min(offset + count, file.data.length));
+    }
+    this.sende(buildCliprdrPdu(CB_FILECONTENTS_RESPONSE, CB_RESPONSE_OK, Buffer.concat([writer().uint32le(stream).toBuffer(), payload])));
   }
 
   /**
@@ -977,9 +1044,12 @@ export class CliprdrSession {
     this.serverCapsGesehen = false;
     this.serverFlags = 0;
     this.serverFormate = [];
-    this.offeneAnfrage = undefined;
+    this.offeneAnfragen = [];
+    this.lokaleRevision = 0;
+    this.dateien = [];
     this.zuletztGemeldet = undefined;
     this.formatlisteUnbestaetigt = false;
+    this.ausstehendeFormatlisten = 0;
     // Die Warnungen bleiben stehen: nach einem Wiederverbinden ist dieselbe
     // Auffaelligkeit dieselbe Auffaelligkeit, und zweimal gemeldet hilft nicht.
   }

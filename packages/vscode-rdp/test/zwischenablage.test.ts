@@ -201,6 +201,36 @@ async function auftaktUndLesung(bruecke: Zwischenablagebruecke): Promise<void> {
 }
 
 describe('Zwischenablage - Brücke zum Server', () => {
+  test('Dateien warten auf die Formatbestätigung und bleiben für Bereichsanfragen verfügbar', async () => {
+    const u = neueBruecke();
+    u.bruecke.verarbeite(buildClipboardCapabilities(0x0e));
+    u.bruecke.verarbeite(buildMonitorReady());
+    await u.bruecke.pruefeLokal();
+    u.bruecke.verarbeite(cliprdr.buildFormatListResponse(true));
+    let fertig = false;
+    const transfer = u.bruecke.ausDateien([{ name: 'test.txt', data: Buffer.from('abc') }], 1024).then(ok => { fertig = true; return ok; });
+    await new Promise(r => setImmediate(r));
+    assert.equal(fertig, false);
+    assert.equal(parseFormatList(u.letztes(CB_FORMAT_LIST)!.body, { longFormatNames: true })[0]!.name, 'FileGroupDescriptorW');
+    u.bruecke.verarbeite(cliprdr.buildFormatListResponse(true));
+    assert.equal(await transfer, true);
+    await u.bruecke.pruefeLokal();
+    u.bruecke.verarbeite(buildFormatDataRequest(cliprdr.FILE_GROUP_DESCRIPTOR));
+    assert.equal(u.letztes(CB_FORMAT_DATA_RESPONSE)!.body.readUInt32LE(72), 3);
+    u.bruecke.dispose();
+  });
+
+  test('Abbruch beendet ein wartendes Einfügen; zu großer Text wird nicht eingefügt', async () => {
+    const u = neueBruecke({ maxBytes: 8 });
+    await auftaktUndLesung(u.bruecke);
+    u.bruecke.verarbeite(cliprdr.buildFormatListResponse(true));
+    assert.equal(await u.bruecke.ausEinfuegen('zu groß für acht Bytes'), false);
+    const pending = u.bruecke.ausEinfuegen('abc');
+    await new Promise(r => setImmediate(r));
+    u.bruecke.dispose();
+    assert.equal(await pending, false);
+  });
+
   test('Der Handshake kommt beim Client an', () => {
     const u = neueBruecke();
     auftakt(u.bruecke);
@@ -687,10 +717,12 @@ describe('Zwischenablage - Protokoll des Handshakes', () => {
     );
   });
 
-  test('Eine bestätigte Formatliste beendet das Warten', async () => {
+  test('Erst die Bestätigung aller Formatlisten beendet das Warten', async () => {
     const u = neueBruecke({}, 'lokal');
     await auftaktUndLesung(u.bruecke);
     assert.equal(u.bruecke.wartetAufFormatlistenAntwort, true, 'nach dem Handshake wird gewartet');
+    u.bruecke.verarbeite(cliprdr.buildFormatListResponse(true));
+    assert.equal(u.bruecke.wartetAufFormatlistenAntwort, true, 'die nachgereichte lokale Formatliste ist noch offen');
     u.bruecke.verarbeite(cliprdr.buildFormatListResponse(true));
     assert.equal(u.bruecke.wartetAufFormatlistenAntwort, false);
     assert.ok(u.stufen.some((z) => z.stufe === 'debug' && /bestaetigt/.test(z.text)));

@@ -705,7 +705,7 @@ describe('CLIPRDR - Robustheit', () => {
     sitzung.verarbeite(buildCliprdrPdu(0x0008, 0, Buffer.alloc(24)));
     assert.equal(parseCliprdrPdu(gesendet[0]).msgType, 0x0009);
     assert.equal(parseCliprdrPdu(gesendet[0]).msgFlags, CB_RESPONSE_FAIL);
-    assert.ok(protokoll.some((z) => /Dateiuebertragung ist nicht umgesetzt/.test(z)));
+    assert.ok(protokoll.some((z) => /Dateianfrage abgelehnt/.test(z)));
   });
 
   test('zuruecksetzen() vergisst den Handshake', () => {
