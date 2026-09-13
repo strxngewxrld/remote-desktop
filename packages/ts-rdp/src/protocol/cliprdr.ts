@@ -558,8 +558,24 @@ export interface CliprdrSessionOptions {
   /**
    * Liefert den Text, den der Server bekommen soll, wenn er danach fragt.
    * `undefined` heisst "nichts da" und fuehrt zu CB_RESPONSE_FAIL.
+   *
+   * Bewusst synchron: CB_FORMAT_DATA_REQUEST will sofort eine Antwort, und
+   * geliefert werden muss ohnehin genau der Text, der vorher angekuendigt
+   * wurde - ein inzwischen neuerer waere falsch. Dass beim Handshake schon
+   * etwas da ist, stellt `onBereit` sicher.
    */
   leseLokalenText?(): string | undefined;
+  /**
+   * Der Handshake ist durch (1.3.2.1 abgeschlossen), ab jetzt darf gemeldet
+   * werden.
+   *
+   * Der Grund fuer diesen Rueckruf: `leseLokalenText()` ist synchron, die
+   * Zwischenablage des Editors aber nicht. Faellt MONITOR_READY vor die erste
+   * gelungene Lesung, kuendigt der Handshake eine leere Formatliste an - und
+   * der Server fragt dann nie nach Daten, weil er glaubt, es gebe keine. Hier
+   * kann der Aufrufer nachlesen und mit `melde()` richtigstellen.
+   */
+  onBereit?(): void;
   /**
    * Meldungen fuer das Sitzungsprotokoll.
    *
@@ -785,7 +801,19 @@ export class CliprdrSession {
     // Wer sie weglaesst, bekommt von Windows keine Zwischenablage.
     const text = this.darfSchreiben ? this.opts.leseLokalenText?.() : undefined;
     this.sendeFormatliste(text);
+    // Angekuendigt ist angekuendigt: sonst meldet die erste Aenderungspruefung
+    // denselben Text gleich noch einmal. "Nichts da" und "leerer Text" sind
+    // dabei dasselbe - beides ergibt eine leere Formatliste.
+    this.zuletztGemeldet = text ?? '';
     this.protokoll(`CLIPRDR: Handshake abgeschlossen (Richtung: ${this.richtung})`);
+    if (text === undefined && this.darfSchreiben) {
+      this.protokoll(
+        'CLIPRDR: beim Handshake war noch kein lokaler Text bekannt - die Formatliste ' +
+          'wird nachgereicht, sobald die Zwischenablage gelesen ist',
+        'debug',
+      );
+    }
+    this.opts.onBereit?.();
   }
 
   private behandleFormatList(pdu: CliprdrPdu): void {
