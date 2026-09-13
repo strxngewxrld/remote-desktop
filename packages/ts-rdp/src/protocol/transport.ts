@@ -53,6 +53,8 @@ export class RdpTransport extends EventEmitter {
   private closed = false;
   /** Fehler, der eintraf, waehrend kein nextFrame() wartete. */
   private pendingError?: Error;
+  private cancelHandshake?: (error: Error) => void;
+  private readonly maxBufferedBytes = 16 * 1024 * 1024;
   private readonly log: Logger;
 
   constructor(private readonly opts: TransportOptions) {
@@ -65,32 +67,47 @@ export class RdpTransport extends EventEmitter {
   }
 
   connect(): Promise<void> {
+    if (this.closed || this.socket) return Promise.reject(new RdpError('Transport ist bereits geöffnet oder geschlossen', 'RDP_CLOSED'));
     return new Promise((resolve, reject) => {
       const socket = net.createConnection({ host: this.opts.host, port: this.opts.port });
+      this.socket = socket;
       socket.setNoDelay(true);
-      const timeout = this.opts.connectTimeout ?? 15000;
-      const timer = setTimeout(() => {
+      let settled = false;
+      const cleanup = () => {
+        clearTimeout(timer);
+        socket.removeListener('connect', connected);
+        socket.removeListener('close', closed);
+        this.cancelHandshake = undefined;
+      };
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         socket.destroy();
-        reject(new RdpError(`Zeitueberschreitung beim Verbinden mit ${this.opts.host}:${this.opts.port}`, 'RDP_TIMEOUT'));
-      }, timeout);
-
-      socket.once('error', (err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-      socket.once('connect', () => {
-        clearTimeout(timer);
+        reject(error);
+      };
+      const closed = () => fail(new RdpError('Verbindung beim Aufbau geschlossen', 'RDP_CLOSED'));
+      const connected = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        socket.removeListener('error', fail);
         this.attach(socket);
         this.log.debug(`TCP verbunden mit ${this.opts.host}:${this.opts.port}`);
         resolve();
-      });
+      };
+      const timer = setTimeout(() => fail(new RdpError('Zeitueberschreitung beim TCP-Verbindungsaufbau', 'RDP_TIMEOUT')), this.opts.connectTimeout ?? 15000);
+      this.cancelHandshake = fail;
+      socket.on('error', fail);
+      socket.once('close', closed);
+      socket.once('connect', connected);
     });
   }
 
   /** Hebt die bestehende TCP-Verbindung auf TLS an (STARTTLS-Muster von RDP). */
   upgradeTls(): Promise<tls.TLSSocket> {
     const plain = this.socket;
-    if (!plain) throw new RdpError('TLS-Upgrade ohne bestehende Verbindung');
+    if (!plain || this.closed) throw new RdpError('TLS-Upgrade ohne bestehende Verbindung');
     if (this.buffer.length > 0) {
       throw new RdpError('TLS-Upgrade mit ungelesenen Daten im Puffer - Protokollfehler');
     }
@@ -105,21 +122,42 @@ export class RdpTransport extends EventEmitter {
         // Windows-Server verhandeln je nach Patchstand nur aeltere Suites.
         ...profile,
       });
-      const onError = (err: Error) => reject(err);
-      secure.once('error', onError);
-      secure.once('secureConnect', () => {
-        secure.removeListener('error', onError);
+      this.socket = secure;
+      let settled = false;
+      const cleanup = () => {
+        clearTimeout(timer);
+        secure.removeListener('close', closed);
+        secure.removeListener('secureConnect', connected);
+        this.cancelHandshake = undefined;
+      };
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        secure.destroy();
+        reject(error);
+      };
+      const closed = () => fail(new RdpError('Verbindung während TLS-Handshake geschlossen', 'RDP_CLOSED'));
+      const connected = () => {
+        if (settled) return;
         try {
           this.opts.verifyCertificate?.(secure.getPeerCertificate(), secure);
         } catch (err) {
-          secure.destroy();
-          reject(err as Error);
+          fail(err as Error);
           return;
         }
+        settled = true;
+        cleanup();
+        secure.removeListener('error', fail);
         this.attach(secure);
         this.log.debug(`TLS aufgebaut (${secure.getProtocol()}, ${secure.getCipher().name})`);
         resolve(secure);
-      });
+      };
+      const timer = setTimeout(() => fail(new RdpError('Zeitueberschreitung beim TLS-Handshake', 'RDP_TIMEOUT')), this.opts.connectTimeout ?? 15000);
+      this.cancelHandshake = fail;
+      secure.on('error', fail);
+      secure.once('close', closed);
+      secure.once('secureConnect', connected);
     });
   }
 
@@ -137,26 +175,40 @@ export class RdpTransport extends EventEmitter {
   }
 
   private onData = (chunk: Buffer): void => {
-    this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
-    this.drain();
+    if (this.closed) return;
+    try {
+      if (this.buffer.length + chunk.length > this.maxBufferedBytes) throw new RdpError('Transportpuffer überschreitet 16 MiB', 'RDP_PROTOCOL');
+      this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
+      this.drain();
+    } catch (err) {
+      this.onError(err as Error);
+      this.close();
+    }
   };
+
+  private rejectPending(error: Error): void {
+    const pending = this.pending;
+    this.pending = undefined;
+    if (pending?.timer) clearTimeout(pending.timer);
+    pending?.reject(error);
+  }
 
   private onError = (err: Error): void => {
     if (this.pending) {
-      this.pending.reject(err);
-      this.pending = undefined;
+      this.rejectPending(err);
     } else {
       // Damit der naechste Lesevorgang nicht bis zum Zeitlimit blockiert.
       this.pendingError ??= err;
     }
-    this.emit('error', err);
+    // Pull-only consumers (certificate probe) receive the error through nextFrame().
+    if (this.listenerCount('error') > 0) this.emit('error', err);
   };
 
   private onClose = (): void => {
     if (this.closed) return;
     this.closed = true;
-    this.pending?.reject(new RdpError('Verbindung vom Server geschlossen', 'RDP_CLOSED'));
-    this.pending = undefined;
+    this.rejectPending(new RdpError('Verbindung vom Server geschlossen', 'RDP_CLOSED'));
+    this.buffer = Buffer.alloc(0);
     this.emit('close');
   };
 
@@ -171,13 +223,18 @@ export class RdpTransport extends EventEmitter {
     if (buf.length < 2) return -1;
     if (buf[0] === 3) {
       if (buf.length < 4) return -1;
-      return buf.readUInt16BE(2);
+      const length = buf.readUInt16BE(2);
+      if (length < 4) throw new RdpError('TPKT kürzer als sein Header', 'RDP_PROTOCOL');
+      return length;
     }
     // Fastpath: Laenge ist 1 oder 2 Byte, je nach oberstem Bit.
     if (buf[1] & 0x80) {
       if (buf.length < 3) return -1;
-      return ((buf[1] & 0x7f) << 8) | buf[2];
+      const length = ((buf[1] & 0x7f) << 8) | buf[2];
+      if (length < 3) throw new RdpError('Fastpath kürzer als sein Header', 'RDP_PROTOCOL');
+      return length;
     }
+    if (buf[1] < 2) throw new RdpError('Fastpath kürzer als sein Header', 'RDP_PROTOCOL');
     return buf[1];
   }
 
@@ -235,14 +292,24 @@ export class RdpTransport extends EventEmitter {
         reject(new RdpError('Zeitueberschreitung beim Warten auf die Serverantwort', 'RDP_TIMEOUT'));
       }, timeoutMs);
       this.pending = { kind, resolve, reject, timer };
-      this.drain();
+      try {
+        this.drain();
+      } catch (err) {
+        this.rejectPending(err as Error);
+        this.close();
+      }
     });
   }
 
   /** Schaltet auf ereignisgesteuerte Zustellung um ('frame'-Events). */
   startFlowing(): void {
     this.flowing = true;
-    this.drain();
+    try {
+      this.drain();
+    } catch (err) {
+      this.onError(err as Error);
+      this.close();
+    }
   }
 
   write(data: Buffer): void {
@@ -253,6 +320,10 @@ export class RdpTransport extends EventEmitter {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    const error = new RdpError('Verbindung geschlossen', 'RDP_CLOSED');
+    this.cancelHandshake?.(error);
+    this.rejectPending(error);
+    this.buffer = Buffer.alloc(0);
     this.socket?.destroy();
     this.emit('close');
   }
