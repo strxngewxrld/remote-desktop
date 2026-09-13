@@ -2,6 +2,7 @@
  * Einstiegspunkt der Extension: Befehle, Seitenleiste und Sitzungsverwaltung.
  */
 import * as vscode from 'vscode';
+import { verwalteCredentials } from './credentials.js';
 import {
   BaumKnoten,
   ConnectionNode,
@@ -19,6 +20,7 @@ import {
   entferneEintragAn,
   getBaum,
   istOrdner,
+  loeseVerbindungAuf,
   pfadText,
   saveConnections,
   schreibeEintragAn,
@@ -57,9 +59,14 @@ export function activate(context: vscode.ExtensionContext): void {
     output,
     vscode.window.createTreeView('rdpConnections', { treeDataProvider: tree, dragAndDropController: tree }),
 
+    vscode.commands.registerCommand('rdp.manageCredentials', async (node?: BaumKnoten) => {
+      await verwalteCredentials(context, node);
+      tree.refresh();
+    }),
+
     vscode.commands.registerCommand('rdp.connect', async () => {
       const connection = await promptForConnection();
-      if (connection) await openSession(context, connection, output, trustStore);
+      if (connection) await openSession(context, loeseVerbindungAuf({ verbindung: connection, pfad: [], ordnerKette: [] }), output, trustStore);
     }),
 
     vscode.commands.registerCommand('rdp.connectSaved', async (node?: ConnectionNode) => {
@@ -78,7 +85,11 @@ export function activate(context: vscode.ExtensionContext): void {
         `Verbindung "${connection.name}" gespeichert.`,
         'Jetzt verbinden',
       );
-      if (open) await openSession(context, connection, output, trustStore);
+      if (open) {
+        const folder = zielOrdnerPfad(node);
+        const saved = alleVerbindungen().filter(e => e.pfad.slice(0, -1).join('.') === folder.join('.')).at(-1);
+        if (saved) await openSession(context, loeseVerbindungAuf(saved), output, trustStore);
+      }
     }),
 
     vscode.commands.registerCommand('rdp.editConnection', async (node?: ConnectionNode) => {
@@ -350,7 +361,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration('rdp.connections')) tree.refresh();
+      if (event.affectsConfiguration('rdp.connections') || event.affectsConfiguration('rdp.authentication')) tree.refresh();
       if (event.affectsConfiguration('rdp.scaling') || event.affectsConfiguration('rdp.smoothScaling')) {
         for (const session of sessions) session.applyConfiguration();
       }

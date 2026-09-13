@@ -50,6 +50,12 @@
     ],
     "commands": [
       {
+        "command": "rdp.manageCredentials",
+        "title": "Zugangsdaten verwalten…",
+        "category": "RDP",
+        "icon": "$(key)"
+      },
+      {
         "command": "rdp.connect",
         "title": "Verbinden mit…",
         "category": "RDP",
@@ -222,6 +228,7 @@
     ],
     "menus": {
       "view/title": [
+        { "command": "rdp.manageCredentials", "when": "view == rdpConnections", "group": "8_settings" },
         {
           "command": "rdp.addConnection",
           "when": "view == rdpConnections",
@@ -254,6 +261,7 @@
         }
       ],
       "view/item/context": [
+        { "command": "rdp.manageCredentials", "when": "view == rdpConnections", "group": "1_modify@8" },
         {
           "command": "rdp.connectSaved",
           "when": "view == rdpConnections && viewItem == rdpConnection",
@@ -460,6 +468,16 @@
     "configuration": {
       "title": "Remote Desktop (RDP)",
       "properties": {
+        "rdp.authentication": {
+          "type": "object",
+          "default": {},
+          "description": "Vererbbare Zugangsdaten auf oberster Ebene. Verwaltung über Zugangsdaten verwalten; Passwörter liegen im sicheren Speicher.",
+          "properties": {
+            "credentials": { "type": "array", "items": { "type": "object", "required": ["id", "name", "username"], "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "username": { "type": "string" }, "domain": { "type": "string" } } } },
+            "defaultCredential": { "type": "string", "description": "ID des Standardprofils; leer: Auswahl beim Verbinden." },
+            "promptCredentials": { "type": "boolean", "description": "Bei jeder Verbindung nach Zugangsdaten fragen." }
+          }
+        },
         "rdp.connections": {
           "type": "array",
           "default": [],
@@ -493,6 +511,13 @@
                     "type": "string"
                   },
                   "width": {
+                  "credentials": {
+                    "type": "array",
+                    "description": "Eigene Profile zusätzlich zu geerbten Profilen; Verwaltung über Zugangsdaten verwalten.",
+                    "items": { "type": "object", "required": ["id", "name", "username"], "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "username": { "type": "string" }, "domain": { "type": "string" } } }
+                  },
+                  "defaultCredential": { "type": "string", "description": "ID des Standardprofils; leer: Auswahl beim Verbinden." },
+                  "promptCredentials": { "type": "boolean", "description": "Jedes Mal Benutzername und Passwort abfragen." },
                     "type": "number",
                     "description": "Leer lassen für automatische Größe"
                   },
@@ -602,6 +627,13 @@
                         "type": "string"
                       },
                       "width": {
+                      "credentials": {
+                        "type": "array",
+                        "description": "Profile dieses Ordners, zusätzlich zu geerbten Profilen.",
+                        "items": { "type": "object", "required": ["id", "name", "username"], "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "username": { "type": "string" }, "domain": { "type": "string" } } }
+                      },
+                      "defaultCredential": { "type": "string", "description": "ID des Standardprofils; leer: Auswahl beim Verbinden." },
+                      "promptCredentials": { "type": "boolean", "description": "Jedes Mal Benutzername und Passwort abfragen." },
                         "type": "number"
                       },
                       "height": {

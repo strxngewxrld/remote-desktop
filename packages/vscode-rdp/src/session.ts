@@ -34,7 +34,7 @@ import {
   createLogger,
 } from 'ts-rdp';
 import type { RdpDiagnostics, EgfxVideoFrame, LogLevel } from 'ts-rdp';
-import { RdpConnection, secretKey } from './connections.js';
+import { RdpConnection, secretKey, credentialSecretKey } from './connections.js';
 import { BandbreitenProfilName, berechnePerformanceFlags, istProfilName } from './bandbreite.js';
 import { FarbName, farbe as farbeZu, symbolDateiname, symbolSvg } from './farben.js';
 import { CertificateTrustStore, TrustPolicy } from './trust.js';
@@ -412,6 +412,7 @@ export class RdpSession {
   private rttGesendet = 0;
   /** Laufende Nummer der Screenshot-Bitte; nur die neueste wird beantwortet. */
   private screenshotLauf = 0;
+  private readonly basisDomain: string | undefined;
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
@@ -426,7 +427,9 @@ export class RdpSession {
      * andere noch verbunden ist.
      */
     private readonly statusBar: vscode.StatusBarItem,
-  ) {}
+  ) {
+    this.basisDomain = connection.domain;
+  }
 
   static async open(
     context: vscode.ExtensionContext,
@@ -769,15 +772,15 @@ export class RdpSession {
       await client.connect();
 
       if (credentials.shouldSave) {
-        await this.context.secrets.store(secretKey(this.connection), credentials.password);
+        await this.context.secrets.store(this.anmeldeSecretKey ?? secretKey(this.connection), credentials.password);
       }
     } catch (error) {
       const err = error as Error;
       this.log(`Fehler: ${err.stack ?? err.message}`);
       this.setState('error', 'Verbindung fehlgeschlagen', humanizeError(err), 'Erneut verbinden');
       // Ein falsches Passwort soll nicht dauerhaft gespeichert bleiben.
-      if (/CredSSP|Anmelde|Zugangsdaten/i.test(err.message)) {
-        await this.context.secrets.delete(secretKey(this.connection));
+      if (/CredSSP|Anmelde|Zugangsdaten/i.test(err.message) && this.anmeldeSecretKey) {
+        await this.context.secrets.delete(this.anmeldeSecretKey);
       }
     }
   }
@@ -901,7 +904,7 @@ export class RdpSession {
 
   private async resolveCredentials(): Promise<{ username: string; password: string; shouldSave: boolean } | undefined> {
     let username = this.connection.username;
-    if (!username) {
+    if (prompt || !username) {
       username = await vscode.window.showInputBox({
         title: `Anmeldung an ${this.connection.host}`,
         prompt: 'Benutzername (optional mit Domäne: DOMAIN\\benutzer)',
@@ -910,15 +913,18 @@ export class RdpSession {
       if (username === undefined) return undefined;
     }
 
-    let domain = this.connection.domain ?? '';
+    if (!username.trim()) return undefined;
+    let domain = (prompt ? this.basisDomain : this.connection.domain) ?? '';
     if (username.includes('\\')) {
       const [d, u] = username.split('\\', 2);
       domain = d;
       username = u;
-      this.connection.domain = domain;
     }
 
-    const stored = await this.context.secrets.get(secretKey(this.connection));
+    // Den tatsächlich verwendeten Benutzernamen auch dem Passwortschlüssel zugrunde legen.
+    if (!prompt) this.connection.username = username;
+    if (!prompt) this.anmeldeSecretKey ??= secretKey(this.connection);
+    const stored = prompt ? undefined : await this.context.secrets.get(this.anmeldeSecretKey ?? secretKey(this.connection));
     if (stored) return { username, password: stored, shouldSave: false };
 
     const password = await vscode.window.showInputBox({
@@ -926,7 +932,24 @@ export class RdpSession {
       prompt: `Passwort für ${domain ? domain + '\\' : ''}${username}`,
       password: true,
       ignoreFocusOut: true,
+  private anmeldeSecretKey?: string;
+
     });
+    this.anmeldeSecretKey = undefined;
+    const profiles = this.connection.promptCredentials ? [] : this.connection.credentials ?? [];
+    let profile = profiles.find(c => c.id === this.connection.defaultCredential);
+    if (!profile && profiles.length === 1) profile = profiles[0];
+    if (!profile && profiles.length > 1) {
+      const selected = await vscode.window.showQuickPick(profiles.map(c => ({ label: c.name, description: `${c.domain ? c.domain + '\\' : ''}${c.username}`, profile: c })), { title: `Zugangsdaten für ${this.connection.host}`, ignoreFocusOut: true });
+      if (!selected) return undefined;
+      profile = selected.profile;
+    }
+    const prompt = this.connection.promptCredentials || (!profile && !this.connection.username);
+    if (profile) {
+      this.connection.username = profile.username;
+      this.connection.domain = profile.domain;
+      this.anmeldeSecretKey = credentialSecretKey(profile.id);
+    }
     if (password === undefined) return undefined;
 
     const save = await vscode.window.showQuickPick(
@@ -944,6 +967,7 @@ export class RdpSession {
     const config = vscode.workspace.getConfiguration('rdp');
 
     client.on('connect', () => {
+    this.connection.domain = domain;
       this.verbindungSteht = true;
       this.verbundenSeit = Date.now();
       this.post({
@@ -956,6 +980,8 @@ export class RdpSession {
       });
       // Die Verbindung steht, aber gezeichnet ist noch nichts. Bis zur ersten
       // Kachel bleibt die Einblendung stehen - eine schwarze Flaeche waere
+    if (prompt) return { username, password, shouldSave: false };
+
       // nicht von einem Fehler zu unterscheiden.
       this.setState('waiting', 'Verbunden', 'Warte auf den Bildschirminhalt des Servers…');
       this.updateStatusBar();
