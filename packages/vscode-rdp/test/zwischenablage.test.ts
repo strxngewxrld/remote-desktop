@@ -146,17 +146,26 @@ function einstellungen(teil: Partial<ZwischenablageEinstellungen> = {}): Zwische
   return { aktiv: true, richtung: 'beide', maxBytes: 1024 * 1024, abfrageIntervallMs: 0, ...teil };
 }
 
-function neueBruecke(teil: Partial<ZwischenablageEinstellungen> = {}, start = '') {
+function neueBruecke(
+  teil: Partial<ZwischenablageEinstellungen> = {},
+  start = '',
+  extra: { warnzeitMs?: number } = {},
+) {
   const abl = speicher(start);
   const gesendet: Buffer[] = [];
   const anWebview: ZwischenablageWebviewNachricht[] = [];
   const protokoll: string[] = [];
+  const stufen: { stufe: string; text: string }[] = [];
   const bruecke = new Zwischenablagebruecke({
     einstellungen: einstellungen(teil),
     send: (d) => gesendet.push(d),
     speicher: abl,
     anWebview: (n) => anWebview.push(n),
-    log: (n) => protokoll.push(n),
+    log: (n, stufe) => {
+      protokoll.push(n);
+      stufen.push({ stufe: stufe ?? 'info', text: n });
+    },
+    ...extra,
   });
   const typen = () => gesendet.map((d) => parseCliprdrPdu(d).msgType);
   const letztes = (typ: number) => {
@@ -166,7 +175,7 @@ function neueBruecke(teil: Partial<ZwischenablageEinstellungen> = {}, start = ''
     }
     return undefined;
   };
-  return { bruecke, speicher: abl, gesendet, anWebview, protokoll, typen, letztes };
+  return { bruecke, speicher: abl, gesendet, anWebview, protokoll, stufen, typen, letztes };
 }
 
 /** Serverauftakt aus MS-RDPECLIP 1.3.2.1. */
@@ -573,5 +582,89 @@ describe('Zwischenablage - Befehl fürs Rückfallfeld', () => {
       aktiv: true,
       richtung: 'both',
     });
+  });
+});
+
+// -------------------------------------------------- Protokoll des Handshakes
+
+/**
+ * Warum diese Tests: Beim Nutzer stand der Kanal, und trotzdem tat sich
+ * nichts. Aus dem Mitschnitt liess sich nicht ablesen, an welcher Stelle von
+ * MS-RDPECLIP 1.3.2.1 der Ablauf haengen blieb - weil ein stiller Kanal
+ * genauso aussieht wie ein ruhiger. Diese Zeilen muessen also da sein.
+ */
+describe('Zwischenablage - Protokoll des Handshakes', () => {
+  test('Jedes PDU steht mit Namen und Richtung im Protokoll', () => {
+    const u = neueBruecke({}, 'lokal');
+    auftakt(u.bruecke);
+    const debug = u.stufen.filter((z) => z.stufe === 'debug').map((z) => z.text);
+    assert.ok(
+      debug.some((z) => z.includes('empfangen CLIP_CAPS')),
+      `CLIP_CAPS fehlt: ${debug.join(' | ')}`,
+    );
+    assert.ok(debug.some((z) => z.includes('empfangen MONITOR_READY')));
+    assert.ok(debug.some((z) => z.includes('gesendet CLIP_CAPS')));
+    assert.ok(debug.some((z) => z.includes('gesendet FORMAT_LIST')));
+    assert.ok(
+      debug.some((z) => z.includes('melde 2 Format(e)') && z.includes('lange Formatnamen')),
+      `die gemeldeten Formate fehlen: ${debug.join(' | ')}`,
+    );
+  });
+
+  test('Eine bestätigte Formatliste beendet das Warten', () => {
+    const u = neueBruecke({}, 'lokal');
+    auftakt(u.bruecke);
+    assert.equal(u.bruecke.wartetAufFormatlistenAntwort, true, 'nach dem Handshake wird gewartet');
+    u.bruecke.verarbeite(cliprdr.buildFormatListResponse(true));
+    assert.equal(u.bruecke.wartetAufFormatlistenAntwort, false);
+    assert.ok(u.stufen.some((z) => z.stufe === 'debug' && /bestaetigt/.test(z.text)));
+    assert.equal(u.stufen.filter((z) => z.stufe === 'warn').length, 0);
+  });
+
+  test('Bleibt die Antwort aus, steht es genau einmal als Warnung da', async () => {
+    const u = neueBruecke({}, 'lokal', { warnzeitMs: 5 });
+    auftakt(u.bruecke);
+    await new Promise((r) => setTimeout(r, 20));
+    const warnungen = u.stufen.filter((z) => z.stufe === 'warn');
+    assert.equal(warnungen.length, 1, `genau eine Warnung erwartet: ${JSON.stringify(warnungen)}`);
+    assert.match(warnungen[0].text, /FORMAT_LIST_RESPONSE/);
+    assert.match(warnungen[0].text, /2 PDU gesendet, 2 empfangen/);
+
+    // Eine zweite unbeantwortete Formatliste darf die Zeile nicht wiederholen.
+    u.speicher.inhalt = 'etwas Neues';
+    await u.bruecke.pruefeLokal();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(u.stufen.filter((z) => z.stufe === 'warn').length, 1);
+    u.bruecke.dispose();
+  });
+
+  test('Eine abgelehnte Formatliste ist eine Warnung, keine Beiläufigkeit', () => {
+    const u = neueBruecke({}, 'lokal');
+    auftakt(u.bruecke);
+    u.bruecke.verarbeite(cliprdr.buildFormatListResponse(false));
+    const warnungen = u.stufen.filter((z) => z.stufe === 'warn');
+    assert.equal(warnungen.length, 1);
+    assert.match(warnungen[0].text, /abgelehnt/);
+  });
+
+  test('Die Formate des Servers und die Datenanfrage stehen im Protokoll', () => {
+    const u = neueBruecke();
+    auftakt(u.bruecke);
+    u.bruecke.verarbeite(
+      buildFormatList([{ formatId: CF_UNICODETEXT, name: '' }], { longFormatNames: true }),
+    );
+    const debug = u.stufen.filter((z) => z.stufe === 'debug').map((z) => z.text);
+    assert.ok(debug.some((z) => z.includes('der Server bietet 1 Format(e) an')));
+    assert.ok(debug.some((z) => z.includes(`frage die Daten von Format ${CF_UNICODETEXT}`)));
+  });
+
+  test('Ohne regelmäßige Abfrage sagt das Protokoll, dass lokal niemand mitliest', () => {
+    const u = neueBruecke({ abfrageIntervallMs: 0 });
+    auftakt(u.bruecke);
+    u.bruecke.starteAbfrage();
+    assert.ok(
+      u.stufen.some((z) => z.stufe === 'debug' && /keine regelmaessige Abfrage/.test(z.text)),
+      `Hinweis fehlt: ${u.protokoll.join(' | ')}`,
+    );
   });
 });

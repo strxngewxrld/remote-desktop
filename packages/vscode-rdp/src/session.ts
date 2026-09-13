@@ -28,8 +28,9 @@ import {
   avcZeichenbereiche,
   CLIPRDR_CHANNEL_DEF,
   CLIPRDR_CHANNEL_NAME,
+  createLogger,
 } from 'ts-rdp';
-import type { RdpDiagnostics, EgfxVideoFrame } from 'ts-rdp';
+import type { RdpDiagnostics, EgfxVideoFrame, LogLevel } from 'ts-rdp';
 import { RdpConnection, secretKey } from './connections.js';
 import { BandbreitenProfilName, berechnePerformanceFlags, istProfilName } from './bandbreite.js';
 import { CertificateTrustStore, TrustPolicy } from './trust.js';
@@ -903,6 +904,11 @@ export class RdpSession {
       return;
     }
 
+    // Eigener Protokollstrom mit Stufen: der Handshake soll im Normalbetrieb
+    // knapp bleiben, sich auf `debug` aber PDU fuer PDU nachlesen lassen.
+    const stufe = config.get<LogLevel>('logLevel', 'info');
+    const protokoll = createLogger(stufe, (l, msg) => this.log(l === 'info' ? msg : `[${l}] ${msg}`));
+
     const bruecke = new Zwischenablagebruecke({
       einstellungen,
       send: (daten) => {
@@ -915,7 +921,7 @@ export class RdpSession {
       },
       speicher: vsCodeZwischenablage,
       anWebview: (nachricht) => this.post(nachricht),
-      log: (nachricht) => this.log(nachricht),
+      log: (nachricht, s) => protokoll[s ?? 'info'](nachricht),
     });
     this.zwischenablage = bruecke;
 

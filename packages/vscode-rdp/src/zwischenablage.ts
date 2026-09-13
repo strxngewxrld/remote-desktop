@@ -19,6 +19,7 @@
 import {
   CliprdrSession,
   STANDARD_MAX_BYTES,
+  type CliprdrLogStufe,
   type ZwischenablageRichtung,
 } from 'ts-rdp';
 
@@ -138,8 +139,24 @@ export interface BrueckeOptions {
   speicher: ZwischenablageSpeicher;
   /** Nachricht an das Webview (Rueckfallfeld). */
   anWebview(nachricht: ZwischenablageWebviewNachricht): void;
-  log(nachricht: string): void;
+  /** Stufe fehlt = `info`, damit bestehende Aufrufer unveraendert bleiben. */
+  log(nachricht: string, stufe?: CliprdrLogStufe): void;
+  /**
+   * Wartezeit, nach der eine unbeantwortete Formatliste gemeldet wird.
+   * Nur fuer die Tests da; ohne Angabe gilt `STILLE_WARNZEIT_MS`.
+   */
+  warnzeitMs?: number;
 }
+
+/**
+ * Wie lange auf CB_FORMAT_LIST_RESPONSE gewartet wird, bevor es im Protokoll
+ * steht.
+ *
+ * Fuenf Sekunden sind grosszuegig: Windows antwortet im selben Atemzug. Wer
+ * laenger braucht, antwortet gar nicht mehr - und genau das ist die Auskunft,
+ * die im Fehlerfall fehlt.
+ */
+export const STILLE_WARNZEIT_MS = 5000;
 
 /**
  * Bindeglied zwischen der CLIPRDR-Zustandsmaschine und der Umgebung.
@@ -160,18 +177,47 @@ export class Zwischenablagebruecke {
   private abfrage: ReturnType<typeof setInterval> | undefined;
   private laeuftAbfrage = false;
   private beendet = false;
+  /** Laeuft, solange eine gesendete Formatliste unbeantwortet ist. */
+  private stilleUhr: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly opts: BrueckeOptions) {
     this.sitzung = new CliprdrSession({
       send: (daten) => {
-        if (!this.beendet) this.opts.send(daten);
+        if (this.beendet) return;
+        this.opts.send(daten);
+        this.stelleStilleUhr();
       },
       richtung: opts.einstellungen.richtung,
       maxBytes: opts.einstellungen.maxBytes,
       leseLokalenText: () => this.lokalerText,
       onServerText: (text) => void this.uebernimmVomServer(text),
-      log: (n) => this.opts.log(n),
+      log: (n, stufe) => this.opts.log(n, stufe),
     });
+  }
+
+  private get warnzeitMs(): number {
+    return this.opts.warnzeitMs ?? STILLE_WARNZEIT_MS;
+  }
+
+  /**
+   * Uhr fuer eine unbeantwortete Formatliste stellen bzw. wieder abstellen.
+   *
+   * Die Zustandsmaschine selbst kennt keine Zeit - sie kann nur sagen, ob sie
+   * noch wartet. Gewartet wird hier, weil hier ohnehin schon Zeitgeber laufen.
+   */
+  private stelleStilleUhr(): void {
+    if (this.sitzung.wartetAufFormatlistenAntwort) {
+      if (this.stilleUhr || this.beendet) return;
+      this.stilleUhr = setTimeout(() => {
+        this.stilleUhr = undefined;
+        this.sitzung.meldeAusbleibendeAntwort(this.warnzeitMs);
+      }, this.warnzeitMs);
+      this.stilleUhr.unref?.();
+      return;
+    }
+    if (!this.stilleUhr) return;
+    clearTimeout(this.stilleUhr);
+    this.stilleUhr = undefined;
   }
 
   get istBereit(): boolean {
@@ -186,6 +232,7 @@ export class Zwischenablagebruecke {
   verarbeite(daten: Buffer): void {
     if (this.beendet) return;
     this.sitzung.verarbeite(daten);
+    this.stelleStilleUhr();
   }
 
   /**
@@ -197,7 +244,18 @@ export class Zwischenablagebruecke {
   starteAbfrage(): void {
     if (this.beendet || this.abfrage) return;
     const intervall = this.opts.einstellungen.abfrageIntervallMs;
-    if (intervall <= 0 || !this.sitzung.darfSchreiben) return;
+    if (intervall <= 0 || !this.sitzung.darfSchreiben) {
+      // Ohne Abfrage merkt niemand, dass lokal kopiert wurde. Das ist eine
+      // zulaessige Einstellung, aber die haeufigste Ursache fuer "die
+      // Zwischenablage tut nichts" - also steht sie im Protokoll.
+      this.opts.log(
+        `Zwischenablage: keine regelmaessige Abfrage der lokalen Zwischenablage ` +
+          `(Intervall ${intervall} ms, Richtung ${this.richtung})`,
+        'debug',
+      );
+      return;
+    }
+    this.opts.log(`Zwischenablage: lese die lokale Zwischenablage alle ${intervall} ms mit`, 'debug');
     this.abfrage = setInterval(() => void this.pruefeLokal(), intervall);
     // Node haelt den Prozess sonst am Leben; in VS Code faellt das nicht auf,
     // im Test schon.
@@ -208,6 +266,16 @@ export class Zwischenablagebruecke {
     if (!this.abfrage) return;
     clearInterval(this.abfrage);
     this.abfrage = undefined;
+  }
+
+  /** Nur fuer Tests und Diagnose: gezaehlte PDUs beider Richtungen. */
+  get zaehler(): { gesendet: number; empfangen: number } {
+    return this.sitzung.zaehler;
+  }
+
+  /** Steht eine gesendete Formatliste noch ohne Antwort des Servers da? */
+  get wartetAufFormatlistenAntwort(): boolean {
+    return this.sitzung.wartetAufFormatlistenAntwort;
   }
 
   /**
@@ -224,7 +292,19 @@ export class Zwischenablagebruecke {
       const text = await this.opts.speicher.lesen();
       if (typeof text !== 'string' || text === this.lokalerText) return false;
       this.lokalerText = text;
-      return this.sitzung.melde(text);
+      this.opts.log(
+        `Zwischenablage: die lokale Zwischenablage hat sich geaendert (${text.length} Zeichen)`,
+        'debug',
+      );
+      const gemeldet = this.sitzung.melde(text);
+      if (!gemeldet) {
+        this.opts.log(
+          `Zwischenablage: die Aenderung wurde nicht gemeldet ` +
+            `(bereit: ${this.sitzung.istBereit}, Richtung: ${this.richtung})`,
+          'debug',
+        );
+      }
+      return gemeldet;
     } catch (err) {
       // Ein Lesefehler darf die Sitzung nicht stoeren. Ab jetzt hilft nur noch
       // das Textfeld - deshalb wird er einmal protokolliert.
@@ -291,10 +371,15 @@ export class Zwischenablagebruecke {
     this.sitzung.zuruecksetzen();
     this.lokalerText = undefined;
     this.stoppeAbfrage();
+    this.stelleStilleUhr();
   }
 
   dispose(): void {
     this.beendet = true;
     this.stoppeAbfrage();
+    if (this.stilleUhr) {
+      clearTimeout(this.stilleUhr);
+      this.stilleUhr = undefined;
+    }
   }
 }
