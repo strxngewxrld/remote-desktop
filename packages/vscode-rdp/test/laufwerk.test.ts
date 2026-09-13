@@ -81,10 +81,8 @@ describe('Laufwerk - Zugriff über vscode.workspace', () => {
     await assert.rejects(() => zugriff.stat(5, ['x']));
   });
 
-  test('Ein verlinktes Verzeichnis gilt als Verzeichnis, nicht als "anderes"', async () => {
-    // vscode.FileType ist eine Bitmaske: Directory|SymbolicLink ist 66. Wer
-    // auf Gleichheit prüft, lässt jeden verlinkten Ordner durchfallen - und in
-    // Repositories kommen die vor.
+  test('Ein symbolischer Link wird nicht als Laufwerksordner freigegeben', async () => {
+    // Auch Directory|SymbolicLink darf keinen Zugriff außerhalb der Freigabe erlauben.
     setzeArbeitsbereichsOrdner(['/arbeit/frontend']);
     const zugriff = vscodeArbeitsbereichZugriff();
     const echterStat = fsAttrappe.stat;
@@ -96,7 +94,9 @@ describe('Laufwerk - Zugriff über vscode.workspace', () => {
         size: 0,
       });
     try {
-      assert.equal((await zugriff.stat(0, ['verlinkt']))?.art, 'verzeichnis');
+      await assert.rejects(() => zugriff.stat(0, ['verlinkt']), /symbolische Links/);
+      await assert.rejects(() => zugriff.liesDatei(0, ['verlinkt', 'secret']), /symbolische Links/);
+      await assert.rejects(() => zugriff.schreibeDatei!(0, ['verlinkt', 'secret'], Buffer.from('x')), /symbolische Links/);
     } finally {
       fsAttrappe.stat = echterStat;
     }
@@ -263,6 +263,18 @@ describe('Laufwerk - Rückfrage vor der Freigabe', () => {
     notizen.warnungen.length = 0;
     assert.equal(await frageFreigabe(kontext, 'server:3389', ['frontend'], true), false);
     assert.equal(notizen.warnungen.length, 0);
+  });
+
+  test('Gespeicherte Lesefreigabe erlaubt keinen ungefragten Schreibzugriff', async () => {
+    antworten.meldungen.push('Freigeben');
+    assert.equal(await frageFreigabe(kontext, 'server:3389', ['frontend'], true), true);
+    assert.equal(await frageFreigabe(kontext, 'server:3389', ['frontend'], false), false);
+    assert.equal(notizen.warnungen.length, 2);
+    antworten.meldungen.push('Freigeben');
+    assert.equal(await frageFreigabe(kontext, 'server:3389', ['frontend'], false), true);
+    const fragen = notizen.warnungen.length;
+    assert.equal(await frageFreigabe(kontext, 'server:3389', ['frontend'], false), true);
+    assert.equal(notizen.warnungen.length, fragen);
   });
 
   test('"Nur dieses Mal" gibt frei, merkt aber nichts', async () => {
