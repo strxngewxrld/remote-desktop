@@ -175,7 +175,16 @@ export class Zwischenablagebruecke {
   /** Zuletzt gesehener Inhalt der lokalen Zwischenablage. */
   private lokalerText: string | undefined;
   private abfrage: ReturnType<typeof setInterval> | undefined;
-  private laeuftAbfrage = false;
+  /**
+   * Kette der Lesungen. Sie folgen aufeinander, statt sich zu ueberholen.
+   *
+   * Frueher wurde ein ueberlappender Aufruf verworfen. Das verschluckte
+   * ausgerechnet die Nachfrage, die es genau wissen wollte: wer waehrend einer
+   * laufenden Lesung nachsieht, bekam ein "nein, nichts geaendert", obwohl
+   * niemand nachgesehen hatte. Doppelt gemeldet wird dabei nichts - dagegen
+   * stehen `lokalerText` hier und `zuletztGemeldet` in der Zustandsmaschine.
+   */
+  private kette: Promise<unknown> = Promise.resolve();
   private beendet = false;
   /** Laeuft, solange eine gesendete Formatliste unbeantwortet ist. */
   private stilleUhr: ReturnType<typeof setTimeout> | undefined;
@@ -190,6 +199,11 @@ export class Zwischenablagebruecke {
       richtung: opts.einstellungen.richtung,
       maxBytes: opts.einstellungen.maxBytes,
       leseLokalenText: () => this.lokalerText,
+      // Der Handshake steht. Jetzt einmal lesen - unabhaengig davon, ob die
+      // regelmaessige Abfrage laeuft: ohne diese eine Lesung kuendigt der
+      // Client dem Server eine leere Zwischenablage an, und der fragt dann
+      // nie nach Daten. Das Ergebnis wird mit `melde()` nachgereicht.
+      onBereit: () => void this.pruefeLokal(),
       onServerText: (text) => void this.uebernimmVomServer(text),
       log: (n, stufe) => this.opts.log(n, stufe),
     });
@@ -282,12 +296,22 @@ export class Zwischenablagebruecke {
    * Einmal nachsehen und eine Aenderung melden.
    *
    * Liefert `true`, wenn tatsaechlich etwas gemeldet wurde. Ueberlappende
-   * Aufrufe werden verworfen: das Lesen ist asynchron, und zwei gleichzeitige
-   * Leser wuerden denselben Text zweimal melden.
+   * Aufrufe reihen sich hintereinander ein (siehe `kette`), damit keine
+   * Nachfrage verlorengeht.
    */
   async pruefeLokal(): Promise<boolean> {
-    if (this.beendet || this.laeuftAbfrage || !this.sitzung.darfSchreiben) return false;
-    this.laeuftAbfrage = true;
+    if (this.beendet || !this.sitzung.darfSchreiben) return false;
+    const naechste = this.kette.then(
+      () => this.leseUndMelde(),
+      () => this.leseUndMelde(),
+    );
+    this.kette = naechste.catch(() => undefined);
+    return naechste;
+  }
+
+  /** Eine einzelne Lesung samt Meldung; Fehler bleiben hier. */
+  private async leseUndMelde(): Promise<boolean> {
+    if (this.beendet || !this.sitzung.darfSchreiben) return false;
     try {
       const text = await this.opts.speicher.lesen();
       if (typeof text !== 'string' || text === this.lokalerText) return false;
@@ -311,8 +335,6 @@ export class Zwischenablagebruecke {
       this.opts.log(`Zwischenablage: Lesen fehlgeschlagen - ${(err as Error).message}`);
       this.stoppeAbfrage();
       return false;
-    } finally {
-      this.laeuftAbfrage = false;
     }
   }
 
@@ -328,6 +350,19 @@ export class Zwischenablagebruecke {
       this.opts.log('Zwischenablage: Senden abgelehnt - Schreiben ist abgeschaltet');
       return false;
     }
+    // In dieselbe Kette wie die Lesungen: sonst koennte eine noch laufende
+    // Lesung mit ihrem aelteren Stand das gerade Eingetippte ueberholen und
+    // dem Server eine leere Zwischenablage melden.
+    const lauf = this.kette.then(
+      () => this.uebernimmAusFeld(text),
+      () => this.uebernimmAusFeld(text),
+    );
+    this.kette = lauf.catch(() => undefined);
+    return lauf;
+  }
+
+  private async uebernimmAusFeld(text: string): Promise<boolean> {
+    if (this.beendet || !this.sitzung.darfSchreiben) return false;
     this.lokalerText = text;
     try {
       await this.opts.speicher.schreiben(text);
