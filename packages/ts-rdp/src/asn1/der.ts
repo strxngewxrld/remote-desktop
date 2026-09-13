@@ -60,6 +60,7 @@ export interface DerElement {
 }
 
 export function readElement(buf: Buffer, offset = 0): DerElement {
+  if (!Number.isInteger(offset) || offset < 0) throw new Error('DER: ungültiger Offset');
   if (offset + 2 > buf.length) throw new Error('DER: Puffer zu kurz fuer Tag/Laenge');
   const tag = buf[offset];
   let pos = offset + 1;
@@ -67,8 +68,9 @@ export function readElement(buf: Buffer, offset = 0): DerElement {
   if (len & 0x80) {
     const n = len & 0x7f;
     if (n === 0 || n > 4) throw new Error(`DER: nicht unterstuetzte Laengenkodierung (${n} Bytes)`);
+    if (pos + n > buf.length) throw new Error('DER: abgeschnittenes Laengenfeld');
     len = 0;
-    for (let i = 0; i < n; i++) len = (len << 8) | buf[pos++];
+    for (let i = 0; i < n; i++) len = len * 256 + buf[pos++];
   }
   if (pos + len > buf.length) throw new Error('DER: Element reicht ueber das Pufferende hinaus');
   return { tag, content: buf.subarray(pos, pos + len), end: pos + len };
@@ -96,15 +98,16 @@ export function decodeInteger(content: Buffer): number {
  * schneiden, bevor man sie parsen kann.
  */
 export function elementLength(buf: Buffer, offset = 0): number {
+  if (!Number.isInteger(offset) || offset < 0) throw new Error('DER: ungültiger Offset');
   if (buf.length - offset < 2) return -1;
   let pos = offset + 1;
   let len = buf[pos++];
   if (len & 0x80) {
     const n = len & 0x7f;
-    if (n === 0 || n > 4) return -1;
+    if (n === 0 || n > 4) throw new Error(`DER: nicht unterstuetzte Laengenkodierung (${n} Bytes)`);
     if (buf.length - pos < n) return -1;
     len = 0;
-    for (let i = 0; i < n; i++) len = (len << 8) | buf[pos++];
+    for (let i = 0; i < n; i++) len = len * 256 + buf[pos++];
   }
   const total = pos - offset + len;
   return buf.length - offset < total ? -1 : total;
