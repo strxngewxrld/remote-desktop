@@ -112,16 +112,13 @@ export function farbe(name: FarbName | undefined): Farbe | undefined {
  * nur im `TreeItem` aus. Ein Panelsymbol laesst sich also nur einfaerben,
  * indem man ihm eine SVG-Datei gibt, in der die Farbe schon drinsteht.
  *
- * Die Form folgt bewusst `media/rdp-icon.svg` - im Tab soll dasselbe Symbol
- * stehen wie sonst, nur eben in der Kennfarbe und mit einem gefuellten
- * Bildschirm, damit die Farbe auf 16x16 Pixel ueberhaupt Flaeche hat.
+ * Ein gefüllter Punkt bleibt auch bei schmalen Tabs gut erkennbar.
  */
 export function symbolSvg(hex: string): string {
   return [
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"',
     ` stroke="${hex}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">`,
-    `<rect x="2" y="4" width="20" height="13" rx="2" fill="${hex}" fill-opacity="0.85"/>`,
-    '<path d="M8 21h8M12 17v4"/>',
+    `<circle cx="12" cy="12" r="7" fill="${hex}"/>`,
     '</svg>',
   ].join('');
 }
