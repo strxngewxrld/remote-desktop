@@ -28,6 +28,9 @@ import {
   avcZeichenbereiche,
   CLIPRDR_CHANNEL_DEF,
   CLIPRDR_CHANNEL_NAME,
+  RDPDR_CHANNEL_DEF,
+  RDPDR_CHANNEL_NAME,
+  RdpdrSession,
   createLogger,
 } from 'ts-rdp';
 import type { RdpDiagnostics, EgfxVideoFrame, LogLevel } from 'ts-rdp';
@@ -49,12 +52,21 @@ import {
   type ZwischenablageEinstellungen,
   type ZwischenablageSpeicher,
 } from './zwischenablage.js';
+import {
+  baueLaufwerk,
+  eindeutigeOrdnernamen,
+  leseEinstellungen as leseLaufwerkEinstellungen,
+} from './arbeitsbereich.js';
+import { frageFreigabe, vergissFreigaben, vscodeArbeitsbereichZugriff } from './arbeitsbereichZugriff.js';
 
 /** Ein Rastschritt des Mausrads, wie ihn Windows erwartet. */
 const WHEEL_STEP = 120;
 
 /** Befehl, der das Diagnose-Overlay ein- und ausblendet. */
 export const DIAGNOSE_BEFEHL = 'rdp.toggleDiagnostics';
+/** Befehl, der die gemerkten Antworten auf die Laufwerks-Rueckfrage vergisst. */
+export const LAUFWERK_FREIGABE_BEFEHL = 'rdp.forgetDriveApprovals';
+
 /** Befehl, der das Rueckfallfeld der Zwischenablage ein- und ausblendet. */
 export const ZWISCHENABLAGE_BEFEHL = 'rdp.toggleClipboardPanel';
 /** Schluessel im globalen Speicher - der Zustand soll die Sitzung ueberdauern. */
@@ -363,6 +375,12 @@ export class RdpSession {
   // --- Zwischenablage (MS-RDPECLIP). Fehlt der Kanal, bleibt alles undefined
   //     und die Sitzung verhaelt sich wie vor dieser Erweiterung.
   private zwischenablage?: Zwischenablagebruecke;
+
+  // --- Laufwerksumleitung (MS-RDPEFS). Fehlt der Kanal, bleibt alles
+  // undefined und die Sitzung verhaelt sich wie ohne diese Erweiterung.
+  private laufwerk?: RdpdrSession;
+  /** Horcher auf Aenderungen am Arbeitsbereich; nur waehrend der Sitzung. */
+  private arbeitsbereichHorcher?: vscode.Disposable;
   private zwischenablageFeldSichtbar = false;
 
   /**
@@ -375,6 +393,9 @@ export class RdpSession {
   private static diagnoseBefehl?: vscode.Disposable;
   /** Ebenso fuer das Rueckfallfeld der Zwischenablage. */
   private static zwischenablageBefehl?: vscode.Disposable;
+
+  /** Und fuer den Befehl, der die gemerkten Laufwerksfreigaben vergisst. */
+  private static laufwerkBefehl?: vscode.Disposable;
 
   // --- Diagnose. Alle Zaehler bleiben stehen, solange das Overlay aus ist.
   private diagnoseSichtbar = false;
@@ -473,6 +494,18 @@ export class RdpSession {
         RdpSession.gemeinteSitzung()?.schalteZwischenablagefeldUm(),
       );
     }
+    if (RdpSession.offeneSitzungen.size === 0 && !RdpSession.laufwerkBefehl) {
+      // Die Antwort auf die Freigabefrage wird gemerkt, auch ein Nein. Ohne
+      // einen Weg zurueck waere eine versehentlich verweigerte Freigabe
+      // endgueltig - und ein "Nie wieder fragen", das man nicht zuruecknehmen
+      // kann, ist kein Einverstaendnis, sondern eine Falle.
+      RdpSession.laufwerkBefehl = vscode.commands.registerCommand(LAUFWERK_FREIGABE_BEFEHL, async () => {
+        await vergissFreigaben(session.context);
+        vscode.window.showInformationMessage(
+          'Die gemerkten Laufwerksfreigaben sind vergessen. Beim nächsten Verbinden wird wieder gefragt.',
+        );
+      });
+    }
     RdpSession.offeneSitzungen.add(session);
   }
 
@@ -495,6 +528,8 @@ export class RdpSession {
       RdpSession.diagnoseBefehl = undefined;
       RdpSession.zwischenablageBefehl?.dispose();
       RdpSession.zwischenablageBefehl = undefined;
+      RdpSession.laufwerkBefehl?.dispose();
+      RdpSession.laufwerkBefehl = undefined;
     }
   }
 
@@ -639,6 +674,11 @@ export class RdpSession {
       const zwischenablageEinstellungen = leseZwischenablageEinstellungen((schluessel, vorgabe) =>
         config.get(schluessel, vorgabe),
       );
+      // Die Kanalanmeldung muss vor der Aushandlung feststehen: was hier nicht
+      // im Client Network Data steht, eroeffnet der Server spaeter nicht.
+      const laufwerkEinstellungen = leseLaufwerkEinstellungen((schluessel, vorgabe) =>
+        config.get(schluessel, vorgabe),
+      );
 
       // Zertifikat vor der Anmeldung pruefen - bei NLA gehen die Zugangsdaten
       // sonst an einen moeglicherweise untergeschobenen Server.
@@ -694,7 +734,13 @@ export class RdpSession {
         // Der Kanal wird nur angemeldet, wenn die Zwischenablage ueberhaupt
         // erlaubt ist. Ein Server, der ihn nicht eroeffnet, aendert nichts:
         // dann bleibt getStaticChannelId('cliprdr') undefined.
-        extraStaticChannels: zwischenablageEinstellungen.aktiv ? [CLIPRDR_CHANNEL_DEF] : undefined,
+        extraStaticChannels: [
+          ...(zwischenablageEinstellungen.aktiv ? [CLIPRDR_CHANNEL_DEF] : []),
+          // Ebenso fuer die Laufwerksumleitung: ohne die Einstellung wird der
+          // Kanal gar nicht erst angemeldet, und getStaticChannelId('rdpdr')
+          // bleibt undefined.
+          ...(laufwerkEinstellungen.aktiv ? [RDPDR_CHANNEL_DEF] : []),
+        ],
         enableGraphicsPipeline: config.get<boolean>('graphicsPipeline', true),
         // Der Display Control Channel wird angefragt, sobald das Mitziehen
         // erlaubt ist. Oeffnet der Server ihn nicht, aendert das nichts.
@@ -915,6 +961,7 @@ export class RdpSession {
       this.updateStatusBar();
       this.log(`Verbunden mit ${this.connection.host} (${client.width}x${client.height})`);
       this.starteZwischenablage(client);
+      this.starteLaufwerk(client);
       this.startWatchdog(client);
     });
 
@@ -924,6 +971,7 @@ export class RdpSession {
     // entscheidet die Weiterleitung selbst.
     client.on('staticChannelData', (e: { name: string; data: Buffer }) => {
       if (e.name === CLIPRDR_CHANNEL_NAME) this.zwischenablage?.verarbeite(e.data);
+      else if (e.name === RDPDR_CHANNEL_NAME) this.laufwerk?.verarbeite(e.data);
     });
 
     client.on('bitmap', (tiles: DecodedBitmap[]) => this.sendTiles(tiles));
@@ -980,10 +1028,121 @@ export class RdpSession {
       // Der naechste Verbindungsaufbau faengt mit einem neuen CLIPRDR-Handshake
       // an; Reste des alten wuerden ihn durcheinanderbringen.
       this.zwischenablage?.zuruecksetzen();
+      // Beim RDPDR-Kanal gilt dasselbe, und dazu kommt: offene Datei-Handles
+      // zeigen auf eine Verbindung, die es nicht mehr gibt.
+      this.laufwerk?.zuruecksetzen();
       this.setState('closed', 'Sitzung beendet', reason ?? 'Die Verbindung wurde geschlossen.', 'Erneut verbinden');
       this.updateStatusBar();
     });
 
+  }
+
+  // ---------------------------------------------------- Laufwerksumleitung
+
+  /**
+   * Den Arbeitsbereich als Laufwerk an die stehende Verbindung haengen.
+   *
+   * Rueckfallebene, dreifach: Ist die Einstellung aus, hat der Server den
+   * Kanal `rdpdr` nicht eroeffnet, oder ist gar kein Ordner geoeffnet, bleibt
+   * es bei einem Protokolleintrag. Keine Meldung, kein Fehler - die Sitzung
+   * verhaelt sich dann genau wie ohne diese Erweiterung.
+   *
+   * Die Rueckfrage beim Benutzer sitzt im Rueckruf `laufwerke`. Das ist kein
+   * Zufall: die Sitzung ruft ihn erst auf, wenn der Handshake so weit ist,
+   * dass die Geraeteankuendigung ueberhaupt hinausgehen darf. So steht der
+   * modale Dialog nicht schon waehrend des Verbindungsaufbaus im Weg, und
+   * eine verneinte Antwort kostet nur die Ankuendigung, nicht die Sitzung.
+   */
+  private starteLaufwerk(client: RdpClient): void {
+    this.laufwerk?.dispose();
+    this.laufwerk = undefined;
+    this.arbeitsbereichHorcher?.dispose();
+    this.arbeitsbereichHorcher = undefined;
+
+    const config = vscode.workspace.getConfiguration('rdp');
+    const einstellungen = leseLaufwerkEinstellungen((schluessel, vorgabe) => config.get(schluessel, vorgabe));
+    if (!einstellungen.aktiv) {
+      this.log('Laufwerk: in den Einstellungen abgeschaltet');
+      return;
+    }
+    if (client.getStaticChannelId(RDPDR_CHANNEL_NAME) === undefined) {
+      this.log('Laufwerk: der Server hat den Kanal rdpdr nicht eröffnet – die Umleitung bleibt aus');
+      return;
+    }
+
+    const ziel = `${this.connection.host}:${this.connection.port ?? 3389}`;
+    const zugriff = vscodeArbeitsbereichZugriff();
+
+    const sitzung = new RdpdrSession({
+      send: (daten) => {
+        try {
+          client.sendVirtualChannel(RDPDR_CHANNEL_NAME, daten);
+        } catch (err) {
+          // Etwa, wenn die Verbindung genau jetzt weggebrochen ist.
+          this.log(`Laufwerk: Senden fehlgeschlagen – ${(err as Error).message}`);
+        }
+      },
+      // Der Rechnername taucht im Explorer neben dem Laufwerk auf
+      // ("VS Code auf VSCODE"), deshalb kein technischer Bezeichner.
+      computerName: 'VSCODE',
+      nurLesen: einstellungen.nurLesen,
+      log: (nachricht) => this.log(nachricht),
+      laufwerke: async () => {
+        const namen = zugriff.ordnernamen();
+        if (namen.length === 0) {
+          // Ein Fenster ohne geöffneten Ordner ist der Normalfall beim
+          // schnellen Nachschlagen - kein Grund für eine Rückfrage.
+          this.log('Laufwerk: kein Ordner im Arbeitsbereich geöffnet – nichts freizugeben');
+          return [];
+        }
+        const angezeigt = eindeutigeOrdnernamen([...namen]);
+        const erlaubt = await frageFreigabe(this.context, ziel, angezeigt, einstellungen.nurLesen);
+        if (!erlaubt) {
+          this.log(`Laufwerk: Freigabe für ${ziel} nicht erteilt – die Ordner bleiben hier`);
+          return [];
+        }
+        this.log(
+          `Laufwerk: gebe ${angezeigt.length} Ordner frei (${angezeigt.join(', ')}), ` +
+            `${einstellungen.nurLesen ? 'nur lesen' : 'lesen und schreiben'}`,
+        );
+        return [
+          baueLaufwerk({
+            zugriff,
+            einstellungen,
+            log: (nachricht) => this.log(nachricht),
+          }),
+        ];
+      },
+    });
+    this.laufwerk = sitzung;
+
+    // Änderungen am Arbeitsbereich wirken sich unterschiedlich aus, und das
+    // gehört ins Protokoll, damit niemand vergeblich im Explorer sucht:
+    // ein neuer oder entfernter Ordner erscheint beim nächsten Blättern von
+    // selbst, weil die Ordnerliste bei jedem Zugriff frisch geholt wird. Die
+    // Freigabe selbst wird dagegen nur einmal je Sitzung erteilt - wer ganz
+    // ohne Ordner verbunden hat, braucht eine neue Sitzung.
+    this.arbeitsbereichHorcher = vscode.workspace.onDidChangeWorkspaceFolders((ereignis) => {
+      const dazu = ereignis.added.map((o) => o.name).join(', ');
+      const weg = ereignis.removed.map((o) => o.name).join(', ');
+      const teile: string[] = [];
+      if (dazu) teile.push(`+ ${dazu}`);
+      if (weg) teile.push(`− ${weg}`);
+      if (teile.length === 0) return;
+      if (sitzung.istBereit) {
+        this.log(
+          `Laufwerk: Arbeitsbereich geändert (${teile.join(', ')}) – ` +
+            'im Explorer sichtbar, sobald der Ordner neu eingelesen wird (F5)',
+        );
+      } else {
+        this.log(`Laufwerk: Arbeitsbereich geändert (${teile.join(', ')})`);
+      }
+    });
+
+    this.log(
+      `Laufwerk: Kanal rdpdr bereit (${einstellungen.nurLesen ? 'nur lesen' : 'lesen und schreiben'}, ` +
+        `${einstellungen.ausschluss.length} Ausschlussmuster)`,
+    );
   }
 
   // ------------------------------------------------------- Zwischenablage
@@ -1568,6 +1727,12 @@ export class RdpSession {
     RdpSession.vergissSitzung(this);
     this.zwischenablage?.dispose();
     this.zwischenablage = undefined;
+    // Ohne dispose() liefen asynchrone Dateioperationen weiter und schickten
+    // ihre Antworten in eine Verbindung, die es nicht mehr gibt.
+    this.laufwerk?.dispose();
+    this.laufwerk = undefined;
+    this.arbeitsbereichHorcher?.dispose();
+    this.arbeitsbereichHorcher = undefined;
     this.client?.disconnect();
     this.client = undefined;
     this.statusBar.hide();

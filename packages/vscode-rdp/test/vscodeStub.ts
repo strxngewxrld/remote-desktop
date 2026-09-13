@@ -276,6 +276,12 @@ export const notizen = {
   hinweise: [] as string[],
   warnungen: [] as string[],
   fehlermeldungen: [] as string[],
+  /**
+   * Die Optionen jeder Warnung, in derselben Reihenfolge wie `warnungen`.
+   * Fuer Rueckfragen, bei denen `modal` den Unterschied macht: ein
+   * nichtmodaler Hinweis verschwindet ungelesen wieder.
+   */
+  warnungsOptionen: [] as (MessageOptions | undefined)[],
   panels: [] as WebviewPanel[],
   statusleisten: [] as StatusBarItem[],
   baumAnbieter: new Map<string, TreeDataProvider<unknown>>(),
@@ -288,6 +294,10 @@ export const notizen = {
   speichernDialoge: [] as SaveDialogOptions[],
   /** Was ueber `workspace.fs.writeFile` geschrieben wurde. */
   geschriebeneDateien: [] as { pfad: string; inhalt: Uint8Array }[],
+  /** Was ueber `workspace.fs.delete` geloescht wurde. */
+  geloeschteDateien: [] as { pfad: string; papierkorb: boolean }[],
+  /** Was ueber `workspace.fs.rename` verschoben wurde. */
+  umbenannteDateien: [] as { von: string; nach: string }[],
 };
 
 /**
@@ -400,6 +410,7 @@ export function zuruecksetzen(): void {
   notizen.hinweise.length = 0;
   notizen.warnungen.length = 0;
   notizen.fehlermeldungen.length = 0;
+  notizen.warnungsOptionen.length = 0;
   notizen.panels.length = 0;
   notizen.statusleisten.length = 0;
   notizen.baumAnbieter.clear();
@@ -409,6 +420,8 @@ export function zuruecksetzen(): void {
   notizen.oeffnenDialoge.length = 0;
   notizen.speichernDialoge.length = 0;
   notizen.geschriebeneDateien.length = 0;
+  notizen.geloeschteDateien.length = 0;
+  notizen.umbenannteDateien.length = 0;
   antworten.eingaben.length = 0;
   antworten.auswahlen.length = 0;
   antworten.meldungen.length = 0;
@@ -417,6 +430,7 @@ export function zuruecksetzen(): void {
   einstellungen.clear();
   dateien.clear();
   fs.ordner.clear();
+  workspaceFolders = undefined;
   zwischenablage.inhalt = '';
   zwischenablage.lesefehler = undefined;
   zwischenablage.schreibfehler = undefined;
@@ -671,9 +685,68 @@ export class WorkspaceConfiguration {
   }
 }
 
+/** Wie `vscode.FileType`: eine Bitmaske, Symlinks kommen kombiniert. */
+export enum FileType {
+  Unknown = 0,
+  File = 1,
+  Directory = 2,
+  SymbolicLink = 64,
+}
+
+/** Wie `vscode.FileStat`. Zeiten sind Millisekunden seit der Unix-Epoche. */
+export interface FileStat {
+  type: FileType;
+  ctime: number;
+  mtime: number;
+  size: number;
+}
+
+/** Wie `vscode.WorkspaceFolder`. */
+export interface WorkspaceFolder {
+  readonly uri: Uri;
+  readonly name: string;
+  readonly index: number;
+}
+
+/** Wie `vscode.WorkspaceFoldersChangeEvent`. */
+export interface WorkspaceFoldersChangeEvent {
+  readonly added: readonly WorkspaceFolder[];
+  readonly removed: readonly WorkspaceFolder[];
+}
+
+const arbeitsbereichsAenderung = new EventEmitter<WorkspaceFoldersChangeEvent>();
+
 /**
- * `workspace.fs` gegen die Map `dateien`. Mehr als Lesen und Schreiben braucht
- * src/ nicht, und mehr nachzubauen waere nur Beiwerk.
+ * Die Ordner des Arbeitsbereichs. `undefined` heisst "kein Ordner geoeffnet" -
+ * genau das liefert VS Code in einem leeren Fenster, und das ist ein Fall,
+ * den die Laufwerksumleitung abfangen muss.
+ */
+export let workspaceFolders: WorkspaceFolder[] | undefined;
+
+/** Die Ordner setzen und die Aenderung melden - wie ein echter Wechsel. */
+export function setzeArbeitsbereichsOrdner(pfade: readonly string[]): void {
+  const vorher = workspaceFolders ?? [];
+  workspaceFolders =
+    pfade.length === 0
+      ? undefined
+      : pfade.map((pfad, index) => ({
+          uri: Uri.file(pfad),
+          name: pfad.split('/').filter(Boolean).pop() ?? pfad,
+          index,
+        }));
+  const jetzt = workspaceFolders ?? [];
+  arbeitsbereichsAenderung.fire({
+    added: jetzt.filter((o) => !vorher.some((v) => v.uri.fsPath === o.uri.fsPath)),
+    removed: vorher.filter((v) => !jetzt.some((o) => o.uri.fsPath === v.uri.fsPath)),
+  });
+}
+
+/**
+ * `workspace.fs` gegen die Map `dateien` und die Menge `fs.ordner`.
+ *
+ * Verzeichnisse gibt es im Arbeitsspeicher nicht wirklich; als vorhanden gilt
+ * ein Ordner, wenn er in `fs.ordner` steht oder eine Datei unter ihm liegt.
+ * Das reicht, um `stat` und `readDirectory` glaubwuerdig zu beantworten.
  */
 export const fs = {
   /**
@@ -698,10 +771,87 @@ export const fs = {
     notizen.geschriebeneDateien.push({ pfad: uri.fsPath, inhalt });
     return Promise.resolve();
   },
+
+  /** Gibt es unterhalb dieses Pfades irgendeine Datei? */
+  istOrdner(pfad: string): boolean {
+    if (fs.ordner.has(pfad)) return true;
+    const praefix = pfad.endsWith('/') ? pfad : pfad + '/';
+    for (const vorhandener of dateien.keys()) {
+      if (vorhandener.startsWith(praefix)) return true;
+    }
+    for (const vorhandener of fs.ordner) {
+      if (vorhandener.startsWith(praefix)) return true;
+    }
+    return false;
+  },
+
+  stat(uri: Uri): Thenable<FileStat> {
+    const pfad = uri.fsPath;
+    const inhalt = dateien.get(pfad);
+    if (inhalt) {
+      return Promise.resolve({ type: FileType.File, ctime: 1000, mtime: 2000, size: inhalt.length });
+    }
+    if (fs.istOrdner(pfad)) {
+      return Promise.resolve({ type: FileType.Directory, ctime: 1000, mtime: 2000, size: 0 });
+    }
+    // Wie der echte Anbieter: fehlende Pfade werfen, sie liefern kein
+    // undefined. Die Extension muss damit umgehen koennen.
+    return Promise.reject(new Error(`FileNotFound: ${pfad}`));
+  },
+
+  readDirectory(uri: Uri): Thenable<[string, FileType][]> {
+    const praefix = uri.fsPath.endsWith('/') ? uri.fsPath : uri.fsPath + '/';
+    const gefunden = new Map<string, FileType>();
+    for (const pfad of dateien.keys()) {
+      if (!pfad.startsWith(praefix)) continue;
+      const rest = pfad.substring(praefix.length);
+      const erstes = rest.split('/')[0];
+      if (!erstes) continue;
+      gefunden.set(erstes, rest.includes('/') ? FileType.Directory : FileType.File);
+    }
+    for (const pfad of fs.ordner) {
+      if (!pfad.startsWith(praefix)) continue;
+      const erstes = pfad.substring(praefix.length).split('/')[0];
+      if (erstes) gefunden.set(erstes, FileType.Directory);
+    }
+    return Promise.resolve([...gefunden.entries()]);
+  },
+
+  delete(uri: Uri, optionen?: { recursive?: boolean; useTrash?: boolean }): Thenable<void> {
+    const pfad = uri.fsPath;
+    notizen.geloeschteDateien.push({ pfad, papierkorb: optionen?.useTrash === true });
+    if (dateien.delete(pfad)) return Promise.resolve();
+    if (!fs.istOrdner(pfad)) return Promise.reject(new Error(`FileNotFound: ${pfad}`));
+    const praefix = pfad + '/';
+    const kinder = [...dateien.keys()].filter((p) => p.startsWith(praefix));
+    if (kinder.length > 0 && optionen?.recursive !== true) {
+      return Promise.reject(new Error(`FileNotEmpty: ${pfad}`));
+    }
+    for (const kind of kinder) dateien.delete(kind);
+    fs.ordner.delete(pfad);
+    return Promise.resolve();
+  },
+
+  rename(von: Uri, nach: Uri, optionen?: { overwrite?: boolean }): Thenable<void> {
+    const inhalt = dateien.get(von.fsPath);
+    if (inhalt === undefined) return Promise.reject(new Error(`FileNotFound: ${von.fsPath}`));
+    if (dateien.has(nach.fsPath) && optionen?.overwrite !== true) {
+      return Promise.reject(new Error(`FileExists: ${nach.fsPath}`));
+    }
+    dateien.delete(von.fsPath);
+    dateien.set(nach.fsPath, inhalt);
+    notizen.umbenannteDateien.push({ von: von.fsPath, nach: nach.fsPath });
+    return Promise.resolve();
+  },
 };
 
 export const workspace = {
   fs,
+
+  get workspaceFolders(): WorkspaceFolder[] | undefined {
+    return workspaceFolders;
+  },
+  onDidChangeWorkspaceFolders: arbeitsbereichsAenderung.event,
 
   getConfiguration(abschnitt = ''): WorkspaceConfiguration {
     return new WorkspaceConfiguration(abschnitt);
@@ -806,6 +956,7 @@ export const window = {
     ...rest: Array<string | MessageOptions>
   ): Thenable<string | undefined> {
     notizen.warnungen.push(nachricht);
+    notizen.warnungsOptionen.push(rest.find((e): e is MessageOptions => typeof e === 'object'));
     return Promise.resolve(naechsteMeldungsantwort(nurTexte(rest)));
   },
 
