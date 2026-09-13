@@ -801,7 +801,7 @@ export const fs = {
     }
     // Wie der echte Anbieter: fehlende Pfade werfen, sie liefern kein
     // undefined. Die Extension muss damit umgehen koennen.
-    return Promise.reject(new Error(`FileNotFound: ${pfad}`));
+    return Promise.reject(Object.assign(new Error(`FileNotFound: ${pfad}`), { code: 'FileNotFound' }));
   },
 
   readDirectory(uri: Uri): Thenable<[string, FileType][]> {

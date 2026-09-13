@@ -262,6 +262,8 @@ export interface DateiAngabe {
 export interface ArbeitsbereichZugriff {
   /** Anzeigenamen der Ordner, in der Reihenfolge des Arbeitsbereichs. */
   ordnernamen(): readonly string[];
+  /** Stabile URI statt veränderlichem Listenindex, insbesondere für den Lesecache. */
+  ordnerkennung?(ordner: number): string;
   stat(ordner: number, segmente: readonly string[]): Promise<DateiAngabe | undefined>;
   liste(ordner: number, segmente: readonly string[]): Promise<Array<{ name: string; art: EintragsArt }>>;
   liesDatei(ordner: number, segmente: readonly string[]): Promise<Uint8Array>;
@@ -313,7 +315,7 @@ export class ArbeitsbereichDateisystem implements RdpdrDateisystem {
    * diesen Zwischenspeicher wuerde eine 10-MiB-Datei 160-mal vollstaendig
    * uebertragen.
    */
-  private letzteDatei?: { schluessel: string; inhalt: Buffer; zeit: number };
+  private letzteDatei?: { schluessel: string; inhalt: Buffer };
 
   constructor(private readonly opts: ArbeitsbereichDateisystemOptionen) {
     this.istAusgeschlossen = baueAusschluss(opts.einstellungen.ausschluss);
@@ -459,9 +461,12 @@ export class ArbeitsbereichDateisystem implements RdpdrDateisystem {
     const ziel = this.aufloesen(pfad);
     if (!ziel || ziel.ordner < 0) return Buffer.alloc(0);
 
-    const schluessel = `${ziel.ordner}:${ziel.segmente.join('/')}`;
+    const kennung = () => this.opts.zugriff.ordnerkennung?.(ziel.ordner) ?? String(ziel.ordner);
+    const basis = kennung();
+    const schluessel = JSON.stringify([basis, ...ziel.segmente]);
     const zwischengespeichert = this.letzteDatei;
-    if (zwischengespeichert && zwischengespeichert.schluessel === schluessel) {
+    // Offset 0 beginnt einen neuen Lesevorgang: lokale Änderungen neu einlesen.
+    if (offset > 0 && zwischengespeichert && zwischengespeichert.schluessel === schluessel) {
       return zwischengespeichert.inhalt.subarray(offset, offset + laenge);
     }
 
@@ -476,8 +481,10 @@ export class ArbeitsbereichDateisystem implements RdpdrDateisystem {
     }
 
     const roh = await this.opts.zugriff.liesDatei(ziel.ordner, ziel.segmente);
+    if (kennung() !== basis) throw new Error('Arbeitsbereich wurde während des Lesens geändert');
+    if (roh.byteLength > this.opts.einstellungen.maxDateigroesse) throw new Error('Datei ist während des Lesens über die Größenbegrenzung gewachsen');
     const inhalt = Buffer.from(roh.buffer, roh.byteOffset, roh.byteLength);
-    this.letzteDatei = { schluessel, inhalt, zeit: Date.now() };
+    this.letzteDatei = { schluessel, inhalt };
     return inhalt.subarray(offset, offset + laenge);
   }
 
@@ -575,12 +582,19 @@ export class ArbeitsbereichDateisystem implements RdpdrDateisystem {
 
   /** Inhalt einer Datei, oder der Ersatzwert, wenn es sie noch nicht gibt. */
   private async inhaltOder(ziel: Aufgeloest, ersatz: Buffer): Promise<Buffer> {
+    let angabe: DateiAngabe | undefined;
     try {
-      const roh = await this.opts.zugriff.liesDatei(ziel.ordner, ziel.segmente);
-      return Buffer.from(roh.buffer, roh.byteOffset, roh.byteLength);
-    } catch {
+      angabe = await this.opts.zugriff.stat(ziel.ordner, ziel.segmente);
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'FileNotFound') throw error;
       return ersatz;
     }
+    if (!angabe) return ersatz;
+    if (angabe.art !== 'datei' || angabe.groesse > this.opts.einstellungen.maxDateigroesse) throw new Error('Datei ist nicht beschreibbar oder zu groß');
+    // Ein Lesefehler darf niemals als leere Datei behandelt und überschrieben werden.
+    const roh = await this.opts.zugriff.liesDatei(ziel.ordner, ziel.segmente);
+    if (roh.byteLength > this.opts.einstellungen.maxDateigroesse) throw new Error('Datei ist zu groß');
+    return Buffer.from(roh.buffer, roh.byteOffset, roh.byteLength);
   }
 }
 

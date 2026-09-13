@@ -57,7 +57,7 @@ class Attrappe implements ArbeitsbereichZugriff {
     this.merke(ordner, segmente);
     const s = this.schluessel(ordner, segmente);
     if (segmente.length === 0) return { art: 'verzeichnis', groesse: 0, erstellt: 5000, geaendert: 5000 };
-    if (!(s in this.inhalt)) throw new Error(`FileNotFound: ${s}`);
+    if (!(s in this.inhalt)) throw Object.assign(new Error(`FileNotFound: ${s}`), { code: 'FileNotFound' });
     const wert = this.inhalt[s];
     return {
       art: wert === null ? 'verzeichnis' : 'datei',
@@ -152,6 +152,20 @@ function baue(teil: Partial<LaufwerkEinstellungen> = {}): {
 }
 
 const namenVon = (eintraege: { name: string }[]): string[] => eintraege.map((e) => e.name).sort();
+
+test('Lesefehler vor einem Teil-Schreibzugriff dürfen bestehende Dateien nicht überschreiben', async () => {
+  const { fs, attrappe } = baue({ nurLesen: false, zugriff: 'readWrite' });
+  attrappe.liesDatei = async () => { throw new Error('Permission denied'); };
+  await assert.rejects(() => fs.schreibe('frontend/README.md', 2, Buffer.from('x')), /Permission denied/);
+  assert.equal(attrappe.geschrieben.size, 0);
+});
+
+test('Ein neuer Lesevorgang ab Offset null sieht lokale Änderungen', async () => {
+  const { fs, attrappe } = baue();
+  await fs.lies('frontend/README.md', 0, 100);
+  await attrappe.schreibeDatei(0, ['README.md'], Buffer.from('geändert'));
+  assert.equal((await fs.lies('frontend/README.md', 0, 100)).toString(), 'geändert');
+});
 
 // ---------------------------------------------------------------- Tests
 

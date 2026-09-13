@@ -17,9 +17,7 @@ import type { ArbeitsbereichZugriff, DateiAngabe, EintragsArt } from './arbeitsb
 
 /** `vscode.FileType` in unsere drei Arten uebersetzen. */
 function art(typ: vscode.FileType): EintragsArt {
-  // Ein Symlink kommt als Bitmaske: Directory|SymbolicLink ist 66. Deshalb
-  // wird auf das Bit geprueft und nicht auf Gleichheit - sonst faellt jeder
-  // verlinkte Ordner als "anderes" durch, und in Repositories kommen die vor.
+  if ((typ & vscode.FileType.SymbolicLink) !== 0) return 'anderes';
   if ((typ & vscode.FileType.Directory) !== 0) return 'verzeichnis';
   if ((typ & vscode.FileType.File) !== 0) return 'datei';
   return 'anderes';
@@ -44,11 +42,29 @@ export function vscodeArbeitsbereichZugriff(): ArbeitsbereichZugriff {
     return segmente.length === 0 ? basis.uri : vscode.Uri.joinPath(basis.uri, ...segmente);
   };
 
+  const gepruefteUri = async (ordner: number, segmente: readonly string[], darfFehlen = false): Promise<vscode.Uri> => {
+    const basis = uri(ordner, []);
+    for (let i = 0; i < segmente.length; i++) {
+      const segment = segmente[i]!;
+      if (!segment || segment === '.' || segment === '..' || /[\\/\0]/.test(segment)) throw new Error('Ungültiger Pfad');
+      try {
+        const info = await vscode.workspace.fs.stat(vscode.Uri.joinPath(basis, ...segmente.slice(0, i + 1)));
+        if ((info.type & vscode.FileType.SymbolicLink) !== 0) throw new Error('Laufwerk: symbolische Links werden nicht freigegeben');
+      } catch (error) {
+        if (!darfFehlen || (error as { code?: string }).code !== 'FileNotFound') throw error;
+        // Auch die noch fehlenden Segmente müssen syntaktisch geprüft werden.
+      }
+    }
+    if (uri(ordner, []).toString() !== basis.toString()) throw new Error('Arbeitsbereich wurde während des Zugriffs geändert');
+    return segmente.length ? vscode.Uri.joinPath(basis, ...segmente) : basis;
+  };
+
   return {
     ordnernamen: () => ordnerListe().map((o) => o.name),
+    ordnerkennung: ordner => uri(ordner, []).toString(),
 
     async stat(ordner, segmente): Promise<DateiAngabe | undefined> {
-      const angabe = await vscode.workspace.fs.stat(uri(ordner, segmente));
+      const angabe = await vscode.workspace.fs.stat(await gepruefteUri(ordner, segmente));
       return {
         art: art(angabe.type),
         groesse: angabe.size,
@@ -60,29 +76,29 @@ export function vscodeArbeitsbereichZugriff(): ArbeitsbereichZugriff {
     },
 
     async liste(ordner, segmente) {
-      const eintraege = await vscode.workspace.fs.readDirectory(uri(ordner, segmente));
-      return eintraege.map(([name, typ]) => ({ name, art: art(typ) }));
+      const eintraege = await vscode.workspace.fs.readDirectory(await gepruefteUri(ordner, segmente));
+      return eintraege.filter(([, typ]) => (typ & vscode.FileType.SymbolicLink) === 0).map(([name, typ]) => ({ name, art: art(typ) }));
     },
 
-    liesDatei: (ordner, segmente) => Promise.resolve(vscode.workspace.fs.readFile(uri(ordner, segmente))),
+    liesDatei: async (ordner, segmente) => vscode.workspace.fs.readFile(await gepruefteUri(ordner, segmente)),
 
-    schreibeDatei: (ordner, segmente, daten) =>
-      Promise.resolve(vscode.workspace.fs.writeFile(uri(ordner, segmente), daten)),
+    schreibeDatei: async (ordner, segmente, daten) =>
+      vscode.workspace.fs.writeFile(await gepruefteUri(ordner, segmente, true), daten),
 
-    erzeugeVerzeichnis: (ordner, segmente) =>
-      Promise.resolve(vscode.workspace.fs.createDirectory(uri(ordner, segmente))),
+    erzeugeVerzeichnis: async (ordner, segmente) =>
+      vscode.workspace.fs.createDirectory(await gepruefteUri(ordner, segmente, true)),
 
-    loesche: (ordner, segmente, rekursiv) =>
+    loesche: async (ordner, segmente, rekursiv) =>
       Promise.resolve(
         // useTrash: der Papierkorb ist hier richtig. Wer im Explorer der
         // RDP-Sitzung aus Versehen etwas loescht, loescht Quelltext auf dem
         // eigenen Rechner - ein Weg zurueck gehoert dazu.
-        vscode.workspace.fs.delete(uri(ordner, segmente), { recursive: rekursiv, useTrash: true }),
+        vscode.workspace.fs.delete(await gepruefteUri(ordner, segmente), { recursive: rekursiv, useTrash: true }),
       ),
 
-    benenneUm: (ordner, von, nachOrdner, nach, ueberschreiben) =>
+    benenneUm: async (ordner, von, nachOrdner, nach, ueberschreiben) =>
       Promise.resolve(
-        vscode.workspace.fs.rename(uri(ordner, von), uri(nachOrdner, nach), { overwrite: ueberschreiben }),
+        vscode.workspace.fs.rename(await gepruefteUri(ordner, von), await gepruefteUri(nachOrdner, nach, true), { overwrite: ueberschreiben }),
       ),
   };
 }
@@ -93,7 +109,7 @@ export function vscodeArbeitsbereichZugriff(): ArbeitsbereichZugriff {
 export const FREIGABE_SCHLUESSEL = 'rdp.driveRedirection.freigaben';
 
 /** Gemerkte Antwort je Ziel. */
-export type FreigabeAntwort = 'erlaubt' | 'verweigert';
+export type FreigabeAntwort = 'erlaubt' | 'erlaubt-schreiben' | 'verweigert';
 
 /** Die gemerkten Antworten lesen. */
 export function gemerkteFreigaben(context: vscode.ExtensionContext): Record<string, FreigabeAntwort> {
@@ -120,7 +136,8 @@ export async function frageFreigabe(
 ): Promise<boolean> {
   const gemerkt = gemerkteFreigaben(context);
   const bekannt = gemerkt[ziel];
-  if (bekannt === 'erlaubt') return true;
+  // Historische Zustimmungen enthalten keine Rechte: niemals stillschweigend erweitern.
+  if (bekannt === 'erlaubt-schreiben' || (bekannt === 'erlaubt' && nurLesen)) return true;
   if (bekannt === 'verweigert') return false;
 
   const liste =
@@ -139,12 +156,12 @@ export async function frageFreigabe(
   );
 
   if (antwort === 'Freigeben') {
-    await context.globalState.update(FREIGABE_SCHLUESSEL, { ...gemerkt, [ziel]: 'erlaubt' });
+    await context.globalState.update(FREIGABE_SCHLUESSEL, { ...gemerkteFreigaben(context), [ziel]: nurLesen ? 'erlaubt' : 'erlaubt-schreiben' });
     return true;
   }
   if (antwort === 'Nur dieses Mal') return true;
   if (antwort === 'Nicht freigeben') {
-    await context.globalState.update(FREIGABE_SCHLUESSEL, { ...gemerkt, [ziel]: 'verweigert' });
+    await context.globalState.update(FREIGABE_SCHLUESSEL, { ...gemerkteFreigaben(context), [ziel]: 'verweigert' });
     return false;
   }
   // Escape oder Abbruch: diesmal nichts freigeben, aber auch nichts merken.
