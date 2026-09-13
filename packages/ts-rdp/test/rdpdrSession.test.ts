@@ -676,6 +676,30 @@ describe('RDPDR-Sitzung - Nur-Lesen ist der Standard', () => {
     assert.equal(status, STATUS_ACCESS_DENIED);
   });
 
+  test('FILE_OPEN_IF auf eine vorhandene Datei ist kein Schreibwunsch', async () => {
+    // "oeffnen, sonst anlegen": manche Programme oeffnen grundsaetzlich so,
+    // auch wenn sie nur lesen wollen. Solange die Datei da ist, wird nichts
+    // angelegt - pauschal abzulehnen waere zu streng.
+    const a = baue();
+    await bisBereit(a);
+    const { status } = await oeffne(a, '\\repo\\README.md', {
+      access: GENERIC_READ,
+      disposition: FILE_OPEN_IF,
+    });
+    assert.equal(status, STATUS_SUCCESS);
+  });
+
+  test('FILE_OPEN_IF auf eine fehlende Datei dagegen schon', async () => {
+    const a = baue();
+    await bisBereit(a);
+    const { status } = await oeffne(a, '\\repo\\gibtsnicht.txt', {
+      access: GENERIC_READ,
+      disposition: FILE_OPEN_IF,
+    });
+    assert.equal(status, STATUS_ACCESS_DENIED);
+    assert.equal(a.speicher.eintraege.has('repo/gibtsnicht.txt'), false);
+  });
+
   test('Auch eine anlegende CreateDisposition gilt als Schreibwunsch', async () => {
     const a = baue();
     await bisBereit(a);
