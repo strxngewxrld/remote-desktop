@@ -300,7 +300,7 @@ export function loeseVerbindungAuf(eintrag: VerbindungsEintrag): RdpConnection {
     ...eintrag.ordnerKette.map((o) => o.settings ?? {}),
     eintrag.verbindung,
   ];
-  if (stufen.some(s => s.credentials !== undefined || s.defaultCredential !== undefined || s.promptCredentials !== undefined)) {
+  if (stufen.some(s => s && (s.credentials !== undefined || s.defaultCredential !== undefined || s.promptCredentials !== undefined))) {
     Object.assign(ergebnis, loeseCredentialsAuf(stufen));
   }
   return ergebnis as unknown as RdpConnection;
@@ -311,23 +311,37 @@ export function loeseCredentialsAuf(stufen: CredentialSettings[]): CredentialSet
   let defaultCredential: string | undefined;
   let promptCredentials = false;
   for (const stufe of stufen) {
+    if (!stufe || typeof stufe !== 'object') continue;
     if (stufe.promptCredentials === true) {
       profiles.clear();
       defaultCredential = undefined;
     }
     if (typeof stufe.promptCredentials === 'boolean') promptCredentials = stufe.promptCredentials;
     for (const c of Array.isArray(stufe.credentials) ? stufe.credentials : []) {
-      if (c && typeof c.id === 'string' && typeof c.username === 'string' && c.username.trim()) {
-        profiles.set(c.id, { id: c.id, name: c.name || c.username, username: c.username, ...(typeof c.domain === 'string' ? { domain: c.domain } : {}) });
+      if (c && typeof c.id === 'string' && c.id.trim() && typeof c.username === 'string' && c.username.trim()) {
+        profiles.set(c.id, {
+          id: c.id,
+          name: typeof c.name === 'string' && c.name.trim() ? c.name.trim() : c.username,
+          username: c.username.trim(),
+          ...(typeof c.domain === 'string' ? { domain: c.domain.trim() } : {}),
+        });
       }
     }
-    if (stufe.defaultCredential !== undefined) defaultCredential = stufe.defaultCredential;
+    if (typeof stufe.defaultCredential === 'string') defaultCredential = stufe.defaultCredential;
   }
   return { credentials: [...profiles.values()], defaultCredential: profiles.has(defaultCredential ?? '') ? defaultCredential : undefined, promptCredentials };
 }
 
 export function credentialSecretKey(id: string): string {
   return `rdp:credential:${id}`;
+}
+
+export function parseUsername(value: string): { username: string; domain?: string } | undefined {
+  const parts = value.trim().split('\\');
+  if (parts.length > 2 || parts.some(part => !part.trim())) return undefined;
+  return parts.length === 1
+    ? { username: parts[0]!.trim() }
+    : { domain: parts[0]!.trim(), username: parts[1]!.trim() };
 }
 
 /** Die Kennfarbe einer Verbindung samt der Stelle, an der sie gesetzt ist. */

@@ -1,13 +1,24 @@
-import { einstellungen, zuruecksetzen, DataTransfer, ExtensionContext, antworten } from './vscodeStub.js';
+import { einstellungen, zuruecksetzen, ExtensionContext, antworten } from './vscodeStub.js';
 import { strict as assert } from 'node:assert';
 import { beforeEach, test } from 'node:test';
-import { ConnectionTreeProvider, getBaum, loeseCredentialsAuf, credentialSecretKey } from '../src/connections.js';
+import { loeseCredentialsAuf, credentialSecretKey, parseUsername } from '../src/connections.js';
 import { verwalteCredentials } from '../src/credentials.js';
 import { RdpSession } from '../src/session.js';
 
 beforeEach(() => zuruecksetzen());
 const admin = { id: 'admin', name: 'Admin', username: 'administrator' };
 const user = { id: 'user', name: 'Benutzer', username: 'user' };
+
+test('Domäne und UPN bleiben erhalten; unvollständige Anmeldungen werden abgelehnt', () => {
+  assert.deepEqual(parseUsername(' DOM\\alice '), { domain: 'DOM', username: 'alice' });
+  assert.deepEqual(parseUsername('alice@example.com'), { username: 'alice@example.com' });
+  for (const invalid of ['', '   ', 'DOM\\', '\\alice', 'DOM\\\\alice']) assert.equal(parseUsername(invalid), undefined);
+});
+
+test('Ungültige Profilkonfiguration wird verworfen und beschädigte Anzeigenamen werden ersetzt', () => {
+  const result = loeseCredentialsAuf([null, { credentials: [null, { id: '', username: 'x' }, { ...admin, name: {} }] }] as any);
+  assert.deepEqual(result.credentials, [{ ...admin, name: admin.username }]);
+});
 
 test('Profile werden additiv vererbt; der nächste Default gewinnt', () => {
   const result = loeseCredentialsAuf([{ credentials: [admin], defaultCredential: 'admin' }, { credentials: [user], defaultCredential: 'user' }, {}]);
@@ -29,7 +40,8 @@ test('Zugangsdatenverwaltung trennt Profilmetadaten vom Passwort', async () => {
   antworten.auswahlen.push(0);
   antworten.eingaben.push('Admin', 'DOM\\alice', 'test-secret');
   await verwalteCredentials(context);
-  const stored = einstellungen.get('rdp.authentication') as { credentials: typeof admin[] };
+  const stored = einstellungen.get('rdp.authentication') as { credentials: (typeof admin & { domain?: string })[] };
+  assert.equal(stored.credentials[0]!.domain, 'DOM');
   assert.equal(stored.credentials[0]!.username, 'alice');
   assert.equal(JSON.stringify(stored).includes('test-secret'), false);
   assert.equal(await context.secrets.get(credentialSecretKey(stored.credentials[0]!.id)), 'test-secret');
