@@ -130,6 +130,11 @@
         "icon": "$(dashboard)"
       },
       {
+        "command": "rdp.setColor",
+        "title": "RDP: Farbe festlegen…",
+        "icon": "$(symbol-color)"
+      },
+      {
         "command": "rdp.importRdpFile",
         "title": "RDP: .rdp-Datei importieren",
         "icon": "$(cloud-download)"
@@ -162,6 +167,11 @@
       {
         "command": "rdp.refreshScreen",
         "title": "RDP: Bildschirm neu anfordern"
+      },
+      {
+        "command": "rdp.screenshot",
+        "title": "RDP: Screenshot der Sitzung speichern…",
+        "icon": "$(device-camera)"
       },
       {
         "command": "rdp.clearCredentials",
@@ -236,6 +246,11 @@
           "group": "1_modify@4"
         },
         {
+          "command": "rdp.setColor",
+          "when": "view == rdpConnections && viewItem == rdpConnection",
+          "group": "1_modify@6"
+        },
+        {
           "command": "rdp.moveToFolder",
           "when": "view == rdpConnections && viewItem == rdpConnection",
           "group": "1_modify@5"
@@ -271,6 +286,11 @@
           "group": "1_modify@5"
         },
         {
+          "command": "rdp.setColor",
+          "when": "view == rdpConnections && viewItem == rdpFolder",
+          "group": "1_modify@7"
+        },
+        {
           "command": "rdp.moveToFolder",
           "when": "view == rdpConnections && viewItem == rdpFolder",
           "group": "1_modify@6"
@@ -289,6 +309,13 @@
           "command": "rdp.deleteFolder",
           "when": "view == rdpConnections && viewItem == rdpFolder",
           "group": "9_danger@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "rdp.screenshot",
+          "when": "activeWebviewPanelId == rdpSession",
+          "group": "navigation@1"
         }
       ],
       "commandPalette": [
@@ -310,6 +337,78 @@
         }
       ]
     },
+    "colors": [
+      {
+        "id": "rdp.color.red",
+        "description": "Kennfarbe Rot – färbt Symbol und Statusleiste einer so markierten Verbindung.",
+        "defaults": {
+          "dark": "#e51400",
+          "light": "#e51400",
+          "highContrast": "#e51400",
+          "highContrastLight": "#e51400"
+        }
+      },
+      {
+        "id": "rdp.color.orange",
+        "description": "Kennfarbe Orange – färbt Symbol und Statusleiste einer so markierten Verbindung.",
+        "defaults": {
+          "dark": "#f07d00",
+          "light": "#d76b00",
+          "highContrast": "#f07d00",
+          "highContrastLight": "#d76b00"
+        }
+      },
+      {
+        "id": "rdp.color.yellow",
+        "description": "Kennfarbe Gelb – färbt Symbol und Statusleiste einer so markierten Verbindung.",
+        "defaults": {
+          "dark": "#d9b400",
+          "light": "#b08c00",
+          "highContrast": "#d9b400",
+          "highContrastLight": "#b08c00"
+        }
+      },
+      {
+        "id": "rdp.color.green",
+        "description": "Kennfarbe Grün – färbt Symbol und Statusleiste einer so markierten Verbindung.",
+        "defaults": {
+          "dark": "#2d9d3a",
+          "light": "#217c2c",
+          "highContrast": "#2d9d3a",
+          "highContrastLight": "#217c2c"
+        }
+      },
+      {
+        "id": "rdp.color.blue",
+        "description": "Kennfarbe Blau – färbt Symbol und Statusleiste einer so markierten Verbindung.",
+        "defaults": {
+          "dark": "#0a84d8",
+          "light": "#0a6ebd",
+          "highContrast": "#0a84d8",
+          "highContrastLight": "#0a6ebd"
+        }
+      },
+      {
+        "id": "rdp.color.purple",
+        "description": "Kennfarbe Violett – färbt Symbol und Statusleiste einer so markierten Verbindung.",
+        "defaults": {
+          "dark": "#9a4dd4",
+          "light": "#7f35b8",
+          "highContrast": "#9a4dd4",
+          "highContrastLight": "#7f35b8"
+        }
+      },
+      {
+        "id": "rdp.color.gray",
+        "description": "Kennfarbe Grau – färbt Symbol und Statusleiste einer so markierten Verbindung.",
+        "defaults": {
+          "dark": "#8a8a8a",
+          "light": "#6b6b6b",
+          "highContrast": "#8a8a8a",
+          "highContrastLight": "#6b6b6b"
+        }
+      }
+    ],
     "keybindings": [
       {
         "command": "rdp.sendCtrlAltDel",
@@ -400,6 +499,28 @@
                       "Alle Effekte aus"
                     ],
                     "description": "Bandbreitenprofil dieser Verbindung"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "red",
+                      "orange",
+                      "yellow",
+                      "green",
+                      "blue",
+                      "purple",
+                      "gray"
+                    ],
+                    "enumDescriptions": [
+                      "Rot – für Produktivsysteme",
+                      "Orange – für Abnahme und Vorproduktion",
+                      "Gelb – für Systeme in Arbeit",
+                      "Grün – für Test und Entwicklung",
+                      "Blau – für interne Dienste",
+                      "Violett – für Kundenumgebungen",
+                      "Grau – ohne besondere Bedeutung"
+                    ],
+                    "description": "Kennfarbe für Rahmen, Tabsymbol, Statusleiste und Baumansicht"
                   }
                 }
               },
@@ -471,6 +592,19 @@
                           "broadband",
                           "mobile"
                         ]
+                      },
+                      "color": {
+                        "type": "string",
+                        "enum": [
+                          "red",
+                          "orange",
+                          "yellow",
+                          "green",
+                          "blue",
+                          "purple",
+                          "gray"
+                        ],
+                        "description": "Kennfarbe für alles in diesem Ordner; einzelne Verbindungen dürfen abweichen"
                       }
                     }
                   }
@@ -569,6 +703,20 @@
             "Mobil (langsam): alle Effekte aus"
           ],
           "markdownDescription": "Bandbreitenprofil für Verbindungen ohne eigene Angabe. Ein Profil setzt die `TS_PERF_*`-Flags des Client Info PDU in einem Rutsch und gewinnt gegen die einzelnen `rdp.performance.*`-Schalter. Reihenfolge: Verbindung, Ordner, Elternordner, dann dieser Wert.",
+          "scope": "window"
+        },
+        "rdp.colorFrameWidth": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 24,
+          "markdownDescription": "Breite des farbigen Rahmens um die Sitzungsfläche in Pixeln. `0` schaltet den Rahmen ab; die Kennfarbe bleibt dann in Tabsymbol, Statusleiste und Baumansicht sichtbar. Der Rahmen liegt über der Fläche und verkleinert weder das Bild noch die angefragte Auflösung.",
+          "scope": "window"
+        },
+        "rdp.screenshotFolder": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Ordner, den der Speicherdialog für Screenshots vorschlägt. Leer bedeutet: der zuletzt verwendete Ort von VS Code. Der Pfad gilt auf der Seite, auf der die Erweiterung läuft – bei Remote-SSH also auf dem entfernten Rechner.",
           "scope": "window"
         },
         "rdp.performance.disableWallpaper": {

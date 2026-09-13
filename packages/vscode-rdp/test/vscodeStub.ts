@@ -216,11 +216,22 @@ export class MarkdownString {
   }
 }
 
+/**
+ * Verweis auf eine Farbe der Oberflaeche. Wie in VS Code haelt sie nur den
+ * Schluessel - was daraus wird, entscheidet erst das Theme.
+ */
+export class ThemeColor {
+  constructor(readonly id: string) {}
+}
+
 export class ThemeIcon {
   static readonly File = new ThemeIcon('file');
   static readonly Folder = new ThemeIcon('folder');
 
-  constructor(readonly id: string) {}
+  constructor(
+    readonly id: string,
+    readonly color?: ThemeColor,
+  ) {}
 }
 
 export class TreeItem {
@@ -405,6 +416,7 @@ export function zuruecksetzen(): void {
   antworten.speicherziele.length = 0;
   einstellungen.clear();
   dateien.clear();
+  fs.ordner.clear();
   zwischenablage.inhalt = '';
   zwischenablage.lesefehler = undefined;
   zwischenablage.schreibfehler = undefined;
@@ -533,6 +545,10 @@ export class StatusBarItem {
   tooltip: string | MarkdownString | undefined;
   command: string | Command | undefined;
   name: string | undefined;
+  /** Vordergrundfarbe; VS Code nimmt hier auch eine Zeichenkette an. */
+  color: string | ThemeColor | undefined;
+  /** VS Code wertet hier nur errorBackground/warningBackground aus. */
+  backgroundColor: ThemeColor | undefined;
   sichtbar = false;
   entsorgt = false;
 
@@ -607,10 +623,13 @@ export class ExtensionContext {
   readonly workspaceState = new Memento();
   readonly extensionUri: Uri;
   readonly extensionPath: string;
+  /** Eigener Ablageort der Extension - dort landen die erzeugten Farbsymbole. */
+  readonly globalStorageUri: Uri;
 
   constructor(wurzel = '/erweiterung') {
     this.extensionUri = Uri.file(wurzel);
     this.extensionPath = wurzel;
+    this.globalStorageUri = Uri.file(wurzel + '/ablage');
   }
 
   /** Raeumt auf wie VS Code beim Deaktivieren. */
@@ -657,6 +676,17 @@ export class WorkspaceConfiguration {
  * src/ nicht, und mehr nachzubauen waere nur Beiwerk.
  */
 export const fs = {
+  /**
+   * Angelegte Ordner. Im Arbeitsspeicher gibt es keine echten Verzeichnisse -
+   * festgehalten wird nur, dass die Extension ueberhaupt daran gedacht hat.
+   */
+  ordner: new Set<string>(),
+
+  createDirectory(uri: Uri): Thenable<void> {
+    fs.ordner.add(uri.fsPath);
+    return Promise.resolve();
+  },
+
   readFile(uri: Uri): Thenable<Uint8Array> {
     const inhalt = dateien.get(uri.fsPath);
     if (!inhalt) return Promise.reject(new Error(`Datei nicht gefunden: ${uri.fsPath}`));
