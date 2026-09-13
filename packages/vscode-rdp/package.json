@@ -184,6 +184,10 @@
       {
         "command": "rdp.showEnvironment",
         "title": "RDP: Laufzeitumgebung anzeigen (lokal oder entfernt)"
+      },
+      {
+        "command": "rdp.forgetDriveApprovals",
+        "title": "RDP: Laufwerksfreigaben vergessen"
       }
     ],
     "menus": {
@@ -812,6 +816,57 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Die **Graphics Pipeline** (MS-RDPEGFX) anfordern. Windows Server 2019+ liefert Bildschirminhalte ausschließlich auf diesem Weg; ohne die Pipeline bleibt das Bild dort schwarz. Ältere Server nutzen weiterhin den klassischen Weg."
+        },
+        "rdp.driveRedirection.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Die Ordner des VS-Code-Arbeitsbereichs in der Sitzung als Laufwerk einblenden (**MS-RDPEFS**, Kanal `rdpdr`). Aus bedeutet: der Kanal wird gar nicht erst angemeldet. Beim ersten Verbinden je Server wird nachgefragt, bevor etwas freigegeben wird."
+        },
+        "rdp.driveRedirection.access": {
+          "type": "string",
+          "default": "readOnly",
+          "enum": [
+            "readOnly",
+            "readWrite"
+          ],
+          "enumDescriptions": [
+            "Nur lesen – der Server kann die Dateien öffnen, aber nichts ändern",
+            "Lesen und schreiben – der Server kann Dateien anlegen, ändern, umbenennen und löschen"
+          ],
+          "markdownDescription": "Rechte, die der Server auf den freigegebenen Ordnern bekommt. Die Vorgabe ist **nur lesen**: der Server sieht Quelltext, und das Schreibrecht dazu sollte eine bewusste Entscheidung sein. Ein unbekannter Wert gilt als „nur lesen“."
+        },
+        "rdp.driveRedirection.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            ".git",
+            "node_modules",
+            ".env",
+            ".env.*",
+            "*.pem",
+            "*.key",
+            "*.pfx",
+            "*.p12",
+            ".ssh",
+            ".aws",
+            ".npmrc",
+            ".netrc"
+          ],
+          "markdownDescription": "Muster, die nicht mit übertragen werden. Ein Muster ohne `/` trifft jeden Pfadteil (`.git` also auch `src/fremd/.git`), eines mit `/` den ganzen relativen Pfad (`doku/geheim`). `*` und `?` sind erlaubt, Groß- und Kleinschreibung spielt keine Rolle. Ausgeschlossenes existiert für den Server nicht – es fehlt in der Auflistung. Die Vorgabe hält `.git` (Historie und Zugriffstoken), `node_modules`, `.env` und Schlüsseldateien zurück."
+        },
+        "rdp.driveRedirection.driveName": {
+          "type": "string",
+          "default": "VS Code",
+          "markdownDescription": "Name des Laufwerks, wie er im Explorer der Sitzung erscheint. Darunter liegt je Ordner des Arbeitsbereichs ein Unterordner – ein Laufwerk für alle Repositories, damit Laufwerksbuchstaben frei bleiben und ein neu geöffnetes Repository ohne neue Sitzung auftaucht."
+        },
+        "rdp.driveRedirection.maxFileSizeMb": {
+          "type": "number",
+          "default": 64,
+          "minimum": 1,
+          "maximum": 2048,
+          "markdownDescription": "Obergrenze je Datei in **MiB**. `vscode.workspace.fs` kennt keine Teilabfrage – jede Datei geht vollständig durch den Speicher des Extension-Hosts. Größeres wird nicht übertragen und nur protokolliert."
         }
       }
     }
