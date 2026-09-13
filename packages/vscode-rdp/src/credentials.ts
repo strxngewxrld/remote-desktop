@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { randomUUID } from 'node:crypto';
 import {
   BaumKnoten, ConnectionNode, FolderNode, CredentialSettings, Credential,
-  credentialSecretKey, schreibeEintragAn, loeseCredentialsAuf,
+  credentialSecretKey, schreibeEintragAn, loeseCredentialsAuf, parseUsername,
 } from './connections.js';
 
 /** Metadaten in Einstellungen, Passwörter ausschließlich in SecretStorage. */
@@ -10,7 +10,7 @@ export async function verwalteCredentials(context: vscode.ExtensionContext, node
   const config = vscode.workspace.getConfiguration('rdp');
   const own: CredentialSettings = { ...(node instanceof FolderNode ? node.ordner.settings :
     node instanceof ConnectionNode ? node.connection : config.get<CredentialSettings>('authentication', {})) };
-  own.credentials = [...(own.credentials ?? [])];
+  own.credentials = loeseCredentialsAuf([own]).credentials ?? [];
   const parents = node ? [config.get<CredentialSettings>('authentication', {}), ...node.ordnerKette.map(o => o.settings ?? {})] : [];
   const title = `Zugangsdaten: ${node instanceof FolderNode ? node.ordner.name : node instanceof ConnectionNode ? node.connection.name : 'Oberste Ebene'}`;
   const save = async () => {
@@ -54,12 +54,17 @@ export async function verwalteCredentials(context: vscode.ExtensionContext, node
     }
     const name = await vscode.window.showInputBox({ title: 'Name der Zugangsdaten', value: existing?.name, ignoreFocusOut: true });
     if (!name?.trim()) continue;
-    const user = await vscode.window.showInputBox({ title: 'Benutzername (DOMAIN\\Benutzer möglich)', value: existing ? `${existing.domain ? existing.domain + '\\' : ''}${existing.username}` : '', ignoreFocusOut: true });
-    if (!user?.trim()) continue;
+    const user = await vscode.window.showInputBox({
+      title: 'Benutzername (DOMAIN\\Benutzer möglich)',
+      value: existing ? `${existing.domain ? existing.domain + '\\' : ''}${existing.username}` : '',
+      validateInput: value => parseUsername(value) ? undefined : 'Benutzername oder DOMAIN\\Benutzer angeben.',
+      ignoreFocusOut: true,
+    });
+    const login = user === undefined ? undefined : parseUsername(user);
+    if (!login) continue;
     const password = await vscode.window.showInputBox({ title: 'Passwort (leer: bei Verbindung abfragen)', password: true, ignoreFocusOut: true });
     if (password === undefined) continue;
-    const split = user.trim().indexOf('\\');
-    const credential: Credential = { id: existing?.id ?? randomUUID(), name: name.trim(), username: split < 0 ? user.trim() : user.trim().slice(split + 1), domain: split < 0 ? undefined : user.trim().slice(0, split) };
+    const credential: Credential = { id: existing?.id ?? randomUUID(), name: name.trim(), ...login };
     if (password) await context.secrets.store(credentialSecretKey(credential.id), password);
     else await context.secrets.delete(credentialSecretKey(credential.id));
     own.credentials = [...own.credentials!.filter(c => c.id !== credential.id), credential];
