@@ -633,6 +633,21 @@
           ],
           "description": "Tastaturlayout, das dem Server gemeldet wird."
         },
+        "rdp.macCommandKey": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "on",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Nur, wenn der Arbeitsplatz ein Mac ist (vom Webview gemeldet).",
+            "Immer abbilden.",
+            "Nie abbilden; Cmd geht als Windows-Taste an den Server."
+          ],
+          "markdownDescription": "Bildet auf dem Mac die gewohnten Cmd-Kürzel **Cmd+C, Cmd+X, Cmd+V, Cmd+A, Cmd+Z und Cmd+F** auf Strg ab, wie es die Windows App von Microsoft tut. Ohne diese Abbildung geht Cmd als Windows-Taste an den Server, und Cmd+C kopiert dort nichts. Cmd mit Alt wird nie abgebildet (damit Cmd+Alt+V weiterhin das Rückfallfeld öffnet); Cmd+W, Cmd+Q und Cmd+N bleiben bei VS Code."
+        },
         "rdp.defaultColorDepth": {
           "type": "number",
           "default": 32,

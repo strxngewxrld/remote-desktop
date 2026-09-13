@@ -747,3 +747,32 @@ describe('Auflösung zieht mit der Panelgröße', () => {
     assert.deepEqual(unbehandelt, [], 'keine unbehandelte Zusage');
   });
 });
+
+// -------------------------------------------- Plattform für die Tastatur
+
+/**
+ * Die Cmd-Abbildung muss sich nach dem Rechner des *Nutzers* richten. Die
+ * einzige verlaessliche Auskunft darueber ist die Meldung des Webviews; der
+ * Extension-Host laeuft unter Remote-SSH auf dem Sprungbrett.
+ */
+describe('Sitzung - Plattform für die Tastatur', () => {
+  test('Die Meldung des Webviews entscheidet über die Cmd-Abbildung', async () => {
+    // Eine Sitzung fuer beide Faelle: der Aufbau gegen den Mock-Server ist
+    // teuer, und die Entscheidung haengt allein an der gemeldeten Plattform.
+    const { panel, ausgabe } = await starteSitzung(port);
+
+    panel.webview.vomWebview({ type: 'plattform', plattform: 'MacIntel' });
+    await warteBis(
+      () => ausgabe.zeilen.some((z) => z.includes('auf Strg abgebildet')),
+      `Protokolleintrag zur Tastatur in:\n${ausgabe.zeilen.join('\n')}`,
+    );
+    assert.match(ausgabe.zeilen.find((z) => z.includes('Cmd-Kürzel'))!, /Plattform darwin \(webview\)/);
+
+    panel.webview.vomWebview({ type: 'plattform', plattform: 'Win32' });
+    await warteBis(
+      () => ausgabe.zeilen.some((z) => z.includes('nicht abgebildet')),
+      'Protokolleintrag zur abgeschalteten Abbildung',
+    );
+    assert.match(ausgabe.zeilen.at(-1)!, /Plattform win32 \(webview\)/);
+  });
+});

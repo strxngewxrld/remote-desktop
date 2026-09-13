@@ -144,7 +144,21 @@ class ElementStub {
  * Das Skript wird bewusst als Quelltext geladen und nicht nachgebaut: ein
  * Nachbau wuerde den Fehler, den man sucht, nicht enthalten.
  */
-export function starteWebview(skript: string, videoOptionen: VideoOptionen = {}): WebviewUmgebung {
+/** Was ausser dem Video noch von aussen vorgegeben werden kann. */
+export interface UmgebungOptionen {
+  /**
+   * Was `navigator.platform` melden soll. Das Webview ist die einzige
+   * verlaessliche Quelle fuer die Plattform des Nutzers - unter Remote-SSH
+   * laeuft der Extension-Host auf dem Sprungbrett.
+   */
+  plattform?: string;
+}
+
+export function starteWebview(
+  skript: string,
+  videoOptionen: VideoOptionen = {},
+  umgebungOptionen: UmgebungOptionen = {},
+): WebviewUmgebung {
   const gesendet: unknown[] = [];
   const gezeichnet: GezeichneteKachel[] = [];
   const nachrichtenHorcher: ((e: { data: unknown }) => void)[] = [];
@@ -357,6 +371,9 @@ export function starteWebview(skript: string, videoOptionen: VideoOptionen = {})
         : { VideoDecoder: VideoDecoderStub, EncodedVideoChunk: EncodedVideoChunkStub }),
     },
     ImageData: ImageDataStub,
+    // Bewusst gesetzt und nicht aus Node geerbt: sonst haengt das Ergebnis am
+    // Rechner, auf dem die Tests laufen.
+    navigator: { platform: umgebungOptionen.plattform ?? 'Linux x86_64' },
     atob: (b64: string) => Buffer.from(b64, 'base64').toString('binary'),
     setTimeout,
     clearTimeout,

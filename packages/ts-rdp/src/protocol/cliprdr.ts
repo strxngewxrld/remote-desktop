@@ -97,6 +97,32 @@ export const CB_FILECONTENTS_RESPONSE = 0x0009;
 export const CB_LOCK_CLIPDATA = 0x000a;
 export const CB_UNLOCK_CLIPDATA = 0x000b;
 
+/**
+ * Klarnamen der PDU-Typen fuer das Protokoll.
+ *
+ * Der Mitschnitt soll ohne Blick in die Spezifikation lesbar sein: wer im
+ * Fehlerfall wissen will, an welcher Stelle von 1.3.2.1 der Ablauf stehen
+ * bleibt, braucht die Namen und nicht die Zahlen.
+ */
+export const CLIPRDR_PDU_NAMEN: Record<number, string> = {
+  [CB_MONITOR_READY]: 'MONITOR_READY',
+  [CB_FORMAT_LIST]: 'FORMAT_LIST',
+  [CB_FORMAT_LIST_RESPONSE]: 'FORMAT_LIST_RESPONSE',
+  [CB_FORMAT_DATA_REQUEST]: 'FORMAT_DATA_REQUEST',
+  [CB_FORMAT_DATA_RESPONSE]: 'FORMAT_DATA_RESPONSE',
+  [CB_TEMP_DIRECTORY]: 'TEMP_DIRECTORY',
+  [CB_CLIP_CAPS]: 'CLIP_CAPS',
+  [CB_FILECONTENTS_REQUEST]: 'FILECONTENTS_REQUEST',
+  [CB_FILECONTENTS_RESPONSE]: 'FILECONTENTS_RESPONSE',
+  [CB_LOCK_CLIPDATA]: 'LOCK_CLIPDATA',
+  [CB_UNLOCK_CLIPDATA]: 'UNLOCK_CLIPDATA',
+};
+
+/** Name eines PDU-Typs, sonst seine Nummer in Hexadezimalschreibweise. */
+export function cliprdrPduName(msgType: number): string {
+  return CLIPRDR_PDU_NAMEN[msgType] ?? `0x${msgType.toString(16).padStart(4, '0')}`;
+}
+
 export const CB_RESPONSE_OK = 0x0001;
 export const CB_RESPONSE_FAIL = 0x0002;
 export const CB_ASCII_NAMES = 0x0004;
@@ -513,6 +539,9 @@ export function waehleTextformat(formate: readonly CliprdrFormat[]): number | un
  */
 export type ZwischenablageRichtung = 'beide' | 'nurLesen' | 'nurSchreiben' | 'aus';
 
+/** Stufen des Sitzungsprotokolls, passend zu `Logger` aus `core/log.ts`. */
+export type CliprdrLogStufe = 'info' | 'debug' | 'warn';
+
 export interface CliprdrSessionOptions {
   /** Fertige CLIPRDR-Nachricht auf den Kanal geben. */
   send(daten: Buffer): void;
@@ -529,10 +558,33 @@ export interface CliprdrSessionOptions {
   /**
    * Liefert den Text, den der Server bekommen soll, wenn er danach fragt.
    * `undefined` heisst "nichts da" und fuehrt zu CB_RESPONSE_FAIL.
+   *
+   * Bewusst synchron: CB_FORMAT_DATA_REQUEST will sofort eine Antwort, und
+   * geliefert werden muss ohnehin genau der Text, der vorher angekuendigt
+   * wurde - ein inzwischen neuerer waere falsch. Dass beim Handshake schon
+   * etwas da ist, stellt `onBereit` sicher.
    */
   leseLokalenText?(): string | undefined;
-  /** Meldungen fuer das Sitzungsprotokoll. */
-  log?(nachricht: string): void;
+  /**
+   * Der Handshake ist durch (1.3.2.1 abgeschlossen), ab jetzt darf gemeldet
+   * werden.
+   *
+   * Der Grund fuer diesen Rueckruf: `leseLokalenText()` ist synchron, die
+   * Zwischenablage des Editors aber nicht. Faellt MONITOR_READY vor die erste
+   * gelungene Lesung, kuendigt der Handshake eine leere Formatliste an - und
+   * der Server fragt dann nie nach Daten, weil er glaubt, es gebe keine. Hier
+   * kann der Aufrufer nachlesen und mit `melde()` richtigstellen.
+   */
+  onBereit?(): void;
+  /**
+   * Meldungen fuer das Sitzungsprotokoll.
+   *
+   * Die Stufe ist bewusst nachgestellt und darf fehlen - dann gilt `info`.
+   * `debug` traegt den Ablauf PDU fuer PDU mit; das ist das Einzige, womit
+   * sich im Nachhinein sagen laesst, an welcher Stelle des Handshakes aus
+   * 1.3.2.1 eine Sitzung stehen geblieben ist.
+   */
+  log?(nachricht: string, stufe?: CliprdrLogStufe): void;
   /**
    * Optionales Verzeichnis fuer CLIPRDR_TEMP_DIRECTORY. Ohne Angabe wird das
    * PDU weggelassen - es betrifft ausschliesslich Dateiuebertragung.
@@ -572,6 +624,19 @@ export class CliprdrSession {
   private offeneAnfrage: number | undefined;
   /** Zuletzt gemeldeter eigener Text - verhindert Endlosschleifen. */
   private zuletztGemeldet: string | undefined;
+  /** Warnungen, die bereits herausgegangen sind (je Kennung nur einmal). */
+  private readonly gewarnt = new Set<string>();
+  /** Gezaehlte PDUs - beantwortet im Nachhinein "war da ueberhaupt Verkehr?". */
+  private empfangen = 0;
+  private gesendet = 0;
+  /**
+   * Eine gesendete Formatliste wartet noch auf CB_FORMAT_LIST_RESPONSE.
+   *
+   * Der Server ist laut 3.1.5.2 zur Antwort verpflichtet. Bleibt sie aus, ist
+   * der Ablauf genau hier stehen geblieben - und das ist von aussen sonst
+   * nicht zu sehen, weil ein stiller Kanal wie ein ruhiger Kanal aussieht.
+   */
+  private formatlisteUnbestaetigt = false;
 
   constructor(private readonly opts: CliprdrSessionOptions) {}
 
@@ -599,16 +664,49 @@ export class CliprdrSession {
     return this.bereit;
   }
 
+  /** Steht eine gesendete Formatliste noch ohne Antwort des Servers da? */
+  get wartetAufFormatlistenAntwort(): boolean {
+    return this.formatlisteUnbestaetigt;
+  }
+
+  /** Gezaehlte PDUs beider Richtungen, fuer Fehlermeldungen und Diagnose. */
+  get zaehler(): { gesendet: number; empfangen: number } {
+    return { gesendet: this.gesendet, empfangen: this.empfangen };
+  }
+
   /** Nutzt die Gegenseite lange Formatnamen? Nur wenn *beide* Seiten es tun. */
   get langeFormatnamen(): boolean {
     return (this.serverFlags & CB_USE_LONG_FORMAT_NAMES) !== 0 && (this.eigeneFlags & CB_USE_LONG_FORMAT_NAMES) !== 0;
   }
 
-  private protokoll(nachricht: string): void {
-    this.opts.log?.(nachricht);
+  private protokoll(nachricht: string, stufe: CliprdrLogStufe = 'info'): void {
+    this.opts.log?.(nachricht, stufe);
+  }
+
+  /**
+   * Eine Warnung genau einmal je Auffaelligkeit abgeben.
+   *
+   * Zwischenablage-Fehler wiederholen sich bei jedem Kopiervorgang; eine
+   * Warnung je Vorgang macht den Mitschnitt unlesbar und verdeckt gerade die
+   * Zeile, auf die es ankommt.
+   */
+  private warneEinmal(kennung: string, nachricht: string): void {
+    if (this.gewarnt.has(kennung)) return;
+    this.gewarnt.add(kennung);
+    this.protokoll(nachricht, 'warn');
   }
 
   private sende(daten: Buffer): void {
+    const kopf = daten.length >= CLIPRDR_HEADER_SIZE ? parseCliprdrPdu(daten) : undefined;
+    if (kopf) {
+      this.gesendet++;
+      this.protokoll(
+        `CLIPRDR: gesendet ${cliprdrPduName(kopf.msgType)}, Flags 0x${kopf.msgFlags
+          .toString(16)
+          .padStart(4, '0')}, ${kopf.dataLen} Byte Rumpf`,
+        'debug',
+      );
+    }
     this.opts.send(daten);
   }
 
@@ -627,6 +725,14 @@ export class CliprdrSession {
       return;
     }
 
+    this.empfangen++;
+    this.protokoll(
+      `CLIPRDR: empfangen ${cliprdrPduName(pdu.msgType)}, Flags 0x${pdu.msgFlags
+        .toString(16)
+        .padStart(4, '0')}, ${pdu.dataLen} Byte Rumpf`,
+      'debug',
+    );
+
     try {
       switch (pdu.msgType) {
         case CB_CLIP_CAPS:
@@ -639,8 +745,11 @@ export class CliprdrSession {
           this.behandleFormatList(pdu);
           break;
         case CB_FORMAT_LIST_RESPONSE:
+          this.formatlisteUnbestaetigt = false;
           if ((pdu.msgFlags & CB_RESPONSE_FAIL) !== 0) {
-            this.protokoll('CLIPRDR: der Server hat unsere Formatliste abgelehnt');
+            this.protokoll('CLIPRDR: der Server hat unsere Formatliste abgelehnt', 'warn');
+          } else {
+            this.protokoll('CLIPRDR: der Server hat unsere Formatliste bestaetigt', 'debug');
           }
           break;
         case CB_FORMAT_DATA_REQUEST:
@@ -692,7 +801,19 @@ export class CliprdrSession {
     // Wer sie weglaesst, bekommt von Windows keine Zwischenablage.
     const text = this.darfSchreiben ? this.opts.leseLokalenText?.() : undefined;
     this.sendeFormatliste(text);
+    // Angekuendigt ist angekuendigt: sonst meldet die erste Aenderungspruefung
+    // denselben Text gleich noch einmal. "Nichts da" und "leerer Text" sind
+    // dabei dasselbe - beides ergibt eine leere Formatliste.
+    this.zuletztGemeldet = text ?? '';
     this.protokoll(`CLIPRDR: Handshake abgeschlossen (Richtung: ${this.richtung})`);
+    if (text === undefined && this.darfSchreiben) {
+      this.protokoll(
+        'CLIPRDR: beim Handshake war noch kein lokaler Text bekannt - die Formatliste ' +
+          'wird nachgereicht, sobald die Zwischenablage gelesen ist',
+        'debug',
+      );
+    }
+    this.opts.onBereit?.();
   }
 
   private behandleFormatList(pdu: CliprdrPdu): void {
@@ -708,6 +829,11 @@ export class CliprdrSession {
       this.protokoll('CLIPRDR: Formatliste des Servers ignoriert - Lesen ist abgeschaltet');
       return;
     }
+    this.protokoll(
+      `CLIPRDR: der Server bietet ${this.serverFormate.length} Format(e) an: ` +
+        `${this.serverFormate.map((f) => f.name || f.formatId).join(', ') || 'leer'}`,
+      'debug',
+    );
     const format = waehleTextformat(this.serverFormate);
     if (format === undefined) {
       this.protokoll(
@@ -716,6 +842,7 @@ export class CliprdrSession {
       return;
     }
     this.offeneAnfrage = format;
+    this.protokoll(`CLIPRDR: frage die Daten von Format ${format} beim Server an`, 'debug');
     this.sende(buildFormatDataRequest(format));
   }
 
@@ -809,7 +936,30 @@ export class CliprdrSession {
             { formatId: CF_UNICODETEXT, name: '' },
             { formatId: CF_TEXT, name: '' },
           ];
+    this.formatlisteUnbestaetigt = true;
+    this.protokoll(
+      `CLIPRDR: melde ${formate.length} Format(e) an den Server ` +
+        `(${formate.map((f) => f.formatId).join(', ') || 'leer'}, ` +
+        `${this.langeFormatnamen ? 'lange' : 'kurze'} Formatnamen)`,
+      'debug',
+    );
     this.sende(buildFormatList(formate, { longFormatNames: this.langeFormatnamen }));
+  }
+
+  /**
+   * Meldung, wenn der Server auf eine Formatliste nicht antwortet.
+   *
+   * Der Aufrufer bringt die Uhr mit - diese Klasse kennt bewusst keine Timer.
+   * Genau einmal, weil sonst jeder Kopiervorgang dieselbe Zeile erzeugt.
+   */
+  meldeAusbleibendeAntwort(wartezeitMs: number): void {
+    if (!this.formatlisteUnbestaetigt) return;
+    this.warneEinmal(
+      'formatliste-ohne-antwort',
+      `CLIPRDR: der Server hat unsere Formatliste seit ${Math.round(wartezeitMs / 1000)} s nicht ` +
+        `beantwortet (MS-RDPECLIP 3.1.5.2 verlangt CB_FORMAT_LIST_RESPONSE). Bis dahin nimmt er ` +
+        `nichts von uns an; bisher ${this.zaehler.gesendet} PDU gesendet, ${this.zaehler.empfangen} empfangen.`,
+    );
   }
 
   /**
@@ -823,5 +973,8 @@ export class CliprdrSession {
     this.serverFormate = [];
     this.offeneAnfrage = undefined;
     this.zuletztGemeldet = undefined;
+    this.formatlisteUnbestaetigt = false;
+    // Die Warnungen bleiben stehen: nach einem Wiederverbinden ist dieselbe
+    // Auffaelligkeit dieselbe Auffaelligkeit, und zweimal gemeldet hilft nicht.
   }
 }
