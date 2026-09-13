@@ -26,6 +26,7 @@ import {
   verschiebeEintrag,
 } from './connections.js';
 import { BANDBREITEN_PROFILE, BandbreitenProfilName, PROFIL_NAMEN } from './bandbreite.js';
+import { FARBEN, FARB_NAMEN, FarbName } from './farben.js';
 import { berichtUeberRest, dekodiereRdpDatei, exportiereRdpDatei, importiereRdpDatei } from './rdpDatei.js';
 import { RdpSession } from './session.js';
 import { CertificateTrustStore } from './trust.js';
@@ -38,6 +39,20 @@ export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel('Remote Desktop (RDP)');
   const trustStore = new CertificateTrustStore(context);
   const tree = new ConnectionTreeProvider();
+
+  // Als erstes ins Protokoll: wo diese Extension laeuft. Unter Remote-SSH ist
+  // das die wichtigste Auskunft ueberhaupt, denn davon haengt ab, welcher
+  // Rechner den RDP-Socket oeffnet.
+  const umgebung = ermittleLaufzeit();
+  for (const zeile of beschreibeLaufzeit(umgebung)) output.appendLine(zeile);
+  const warnung = laufzeitWarnung(umgebung);
+  if (warnung) {
+    output.appendLine(`WARNUNG: ${warnung}`);
+    vscode.window.showWarningMessage(warnung, 'Protokoll anzeigen').then((wahl) => {
+      if (wahl) output.show();
+    });
+  }
+
   context.subscriptions.push(
     output,
     vscode.window.registerTreeDataProvider('rdpConnections', tree),
@@ -230,6 +245,40 @@ export function activate(context: vscode.ExtensionContext): void {
       tree.refresh();
     }),
 
+    // --------------------------------------------------------- Kennfarbe
+
+    vscode.commands.registerCommand('rdp.setColor', async (node?: BaumKnoten) => {
+      const target = node ?? (await pickConnectionNode('Farbe festlegen'));
+      if (!target) return;
+      // An einem Ordner sitzt die Farbe in den vererbten Einstellungen, an
+      // einer Verbindung an ihr selbst. Welche am Ende gilt, entscheidet
+      // danach dieselbe Vererbung wie bei jedem anderen Feld.
+      const farbe = await pickFarbe(
+        target instanceof FolderNode ? target.ordner.settings?.color : target.connection.color,
+        target instanceof FolderNode
+          ? `Farbe des Ordners "${target.ordner.name}" (gilt für alles darin)`
+          : `Farbe für "${target.connection.name || target.connection.host}"`,
+      );
+      if (farbe === undefined) return;
+      if (target instanceof FolderNode) {
+        const settings: VererbbareEinstellungen = { ...target.ordner.settings };
+        if (farbe === null) delete settings.color;
+        else settings.color = farbe;
+        await schreibeEintragAn(target.pfad, ordnerMitEinstellungen(target.ordner, settings));
+      } else {
+        const neu: RdpConnection = { ...target.connection };
+        if (farbe === null) delete neu.color;
+        else neu.color = farbe;
+        await schreibeEintragAn(target.pfad, neu);
+      }
+      tree.refresh();
+      vscode.window.showInformationMessage(
+        farbe === null
+          ? 'Kennfarbe entfernt. Offene Sitzungen behalten sie bis zum nächsten Verbinden.'
+          : `Kennfarbe "${FARBEN[farbe].titel}" gesetzt. Sie wirkt beim nächsten Verbinden auf Rahmen, Tabsymbol und Statusleiste.`,
+      );
+    }),
+
     // ---------------------------------------------------- Import / Export
 
     vscode.commands.registerCommand('rdp.importRdpFile', async (node?: BaumKnoten) => {
@@ -242,7 +291,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!target) return;
       const vorschlag = (target.connection.name || target.connection.host).replace(/[\\/:*?"<>|]/g, '_');
       const ziel = await vscode.window.showSaveDialog({
-        title: 'Als .rdp-Datei speichern',
+        title: `Als .rdp-Datei speichern${dateisystemHinweis(ermittleLaufzeit())}`,
         saveLabel: 'Exportieren',
         defaultUri: vscode.Uri.file(`${vorschlag}.rdp`),
         filters: { 'RDP-Dateien': ['rdp'] },
@@ -253,7 +302,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const inhalt = exportiereRdpDatei(target.aufgeloest);
       await vscode.workspace.fs.writeFile(ziel, Buffer.from(inhalt, 'utf8'));
       vscode.window.showInformationMessage(
-        `"${target.connection.name || target.connection.host}" als ${dateiName(ziel)} gespeichert. Tags und Anzeigename kennt das .rdp-Format nicht.`,
+        `"${target.connection.name || target.connection.host}" als ${dateiName(ziel)}${dateisystemHinweis(ermittleLaufzeit())} gespeichert. Tags und Anzeigename kennt das .rdp-Format nicht.`,
       );
     }),
 
@@ -274,12 +323,31 @@ export function activate(context: vscode.ExtensionContext): void {
       session?.refreshScreen();
     }),
 
+    vscode.commands.registerCommand('rdp.screenshot', async () => {
+      const session = await pickSession();
+      session?.screenshot();
+    }),
+
     vscode.commands.registerCommand('rdp.toggleScaling', async () => {
       const session = await pickSession();
       session?.toggleScaling();
     }),
 
     vscode.commands.registerCommand('rdp.showLog', () => output.show()),
+
+    vscode.commands.registerCommand('rdp.showEnvironment', () => {
+      // Frisch ermitteln statt den Wert von der Aktivierung zu nehmen: das
+      // Fenster kann seither die Verbindung gewechselt haben.
+      const jetzt = ermittleLaufzeit();
+      output.appendLine('--- Laufzeitumgebung ---');
+      for (const zeile of beschreibeLaufzeit(jetzt)) output.appendLine(zeile);
+      const hinweis = laufzeitWarnung(jetzt);
+      if (hinweis) output.appendLine(`WARNUNG: ${hinweis}`);
+      output.show();
+      const kurz = `Extension-Host: ${jetzt.entfernt ? `entfernt (${jetzt.fernart})` : 'lokal'}, Plattform ${jetzt.hostPlattform}. RDP-Verbindungen gehen aus von: ${verbindungsHerkunft(jetzt)}.`;
+      if (hinweis) vscode.window.showWarningMessage(kurz);
+      else vscode.window.showInformationMessage(kurz);
+    }),
 
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('rdp.connections')) tree.refresh();
@@ -301,6 +369,10 @@ async function openSession(
   output: vscode.OutputChannel,
   trustStore: CertificateTrustStore,
 ): Promise<void> {
+  const umgebung = ermittleLaufzeit();
+  output.appendLine(sitzungsHerkunftszeile(umgebung, connection.host, connection.port ?? 3389));
+  const warnung = laufzeitWarnung(umgebung);
+  if (warnung) output.appendLine(`WARNUNG: ${warnung}`);
   const session = await RdpSession.open(context, connection, output, trustStore);
   session.onDispose = () => sessions.delete(session);
   sessions.add(session);
@@ -435,6 +507,33 @@ async function pickBandbreitenProfil(
   return picked ? picked.wert : undefined;
 }
 
+/**
+ * Auswahl einer Kennfarbe.
+ * `null` bedeutet "keine Farbe", `undefined` bedeutet "abgebrochen".
+ */
+async function pickFarbe(aktuell: FarbName | undefined, titel: string): Promise<FarbName | null | undefined> {
+  const picked = await vscode.window.showQuickPick(
+    [
+      {
+        label: '$(circle-slash) Keine Farbe',
+        description: aktuell === undefined ? '(aktuell)' : undefined,
+        detail: 'Es gilt die Farbe des umgebenden Ordners, sonst keine.',
+        wert: null as FarbName | null,
+      },
+      ...FARB_NAMEN.map((name) => ({
+        // Das Symbol vor dem Namen bleibt einfarbig - QuickPick faerbt
+        // $(...)-Symbole nicht ein. Der Klarname traegt die Information.
+        label: `$(circle-filled) ${FARBEN[name].titel}`,
+        description: aktuell === name ? '(aktuell)' : FARBEN[name].hex,
+        detail: FARBEN[name].beschreibung,
+        wert: name as FarbName | null,
+      })),
+    ],
+    { title: titel, ignoreFocusOut: true },
+  );
+  return picked ? picked.wert : undefined;
+}
+
 /** Bearbeitet ein Feld der vererbten Ordnereinstellungen. */
 async function bearbeiteVererbteEinstellungen(ordner: RdpFolder): Promise<RdpFolder | undefined> {
   const settings: VererbbareEinstellungen = { ...ordner.settings };
@@ -453,6 +552,14 @@ async function bearbeiteVererbteEinstellungen(ordner: RdpFolder): Promise<RdpFol
     if (profil === undefined) return undefined;
     if (profil === null) delete settings.bandwidthProfile;
     else settings.bandwidthProfile = profil;
+    return ordnerMitEinstellungen(ordner, settings);
+  }
+
+  if (feld.schluessel === 'color') {
+    const farbe = await pickFarbe(settings.color, `Farbe des Ordners "${ordner.name}"`);
+    if (farbe === undefined) return undefined;
+    if (farbe === null) delete settings.color;
+    else settings.color = farbe;
     return ordnerMitEinstellungen(ordner, settings);
   }
 
@@ -482,7 +589,7 @@ function dateiName(uri: vscode.Uri): string {
 /** Liest die ausgewaehlten .rdp-Dateien ein und legt sie im Zielordner ab. */
 async function importiereDateien(zielPfad: number[], output: vscode.OutputChannel): Promise<void> {
   const dateien = await vscode.window.showOpenDialog({
-    title: 'RDP-Dateien importieren',
+    title: `RDP-Dateien importieren${dateisystemHinweis(ermittleLaufzeit())}`,
     openLabel: 'Importieren',
     canSelectMany: true,
     filters: { 'RDP-Dateien': ['rdp'] },
@@ -616,3 +723,171 @@ function splitHostPort(value: string): [string, string | undefined] {
 }
 
 export { saveConnections };
+
+// ============================================================ Laufzeitumgebung
+//
+// Unter Remote-SSH laeuft dieser Code nicht auf dem Rechner, an dem der Nutzer
+// sitzt, sondern auf dem Rechner am anderen Ende der SSH-Verbindung. Genau das
+// ist erwuenscht: von dort aus sind Windows-Server erreichbar, die vom
+// Arbeitsplatz aus gar nicht erreichbar sind, weil sie hinter dem SSH-Rechner
+// im Netz liegen. Der SSH-Rechner wird zum Sprungbrett, und `node:net` in
+// ts-rdp oeffnet den TCP-Socket dort.
+//
+// Damit das verlaesslich so ist, traegt package.json `"extensionKind":
+// ["workspace"]`. VS Code leitet dieselbe Einstufung zwar schon aus dem
+// vorhandenen `main` ab (deduceExtensionKind: "Not an UI extension if it has
+// main"), aber abgeleitet heisst unverbindlich - ein spaeterer Eintrag oder
+// eine geaenderte Ableitung wuerde die Verbindung unbemerkt vom falschen
+// Rechner aus aufbauen.
+//
+// Die Kehrseite steht in der README: Webview, Zwischenablage und der sichere
+// Speicher bleiben lokal, Dateidialoge zeigen dagegen das Dateisystem des
+// entfernten Rechners.
+
+/** Bezeichner der Extension, aus `publisher` und `name` des Manifests. */
+export const EXTENSION_ID = 'local.vscode-rdp';
+
+/** Wo die Extension laeuft und was daraus folgt. */
+export interface Laufzeitumgebung {
+  /** Haengt das Fenster an einem entfernten Rechner (SSH, WSL, Container, Tunnel)? */
+  entfernt: boolean;
+  /** `vscode.env.remoteName`, etwa `ssh-remote`. Lokal `undefined`. */
+  fernart: string | undefined;
+  /** Plattform des Extension-Hosts - dort entsteht der RDP-Socket. */
+  hostPlattform: string;
+  /** Bedienoberflaeche im Browser statt im Desktop-VS-Code. */
+  imBrowser: boolean;
+  /** Wie VS Code die Extension tatsaechlich geladen hat. */
+  geladenAls: 'ui' | 'workspace' | 'unbekannt';
+}
+
+/**
+ * Fragt VS Code, wo wir stehen.
+ *
+ * `remoteName` ist die verlaessliche Auskunft ueber "entfernt oder nicht":
+ * `extensionKind` meldet fuer diese Extension auch im rein lokalen Fenster
+ * `Workspace`, denn dort ist der Arbeitsbereich eben lokal.
+ */
+export function ermittleLaufzeit(): Laufzeitumgebung {
+  const fernart = vscode.env.remoteName;
+  const art = vscode.extensions?.getExtension?.(EXTENSION_ID)?.extensionKind;
+  return {
+    entfernt: typeof fernart === 'string' && fernart.length > 0,
+    fernart: fernart || undefined,
+    hostPlattform: typeof process === 'undefined' ? 'unbekannt' : process.platform,
+    imBrowser: vscode.env.uiKind === vscode.UIKind?.Web,
+    geladenAls:
+      art === vscode.ExtensionKind?.Workspace
+        ? 'workspace'
+        : art === vscode.ExtensionKind?.UI
+          ? 'ui'
+          : 'unbekannt',
+  };
+}
+
+/** Der Rechner, von dem die RDP-Verbindung ausgeht, in einem Wort. */
+export function verbindungsHerkunft(umgebung: Laufzeitumgebung): string {
+  return umgebung.entfernt
+    ? `entfernter Rechner (${umgebung.fernart})`
+    : 'dieser Rechner (lokal)';
+}
+
+/** Die Zeilen, die der Diagnosebefehl und der Sitzungsstart ins Protokoll schreiben. */
+export function beschreibeLaufzeit(umgebung: Laufzeitumgebung): string[] {
+  const zeilen = [
+    `Extension-Host: ${umgebung.entfernt ? `entfernt über ${umgebung.fernart}` : 'lokal'}` +
+      `, Plattform ${umgebung.hostPlattform}, geladen als ${umgebung.geladenAls}-Extension.`,
+    `RDP-Verbindungen gehen aus von: ${verbindungsHerkunft(umgebung)}.`,
+    `Bedienoberfläche: ${umgebung.imBrowser ? 'Browser' : 'VS Code auf dem Desktop'}` +
+      '. Webview, Zwischenablage und gespeicherte Passwörter liegen immer dort, nicht im Extension-Host.',
+  ];
+  if (umgebung.entfernt) {
+    zeilen.push(
+      'Dateidialoge (.rdp-Import und -Export) zeigen das Dateisystem des entfernten Rechners.',
+    );
+  }
+  return zeilen;
+}
+
+/**
+ * Der eine Fall, in dem es still schiefginge: Fenster entfernt, Extension
+ * trotzdem lokal geladen. Dann geht die RDP-Verbindung vom Arbeitsplatz aus
+ * und Server hinter dem Sprungbrett sind unerreichbar - ohne dass eine
+ * Fehlermeldung das erklaeren wuerde.
+ */
+export function laufzeitWarnung(umgebung: Laufzeitumgebung): string | undefined {
+  if (umgebung.entfernt && umgebung.geladenAls === 'ui') {
+    return (
+      `Das Fenster hängt an "${umgebung.fernart}", die Extension läuft aber im lokalen ` +
+      'Extension-Host. RDP-Verbindungen gehen damit vom Arbeitsplatz aus, nicht vom ' +
+      'entfernten Rechner. Server hinter dem Sprungbrett bleiben so unerreichbar. ' +
+      'Ursache ist fast immer ein Eintrag unter "remote.extensionKind" in den Einstellungen.'
+    );
+  }
+  if (umgebung.entfernt && umgebung.geladenAls === 'unbekannt') {
+    return (
+      'VS Code gibt keine Auskunft, in welchem Extension-Host die Extension läuft. ' +
+      'Der Befehl "Developer: Show Running Extensions" zeigt es verlässlich an.'
+    );
+  }
+  return undefined;
+}
+
+/** Eine Zeile fuer den Sitzungsstart: wohin, und von wo aus. */
+export function sitzungsHerkunftszeile(
+  umgebung: Laufzeitumgebung,
+  host: string,
+  port: number,
+): string {
+  return `Verbinde mit ${host}:${port} — Verbindungsaufbau von ${verbindungsHerkunft(umgebung)}, Plattform ${umgebung.hostPlattform}.`;
+}
+
+/** Zusatz für Meldungen über Dateien, damit klar ist, wessen Platte gemeint ist. */
+export function dateisystemHinweis(umgebung: Laufzeitumgebung): string {
+  return umgebung.entfernt ? ` (Dateisystem von ${umgebung.fernart})` : '';
+}
+
+// ------------------------------------------------ Plattform für die Tastatur
+
+/** `navigator.platform` und Verwandtes auf die Namen von `process.platform` bringen. */
+export function normalisierePlattform(roh: string | undefined): string | undefined {
+  if (!roh) return undefined;
+  const wert = roh.toLowerCase();
+  if (wert.includes('mac') || wert.includes('darwin') || wert.includes('iphone')) return 'darwin';
+  if (wert.includes('win')) return 'win32';
+  if (wert.includes('linux') || wert.includes('android') || wert.includes('x11')) return 'linux';
+  return roh;
+}
+
+/** Woher die Plattformauskunft stammt und ob man sich auf sie verlassen darf. */
+export interface TastaturPlattform {
+  plattform: string;
+  quelle: 'webview' | 'extension-host';
+  verlaesslich: boolean;
+}
+
+/**
+ * Welche Plattform gilt für die Tastaturabbildung?
+ *
+ * Nicht die des Extension-Hosts. Unter Remote-SSH ist der Host womoeglich
+ * Linux, waehrend der Nutzer an einem Mac sitzt - eine Cmd-auf-Strg-Abbildung
+ * nach `process.platform` wuerde dann nie greifen. Die Tasten kommen aus dem
+ * Webview, und der laeuft laut VS-Code-Doku immer auf dem Rechner des Nutzers.
+ * Also ist die Auskunft des Webviews (`navigator`) die einzige richtige
+ * Quelle; `process.platform` taugt nur, solange beide derselbe Rechner sind.
+ *
+ * Diese Funktion trifft die Wahl, sie baut die Abbildung nicht.
+ */
+export function tastaturPlattform(
+  umgebung: Laufzeitumgebung,
+  ausDemWebview?: string,
+): TastaturPlattform {
+  const gemeldet = normalisierePlattform(ausDemWebview);
+  if (gemeldet) return { plattform: gemeldet, quelle: 'webview', verlaesslich: true };
+  return {
+    plattform: umgebung.hostPlattform,
+    quelle: 'extension-host',
+    // Lokal sind Extension-Host und Arbeitsplatz derselbe Rechner, entfernt nicht.
+    verlaesslich: !umgebung.entfernt,
+  };
+}

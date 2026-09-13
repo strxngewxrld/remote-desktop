@@ -32,6 +32,7 @@ import {
 import type { RdpDiagnostics, EgfxVideoFrame } from 'ts-rdp';
 import { RdpConnection, secretKey } from './connections.js';
 import { BandbreitenProfilName, berechnePerformanceFlags, istProfilName } from './bandbreite.js';
+import { FarbName, farbe as farbeZu, symbolDateiname, symbolSvg } from './farben.js';
 import { CertificateTrustStore, TrustPolicy } from './trust.js';
 import { resolveKeyboardLayout } from './keyboardLayouts.js';
 import { renderWebview } from './webview.js';
@@ -82,6 +83,82 @@ interface ResizeRequestMessage {
 
 /** Vorgabe fuer die Ruhezeit der Entprellung in Millisekunden. */
 export const AUFLOESUNG_VERZUG_MS = 400;
+
+/** Vorgabe fuer die Breite des farbigen Rahmens in Pixeln. */
+export const RAHMEN_BREITE_PX = 3;
+
+// ------------------------------------------------------------- Screenshot
+
+/**
+ * Der Vorschlagsname fuer einen Screenshot.
+ *
+ * Er soll zwei Fragen beantworten, ohne dass man die Datei oeffnet: *welche*
+ * Sitzung und *wann*. Deshalb Verbindungsname plus Ortszeit - nicht UTC: wer
+ * die Datei spaeter sucht, sucht nach der Uhrzeit, die auf seiner Uhr stand.
+ *
+ * Die verbotenen Zeichen sind dieselben wie beim .rdp-Export; Windows nimmt
+ * keines davon in einem Dateinamen an.
+ */
+export function screenshotDateiname(name: string, zeit: Date): string {
+  const sauber = name.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'RDP-Sitzung';
+  const zwei = (n: number): string => String(n).padStart(2, '0');
+  const stempel =
+    `${zeit.getFullYear()}-${zwei(zeit.getMonth() + 1)}-${zwei(zeit.getDate())}` +
+    `_${zwei(zeit.getHours())}-${zwei(zeit.getMinutes())}-${zwei(zeit.getSeconds())}`;
+  return `${sauber}_${stempel}.png`;
+}
+
+/** Die acht Bytes, mit denen jede PNG-Datei anfaengt. */
+const PNG_SIGNATUR = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/**
+ * Macht aus der data:-URL des Webviews die Bytes der PNG-Datei.
+ *
+ * Warum die Pruefung: die Zeichenkette kommt aus dem Renderer-Prozess und
+ * landet ungefiltert in einer Datei, die der Benutzer selbst benannt hat. Ein
+ * leerer oder abgeschnittener Wert - etwa weil `toDataURL` fehlgeschlagen ist -
+ * wuerde sonst als .png gespeichert, die kein Betrachter oeffnen kann. Lieber
+ * gar nichts schreiben und es sagen.
+ */
+export function bildAusDatenUrl(datenUrl: unknown): Buffer | undefined {
+  if (typeof datenUrl !== 'string') return undefined;
+  const treffer = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(datenUrl.trim());
+  if (!treffer) return undefined;
+  const bytes = Buffer.from(treffer[1]!, 'base64');
+  if (bytes.length < PNG_SIGNATUR.length) return undefined;
+  if (PNG_SIGNATUR.some((b, i) => bytes[i] !== b)) return undefined;
+  return bytes;
+}
+
+/**
+ * Schreibt das eingefaerbte Panelsymbol und liefert dessen Ort.
+ *
+ * `WebviewPanel.iconPath` nimmt zwar auch einen `ThemeIcon`, aber dessen Farbe
+ * wertet VS Code laut eigener API-Dokumentation nur im `TreeItem` aus. Ein
+ * farbiges Tabsymbol geht deshalb nur ueber eine Datei, in der die Farbe schon
+ * steht - sie wird im Ablageort der Extension erzeugt, der auch unter
+ * Remote-SSH auf der richtigen Seite liegt.
+ *
+ * Schlaegt das Schreiben fehl, gibt es `undefined` und die Sitzung behaelt das
+ * gewoehnliche Symbol. Ein fehlendes Tabsymbol ist kein Grund, die Verbindung
+ * nicht aufzubauen.
+ */
+export async function farbSymbolUri(
+  context: vscode.ExtensionContext,
+  name: FarbName | undefined,
+): Promise<vscode.Uri | undefined> {
+  const kennung = farbeZu(name);
+  if (!kennung || !name) return undefined;
+  const ordner = vscode.Uri.joinPath(context.globalStorageUri, 'farbsymbole');
+  const ziel = vscode.Uri.joinPath(ordner, symbolDateiname(name));
+  try {
+    await vscode.workspace.fs.createDirectory(ordner);
+    await vscode.workspace.fs.writeFile(ziel, Buffer.from(symbolSvg(kennung.hex), 'utf8'));
+    return ziel;
+  } catch {
+    return undefined;
+  }
+}
 
 // ------------------------------------------------------------ Diagnosewerte
 
@@ -305,6 +382,8 @@ export class RdpSession {
   private rttMs?: number;
   private rttSeq = 0;
   private rttGesendet = 0;
+  /** Laufende Nummer der Screenshot-Bitte; nur die neueste wird beantwortet. */
+  private screenshotLauf = 0;
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
@@ -338,7 +417,12 @@ export class RdpSession {
       },
     );
     panel.webview.html = renderWebview(panel.webview, context.extensionUri, connection.name || connection.host);
-    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'rdp-icon.svg');
+    // Das farbige Symbol ist das Einzige am Tab selbst, was sich einfaerben
+    // laesst - `vscode.Tab` kennt keine Farbe. Faellt es aus, bleibt es beim
+    // gewoehnlichen Symbol.
+    panel.iconPath =
+      (await farbSymbolUri(context, connection.color)) ??
+      vscode.Uri.joinPath(context.extensionUri, 'media', 'rdp-icon.svg');
 
     const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBar.command = 'rdp.disconnect';
@@ -440,6 +524,9 @@ export class RdpSession {
         // Der Zustand des Overlays geht vor dem Verbindungsaufbau hinueber:
         // die Webview soll ihn nicht erst nach dem ersten Bild erfahren.
         this.setzeDiagnose(this.diagnoseSichtbar);
+        // Ebenso der Rahmen: die Kennfarbe soll schon waehrend des Aufbaus
+        // stehen, nicht erst mit dem ersten Bild.
+        this.sendeFarbe();
         await this.start(message as ReadyMessage);
         break;
       case 'resizeRequest':
@@ -505,6 +592,11 @@ export class RdpSession {
       case 'clipboardSend':
         // Rueckfallebene: der Anwender hat Text ins Feld gelegt.
         await this.zwischenablage?.ausRueckfallfeld(String(message.text ?? ''));
+        break;
+      case 'screenshot':
+        // Nur die Antwort auf die zuletzt gestellte Bitte zaehlt - eine alte
+        // wuerde sonst einen zweiten Speicherdialog aufmachen.
+        if (message.id === this.screenshotLauf) await this.speichereScreenshot(message);
         break;
       case 'clipboardPanel':
         // Das Webview meldet zurueck, ob das Feld offen ist - damit der Befehl
@@ -1248,6 +1340,90 @@ export class RdpSession {
     this.client?.refresh();
   }
 
+  // ------------------------------------------------------------ Screenshot
+
+  /**
+   * Bittet das Webview um den derzeitigen Bildschirminhalt.
+   *
+   * Der Extension-Host kommt an die Zeichenflaeche nicht heran - sie lebt im
+   * Renderer-Prozess. Er kennt zwar alle Kacheln, die er selbst dorthin
+   * geschickt hat, haette sie aber alle mitschreiben muessen, und der
+   * H.264-Weg wird ueberhaupt erst im Webview dekodiert. Also fragt er dort
+   * nach; die Antwort kommt als `screenshot`-Nachricht zurueck.
+   */
+  screenshot(): void {
+    if (!this.painted) {
+      vscode.window.showInformationMessage('Es ist noch kein Bildschirminhalt da, den man sichern könnte.');
+      return;
+    }
+    this.screenshotLauf++;
+    this.post({ type: 'screenshotAnfrage', id: this.screenshotLauf });
+  }
+
+  /**
+   * Die Bilddaten aus dem Webview in eine Datei.
+   *
+   * Warum der Umweg ueber den Extension-Host: ein `<a download>` im Webview
+   * funktioniert dort nicht verlaesslich - der Sandkasten unterbindet den
+   * Download stillschweigend. `vscode.workspace.fs` schreibt dagegen auch
+   * unter Remote-SSH auf die richtige Seite der Verbindung.
+   */
+  private async speichereScreenshot(nachricht: { dataUrl?: unknown; fehler?: unknown }): Promise<void> {
+    const bild = bildAusDatenUrl(nachricht.dataUrl);
+    if (!bild) {
+      const grund = typeof nachricht.fehler === 'string' ? nachricht.fehler : 'keine verwertbaren Bilddaten';
+      this.log(`Screenshot fehlgeschlagen: ${grund}`);
+      vscode.window.showErrorMessage(`Der Bildschirminhalt ließ sich nicht sichern: ${grund}`);
+      return;
+    }
+
+    const vorschlag = screenshotDateiname(this.title, new Date());
+    const ordner = vscode.workspace.getConfiguration('rdp').get<string>('screenshotFolder', '').trim();
+    const ziel = await vscode.window.showSaveDialog({
+      title: 'Screenshot der RDP-Sitzung speichern',
+      saveLabel: 'Speichern',
+      defaultUri: ordner
+        ? vscode.Uri.joinPath(vscode.Uri.file(ordner), vorschlag)
+        : vscode.Uri.file(vorschlag),
+      filters: { 'PNG-Bilder': ['png'] },
+    });
+    if (!ziel) return;
+
+    await vscode.workspace.fs.writeFile(ziel, bild);
+    this.log(`Screenshot gesichert: ${ziel.fsPath} (${mengeText(bild.length)})`);
+    // Das Bild selbst laesst sich nicht anbieten: `vscode.env.clipboard` kann
+    // ausschliesslich Text. Der Pfad ist das Naechstbeste.
+    const antwort = await vscode.window.showInformationMessage(
+      `Screenshot gespeichert: ${ziel.fsPath}`,
+      'Pfad kopieren',
+    );
+    if (antwort === 'Pfad kopieren') await vscode.env.clipboard.writeText(ziel.fsPath);
+  }
+
+  // ----------------------------------------------------------- Kennfarbe
+
+  /**
+   * Rahmenfarbe und -breite ans Webview.
+   *
+   * Die Farbe steckt schon in `this.connection`: geoeffnet wird immer die
+   * aufgeloeste Fassung, die Ordnervererbung ist also bereits angewandt,
+   * bevor die Sitzung ueberhaupt entsteht.
+   */
+  private sendeFarbe(): void {
+    const kennung = farbeZu(this.connection.color);
+    const breite = Math.max(
+      0,
+      Math.round(vscode.workspace.getConfiguration('rdp').get<number>('colorFrameWidth', RAHMEN_BREITE_PX)),
+    );
+    this.post({
+      type: 'farbe',
+      hex: kennung?.hex,
+      titel: kennung?.titel,
+      // Ohne Kennfarbe kein Rahmen - und ohne Rahmen keine Breite.
+      breite: kennung ? breite : 0,
+    });
+  }
+
   applyConfiguration(): void {
     const config = vscode.workspace.getConfiguration('rdp');
     this.post({
@@ -1255,6 +1431,9 @@ export class RdpSession {
       scaling: config.get<string>('scaling', 'fit'),
       smooth: config.get<boolean>('smoothScaling', false),
     });
+    // Die Rahmenbreite steht in den Einstellungen und darf sich sofort
+    // auswirken - die Kennfarbe selbst haengt an der Verbindung.
+    this.sendeFarbe();
     // Richtung und Groessengrenze stecken in der Bruecke; sie greifen erst bei
     // der naechsten Verbindung. Die Knopfsperre im Webview laesst sich dagegen
     // sofort nachziehen.
@@ -1298,13 +1477,21 @@ export class RdpSession {
   }
 
   private updateStatusBar(): void {
-    if (this.isConnected) {
-      this.statusBar.text = `$(vm-active) ${this.title}`;
-      this.statusBar.tooltip = `RDP-Sitzung aktiv: ${this.connection.host}`;
-      this.statusBar.show();
-    } else {
+    if (!this.isConnected) {
       this.statusBar.hide();
+      return;
     }
+    const kennung = farbeZu(this.connection.color);
+    this.statusBar.text = `$(vm-active) ${this.title}`;
+    this.statusBar.tooltip = kennung
+      ? `RDP-Sitzung aktiv: ${this.connection.host} · ${kennung.titel}`
+      : `RDP-Sitzung aktiv: ${this.connection.host}`;
+    // Bewusst nur die Vordergrundfarbe: `backgroundColor` nimmt laut API
+    // ausschliesslich statusBarItem.errorBackground und
+    // statusBarItem.warningBackground an - jede andere ThemeColor bliebe
+    // wirkungslos.
+    this.statusBar.color = kennung ? new vscode.ThemeColor(kennung.themeFarbe) : undefined;
+    this.statusBar.show();
   }
 
   private log(message: string): void {

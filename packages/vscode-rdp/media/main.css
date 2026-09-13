@@ -43,6 +43,23 @@ canvas.focused {
   box-shadow: 0 0 0 1px var(--vscode-focusBorder);
 }
 
+/*
+ * Der farbige Rahmen. Absolut ueber allem, ohne Eingaben abzufangen; die
+ * Breite kommt aus der Einstellung rdp.colorFrameWidth. Weil er weder in der
+ * Buehne liegt noch Platz beansprucht, bleibt die Groessenrechnung fuer die
+ * Sitzungsaufloesung unberuehrt.
+ */
+#rahmen {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-style: solid;
+  border-width: 0;
+  border-color: transparent;
+  /* Unter dem Diagnose-Overlay und dem Zwischenablagefeld, ueber allem sonst. */
+  z-index: 4;
+}
+
 #overlay {
   position: absolute;
   inset: 0;
