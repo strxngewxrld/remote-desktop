@@ -276,6 +276,12 @@ export const notizen = {
   hinweise: [] as string[],
   warnungen: [] as string[],
   fehlermeldungen: [] as string[],
+  /**
+   * Die Optionen jeder Warnung, in derselben Reihenfolge wie `warnungen`.
+   * Fuer Rueckfragen, bei denen `modal` den Unterschied macht: ein
+   * nichtmodaler Hinweis verschwindet ungelesen wieder.
+   */
+  warnungsOptionen: [] as (MessageOptions | undefined)[],
   panels: [] as WebviewPanel[],
   statusleisten: [] as StatusBarItem[],
   baumAnbieter: new Map<string, TreeDataProvider<unknown>>(),
@@ -404,6 +410,7 @@ export function zuruecksetzen(): void {
   notizen.hinweise.length = 0;
   notizen.warnungen.length = 0;
   notizen.fehlermeldungen.length = 0;
+  notizen.warnungsOptionen.length = 0;
   notizen.panels.length = 0;
   notizen.statusleisten.length = 0;
   notizen.baumAnbieter.clear();
@@ -949,6 +956,7 @@ export const window = {
     ...rest: Array<string | MessageOptions>
   ): Thenable<string | undefined> {
     notizen.warnungen.push(nachricht);
+    notizen.warnungsOptionen.push(rest.find((e): e is MessageOptions => typeof e === 'object'));
     return Promise.resolve(naechsteMeldungsantwort(nurTexte(rest)));
   },
 
