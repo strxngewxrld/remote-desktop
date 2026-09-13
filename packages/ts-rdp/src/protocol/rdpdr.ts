@@ -1916,18 +1916,39 @@ export class RdpdrSession {
     }
     const pfad = fuegePfad(zerlegt.segmente);
 
-    const willSchreiben =
+    // Schreibwunsch in zwei Stufen. Sicher ist er schon an den Zugriffsbits,
+    // an einer veraendernden CreateDisposition und an FILE_DELETE_ON_CLOSE zu
+    // erkennen - das laesst sich ohne Blick aufs Dateisystem entscheiden.
+    const veraenderndeDisposition =
+      anfrage.createDisposition === FILE_CREATE ||
+      anfrage.createDisposition === FILE_OVERWRITE ||
+      anfrage.createDisposition === FILE_OVERWRITE_IF ||
+      anfrage.createDisposition === FILE_SUPERSEDE;
+    const sicherSchreibend =
       (anfrage.desiredAccess & SCHREIBZUGRIFF_BITS) !== 0 ||
-      anfrage.createDisposition !== FILE_OPEN ||
+      veraenderndeDisposition ||
       (anfrage.createOptions & FILE_DELETE_ON_CLOSE) !== 0;
 
-    if (willSchreiben && this.nurLesen) {
+    if (sicherSchreibend && this.nurLesen) {
       this.protokoll(`RDPDR: Schreibzugriff auf "${pfad || '\\'}" abgelehnt - das Laufwerk ist nur lesbar`);
       antwort(STATUS_ACCESS_DENIED);
       return;
     }
 
     const vorhanden = pfad === '' ? { name: '', istVerzeichnis: true, groesse: 0 } : await laufwerk.dateisystem.stat(pfad);
+
+    // Die zweite Stufe ist FILE_OPEN_IF: "oeffnen, sonst anlegen". Ob das ein
+    // Schreibwunsch ist, haengt daran, ob die Datei schon da ist. Pauschal
+    // abzulehnen waere zu streng - manche Programme oeffnen grundsaetzlich so,
+    // auch wenn sie nur lesen wollen.
+    const willSchreiben = sicherSchreibend || (anfrage.createDisposition === FILE_OPEN_IF && !vorhanden);
+    if (willSchreiben && this.nurLesen) {
+      this.protokoll(
+        `RDPDR: Anlegen von "${pfad || '\\'}" abgelehnt - das Laufwerk ist nur lesbar`,
+      );
+      antwort(STATUS_ACCESS_DENIED);
+      return;
+    }
 
     if (vorhanden) {
       if ((anfrage.createOptions & FILE_DIRECTORY_FILE) !== 0 && !vorhanden.istVerzeichnis) {
