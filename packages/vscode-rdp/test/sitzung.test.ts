@@ -168,10 +168,20 @@ const offeneSitzungen: RdpSession[] = [];
  * Baut eine Sitzung genauso auf, wie die Extension es tut: Panel oeffnen, das
  * Webview meldet sich mit 'ready', daraufhin verbindet der Host.
  */
-async function starteSitzung(port: number, bereit = { width: 1024, height: 768 }): Promise<Pruefstand> {
+async function starteSitzung(
+  port: number,
+  bereit = { width: 1024, height: 768 },
+  extra: Partial<RdpConnection> = {},
+): Promise<Pruefstand> {
   const kontext = new ExtensionContext();
   const ausgabe = fensterAttrappe.createOutputChannel('Remote Desktop (RDP)');
-  const verbindung: RdpConnection = { name: 'Pruefstand', host: '127.0.0.1', port, username: 'tester' };
+  const verbindung: RdpConnection = {
+    name: 'Pruefstand',
+    host: '127.0.0.1',
+    port,
+    username: 'tester',
+    ...extra,
+  };
   // Passwort vorab hinterlegen, sonst fragt die Sitzung danach.
   await kontext.secrets.store(secretKey(verbindung), 'geheim');
 
@@ -245,6 +255,26 @@ describe('Sitzungsaufbau', () => {
 
     assert.equal(statusleiste.sichtbar, true, 'die Statusleiste zeigt die aktive Sitzung');
     assert.ok(statusleiste.text.includes('Pruefstand'), statusleiste.text);
+  });
+
+  test('Eine Kennfarbe faerbt die Statusleiste, aber nur im Vordergrund', async () => {
+    const { sitzung, statusleiste } = await starteSitzung(port, { width: 1024, height: 768 }, { color: 'red' });
+    await warteBis(() => sitzung.isConnected, 'aktive Sitzung');
+    await warteBis(() => statusleiste.sichtbar, 'sichtbare Statusleiste');
+
+    assert.equal((statusleiste.color as { id: string }).id, 'rdp.color.red');
+    // `backgroundColor` bleibt bewusst leer: VS Code wertet dort nur
+    // statusBarItem.errorBackground und statusBarItem.warningBackground aus,
+    // jede andere Farbe bliebe wirkungslos.
+    assert.equal(statusleiste.backgroundColor, undefined);
+    assert.ok(String(statusleiste.tooltip).includes('Rot'), String(statusleiste.tooltip));
+  });
+
+  test('Ohne Kennfarbe bleibt die Statusleiste ungefaerbt', async () => {
+    const { sitzung, statusleiste } = await starteSitzung(port);
+    await warteBis(() => sitzung.isConnected, 'aktive Sitzung');
+    await warteBis(() => statusleiste.sichtbar, 'sichtbare Statusleiste');
+    assert.equal(statusleiste.color, undefined);
   });
 
   test('"connected" wird erst gemeldet, wenn das Webview gezeichnet hat', async () => {
