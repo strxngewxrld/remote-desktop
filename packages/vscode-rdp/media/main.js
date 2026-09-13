@@ -14,6 +14,7 @@
   const overlayAction = document.getElementById('overlay-action');
   const spinner = document.getElementById('spinner');
   const hint = document.getElementById('hint');
+  const rahmen = document.getElementById('rahmen');
   const diagnose = document.getElementById('diagnose');
   const diagnoseTitel = document.getElementById('diagnose-titel');
   const diagnoseWerte = document.getElementById('diagnose-werte');
@@ -194,6 +195,61 @@
     hint.hidden = false;
     hint.classList.add('show');
     setTimeout(() => hint.classList.remove('show'), 2200);
+  }
+
+  /**
+   * Kennfarbe der Verbindung als Rahmen um die Sitzungsflaeche.
+   *
+   * Der Rahmen liegt in einem eigenen, absolut gesetzten Element ueber der
+   * ganzen Flaeche - nicht an der Buehne und nicht an der Zeichenflaeche.
+   * Damit veraendert er weder die Buehnengroesse noch die Groesse des Bildes,
+   * und die Aufloesung, die meldeGroesse() anfragt, bleibt dieselbe wie ohne
+   * Farbe. Genau das ist hier der springende Punkt: ein gewoehnlicher Rand
+   * wuerde die Sitzung bei jedem Einfaerben um ein paar Pixel schrumpfen.
+   */
+  function setzeFarbe(nachricht) {
+    const breite = typeof nachricht.breite === 'number' && nachricht.breite > 0 ? Math.round(nachricht.breite) : 0;
+    if (!nachricht.hex || breite <= 0) {
+      rahmen.hidden = true;
+      rahmen.style.borderWidth = '0';
+      rahmen.style.borderColor = 'transparent';
+      return;
+    }
+    rahmen.style.borderWidth = breite + 'px';
+    rahmen.style.borderColor = nachricht.hex;
+    rahmen.hidden = false;
+  }
+
+  /**
+   * Den Bildschirminhalt an den Host reichen.
+   *
+   * Der Weg geht bewusst nicht ueber ein `<a download>`: im Webview von
+   * VS Code laeuft ein solcher Download nicht verlaesslich. Stattdessen
+   * wandert die data:-URL zum Extension-Host, der die Datei schreibt.
+   *
+   * toDataURL ist hier gegenueber toBlob im Vorteil: es liefert sofort und
+   * ohne FileReader eine Zeichenkette, die sich unveraendert durch
+   * postMessage schicken laesst.
+   */
+  function macheScreenshot(id) {
+    try {
+      const datenUrl = canvas.toDataURL('image/png');
+      vscode.postMessage({
+        type: 'screenshot',
+        id: id,
+        dataUrl: datenUrl,
+        width: canvas.width,
+        height: canvas.height,
+      });
+    } catch (fehler) {
+      // Etwa, wenn die Zeichenflaeche als "tainted" gilt. Der Host soll den
+      // Grund erfahren und ihn anzeigen koennen, statt stumm nichts zu tun.
+      vscode.postMessage({
+        type: 'screenshot',
+        id: id,
+        fehler: String((fehler && fehler.message) || fehler),
+      });
+    }
   }
 
   // -------------------------------------------------------------- Diagnose
@@ -788,6 +844,14 @@
 
       case 'diagnose':
         setzeDiagnose(message);
+        break;
+
+      case 'farbe':
+        setzeFarbe(message);
+        break;
+
+      case 'screenshotAnfrage':
+        macheScreenshot(message.id);
         break;
 
       case 'diagnosePing':

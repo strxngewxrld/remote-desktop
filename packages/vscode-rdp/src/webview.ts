@@ -36,6 +36,14 @@ export function renderWebview(webview: vscode.Webview, extensionUri: vscode.Uri,
     </div>
   </div>
 
+  <!-- Kennfarbe der Verbindung: ein Rand ueber der ganzen Flaeche, nicht um
+       die Zeichenflaeche herum. Der Unterschied ist wichtig - dieses Element
+       liegt ausserhalb der Buehne und aendert deren Groesse nicht, und genau
+       die Buehnengroesse bestimmt die angefragte Aufloesung (MS-RDPEDISP).
+       Ein Rand *an* der Buehne oder an der Zeichenflaeche wuerde die Sitzung
+       bei jedem Einfaerben um ein paar Pixel schrumpfen lassen. -->
+  <div id="rahmen" hidden aria-hidden="true"></div>
+
   <div id="hint" hidden>
     Tastatur aktiv · Strg+Alt+Ende sendet Strg+Alt+Entf
   </div>

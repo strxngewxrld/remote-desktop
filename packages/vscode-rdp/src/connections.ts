@@ -45,6 +45,7 @@
  */
 import * as vscode from 'vscode';
 import { BANDBREITEN_PROFILE, BandbreitenProfilName, istProfilName } from './bandbreite.js';
+import { FARBEN, FarbName, istFarbName } from './farben.js';
 
 export interface RdpConnection {
   name: string;
@@ -60,6 +61,8 @@ export interface RdpConnection {
   tags?: string[];
   /** Bandbreitenprofil, siehe bandbreite.ts. */
   bandwidthProfile?: BandbreitenProfilName;
+  /** Kennfarbe fuer Rahmen, Panelsymbol und Baumansicht, siehe farben.ts. */
+  color?: FarbName;
 }
 
 /** Die Felder, die ein Ordner an seine Verbindungen weitergibt. */
@@ -72,6 +75,7 @@ export interface VererbbareEinstellungen {
   colorDepth?: number;
   keyboardLayout?: string;
   bandwidthProfile?: BandbreitenProfilName;
+  color?: FarbName;
 }
 
 export interface RdpFolder {
@@ -109,6 +113,10 @@ export const VERERBBARE_SCHLUESSEL: readonly (keyof VererbbareEinstellungen)[] =
   'colorDepth',
   'keyboardLayout',
   'bandwidthProfile',
+  // Die Farbe laeuft bewusst durch dieselbe Vererbung wie alles andere: ein
+  // Ordner "Produktion" faerbt damit alles, was in ihm liegt, und eine
+  // einzelne Verbindung darf davon abweichen.
+  'color',
 ];
 
 const SECTION = 'rdp';
@@ -137,6 +145,10 @@ function normalisiereEinstellungen(wert: unknown): VererbbareEinstellungen | und
     if (v === undefined || v === null || v === '') continue;
     if (schluessel === 'bandwidthProfile') {
       if (istProfilName(v)) ergebnis[schluessel] = v;
+      continue;
+    }
+    if (schluessel === 'color') {
+      if (istFarbName(v)) ergebnis[schluessel] = v;
       continue;
     }
     ergebnis[schluessel] = v;
@@ -187,6 +199,7 @@ export function normalisiereBaum(roh: unknown, tiefe = 0): RdpBaumEintrag[] {
     if (verbindung.bandwidthProfile !== undefined && !istProfilName(verbindung.bandwidthProfile)) {
       delete verbindung.bandwidthProfile;
     }
+    if (verbindung.color !== undefined && !istFarbName(verbindung.color)) delete verbindung.color;
     ergebnis.push(verbindung);
   }
   return ergebnis;
@@ -255,6 +268,28 @@ export function loeseVerbindungAuf(eintrag: VerbindungsEintrag): RdpConnection {
   const tags = effektiveTags(eintrag.verbindung, eintrag.ordnerKette);
   if (tags.length > 0) ergebnis.tags = tags;
   return ergebnis as unknown as RdpConnection;
+}
+
+/** Die Kennfarbe einer Verbindung samt der Stelle, an der sie gesetzt ist. */
+export interface FarbHerkunft {
+  name: FarbName;
+  /** Name des Ordners, von dem die Farbe stammt - fehlt bei eigener Farbe. */
+  geerbtVon?: string;
+}
+
+/**
+ * Welche Kennfarbe gilt fuer diese Verbindung, und woher kommt sie?
+ *
+ * Den *Wert* liefert die vorhandene Vererbung (`loeseVerbindungAuf`) - es gibt
+ * bewusst keinen zweiten Aufloesungsweg. Diese Funktion legt nur die Herkunft
+ * obendrauf, damit der Tooltip sagen kann, welcher Ordner die Farbe vorgibt.
+ */
+export function effektiveFarbe(eintrag: VerbindungsEintrag): FarbHerkunft | undefined {
+  const name = loeseVerbindungAuf(eintrag).color;
+  if (!istFarbName(name)) return undefined;
+  if (eintrag.verbindung.color === name) return { name };
+  const ordner = [...eintrag.ordnerKette].reverse().find((o) => o.settings?.color === name);
+  return { name, geerbtVon: ordner?.name };
 }
 
 /** Voller Anzeigepfad einer Verbindung, etwa "Kunde A / Test / DC01". */
@@ -422,6 +457,11 @@ export class ConnectionNode extends vscode.TreeItem {
     const basis = user ? `${user} · ${aufgeloest.host}` : aufgeloest.host;
     this.description = tags.length > 0 ? `${basis} · ${tags.map((t) => '#' + t).join(' ')}` : basis;
     const profil = aufgeloest.bandwidthProfile ? BANDBREITEN_PROFILE[aufgeloest.bandwidthProfile] : undefined;
+    const kennfarbe = effektiveFarbe(eintrag);
+    const farbzeile = kennfarbe
+      ? `- Farbe: ${FARBEN[kennfarbe.name].titel}` +
+        (kennfarbe.geerbtVon ? ` (geerbt von "${kennfarbe.geerbtVon}")` : '')
+      : undefined;
     this.tooltip = new vscode.MarkdownString(
       [
         `**${verbindung.name || verbindung.host}**`,
@@ -435,10 +475,15 @@ export class ConnectionNode extends vscode.TreeItem {
           ? [`- Ordner: ${eintrag.ordnerKette.map((o) => o.name).join(' / ')}`]
           : []),
         ...(profil ? [`- Bandbreite: ${profil.titel}`] : []),
+        ...(farbzeile ? [farbzeile] : []),
         ...(tags.length > 0 ? [`- Tags: ${tags.join(', ')}`] : []),
       ].join('\n'),
     );
-    this.iconPath = new vscode.ThemeIcon('vm');
+    // Nur im TreeItem wertet VS Code die Farbe eines ThemeIcon aus - genau
+    // hier ist sie also sichtbar, ohne dass eine Datei erzeugt werden muss.
+    this.iconPath = kennfarbe
+      ? new vscode.ThemeIcon('vm', new vscode.ThemeColor(FARBEN[kennfarbe.name].themeFarbe))
+      : new vscode.ThemeIcon('vm');
     this.contextValue = 'rdpConnection';
     this.command = {
       command: 'rdp.connectSaved',
@@ -473,10 +518,13 @@ export class FolderNode extends vscode.TreeItem {
         `**${ordner.name}**`,
         '',
         ...(zeilen.length > 0 ? ['Vererbte Einstellungen:', ...zeilen] : ['Ohne eigene Einstellungen']),
+        ...(istFarbName(geerbt.color) ? [`- Farbe: ${FARBEN[geerbt.color].titel} (gilt für alles im Ordner)`] : []),
         ...(ordner.tags?.length ? [`- Tags: ${ordner.tags.join(', ')}`] : []),
       ].join('\n'),
     );
-    this.iconPath = new vscode.ThemeIcon('folder');
+    this.iconPath = istFarbName(geerbt.color)
+      ? new vscode.ThemeIcon('folder', new vscode.ThemeColor(FARBEN[geerbt.color].themeFarbe))
+      : new vscode.ThemeIcon('folder');
     this.contextValue = 'rdpFolder';
   }
 }
