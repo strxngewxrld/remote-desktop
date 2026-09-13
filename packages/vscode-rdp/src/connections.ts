@@ -47,7 +47,21 @@ import * as vscode from 'vscode';
 import { BANDBREITEN_PROFILE, BandbreitenProfilName, istProfilName } from './bandbreite.js';
 import { FARBEN, FarbName, istFarbName } from './farben.js';
 
-export interface RdpConnection {
+export interface Credential {
+  id: string;
+  name: string;
+  username: string;
+  domain?: string;
+}
+
+export interface CredentialSettings {
+  credentials?: Credential[];
+  defaultCredential?: string;
+  /** true unterbricht die Vererbung und fragt bei jeder Anmeldung nach. */
+  promptCredentials?: boolean;
+}
+
+export interface RdpConnection extends CredentialSettings {
   name: string;
   host: string;
   port?: number;
@@ -66,7 +80,7 @@ export interface RdpConnection {
 }
 
 /** Die Felder, die ein Ordner an seine Verbindungen weitergibt. */
-export interface VererbbareEinstellungen {
+export interface VererbbareEinstellungen extends CredentialSettings {
   port?: number;
   username?: string;
   domain?: string;
@@ -119,6 +133,8 @@ export const VERERBBARE_SCHLUESSEL: readonly (keyof VererbbareEinstellungen)[] =
   'color',
 ];
 
+const CREDENTIAL_SCHLUESSEL: readonly (keyof CredentialSettings)[] = ['credentials', 'defaultCredential', 'promptCredentials'];
+
 const SECTION = 'rdp';
 
 // -------------------------------------------------------------- Migration
@@ -140,9 +156,21 @@ function normalisiereEinstellungen(wert: unknown): VererbbareEinstellungen | und
   if (!wert || typeof wert !== 'object') return undefined;
   const roh = wert as Record<string, unknown>;
   const ergebnis: Record<string, unknown> = {};
-  for (const schluessel of VERERBBARE_SCHLUESSEL) {
+  for (const schluessel of [...VERERBBARE_SCHLUESSEL, ...CREDENTIAL_SCHLUESSEL]) {
     const v = roh[schluessel];
-    if (v === undefined || v === null || v === '') continue;
+    if (v === undefined || v === null || (v === '' && schluessel !== 'defaultCredential')) continue;
+    if (schluessel === 'credentials') {
+      if (Array.isArray(v)) ergebnis[schluessel] = loeseCredentialsAuf([{ credentials: v }]).credentials;
+      continue;
+    }
+    if (schluessel === 'promptCredentials') {
+      if (typeof v === 'boolean') ergebnis[schluessel] = v;
+      continue;
+    }
+    if (schluessel === 'defaultCredential') {
+      if (typeof v === 'string') ergebnis[schluessel] = v;
+      continue;
+    }
     if (schluessel === 'bandwidthProfile') {
       if (istProfilName(v)) ergebnis[schluessel] = v;
       continue;
@@ -267,7 +295,39 @@ export function loeseVerbindungAuf(eintrag: VerbindungsEintrag): RdpConnection {
   }
   const tags = effektiveTags(eintrag.verbindung, eintrag.ordnerKette);
   if (tags.length > 0) ergebnis.tags = tags;
+  const stufen = [
+    vscode.workspace.getConfiguration(SECTION).get<CredentialSettings>('authentication', {}),
+    ...eintrag.ordnerKette.map((o) => o.settings ?? {}),
+    eintrag.verbindung,
+  ];
+  if (stufen.some(s => s.credentials !== undefined || s.defaultCredential !== undefined || s.promptCredentials !== undefined)) {
+    Object.assign(ergebnis, loeseCredentialsAuf(stufen));
+  }
   return ergebnis as unknown as RdpConnection;
+}
+
+export function loeseCredentialsAuf(stufen: CredentialSettings[]): CredentialSettings {
+  const profiles = new Map<string, Credential>();
+  let defaultCredential: string | undefined;
+  let promptCredentials = false;
+  for (const stufe of stufen) {
+    if (stufe.promptCredentials === true) {
+      profiles.clear();
+      defaultCredential = undefined;
+    }
+    if (typeof stufe.promptCredentials === 'boolean') promptCredentials = stufe.promptCredentials;
+    for (const c of Array.isArray(stufe.credentials) ? stufe.credentials : []) {
+      if (c && typeof c.id === 'string' && typeof c.username === 'string' && c.username.trim()) {
+        profiles.set(c.id, { id: c.id, name: c.name || c.username, username: c.username, ...(typeof c.domain === 'string' ? { domain: c.domain } : {}) });
+      }
+    }
+    if (stufe.defaultCredential !== undefined) defaultCredential = stufe.defaultCredential;
+  }
+  return { credentials: [...profiles.values()], defaultCredential: profiles.has(defaultCredential ?? '') ? defaultCredential : undefined, promptCredentials };
+}
+
+export function credentialSecretKey(id: string): string {
+  return `rdp:credential:${id}`;
 }
 
 /** Die Kennfarbe einer Verbindung samt der Stelle, an der sie gesetzt ist. */
@@ -532,6 +592,27 @@ export class FolderNode extends vscode.TreeItem {
 export type BaumKnoten = ConnectionNode | FolderNode;
 
 export class ConnectionTreeProvider implements vscode.TreeDataProvider<BaumKnoten> {
+  readonly dragMimeTypes = ['application/vnd.code.tree.rdpconnections'];
+  readonly dropMimeTypes = this.dragMimeTypes;
+  private drag?: { snapshot: string; source: number[] };
+
+  handleDrag(source: readonly BaumKnoten[], data: vscode.DataTransfer): void {
+    if (source.length !== 1) return;
+    this.drag = { snapshot: JSON.stringify(getBaum()), source: [...source[0]!.pfad] };
+    data.set(this.dragMimeTypes[0]!, new vscode.DataTransferItem(this.drag));
+  }
+
+  async handleDrop(target: BaumKnoten | undefined, data: vscode.DataTransfer): Promise<void> {
+    const drag = data.get(this.dragMimeTypes[0]!)?.value;
+    if (!this.drag || drag !== this.drag) return;
+    this.drag = undefined;
+    if (drag.snapshot !== JSON.stringify(getBaum())) {
+      await vscode.window.showWarningMessage('Der Baum wurde inzwischen geändert. Bitte erneut ziehen.');
+      return;
+    }
+    const ziel = target instanceof FolderNode ? target.pfad : target?.pfad.slice(0, -1) ?? [];
+    if (await verschiebeEintrag(drag.source, ziel)) this.refresh();
+  }
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._onDidChange.event;
   /** Aktiver Suchfilter der Ansicht; leer bedeutet "alles zeigen". */
@@ -592,24 +673,3 @@ function enthaeltTreffer(ordner: RdpFolder, kette: RdpFolder[], filter: string):
   }
   return false;
 }
-  readonly dragMimeTypes = ['application/vnd.code.tree.rdpconnections'];
-  readonly dropMimeTypes = this.dragMimeTypes;
-  private drag?: { snapshot: string; source: number[] };
-
-  handleDrag(source: readonly BaumKnoten[], data: vscode.DataTransfer): void {
-    if (source.length !== 1) return;
-    this.drag = { snapshot: JSON.stringify(getBaum()), source: [...source[0]!.pfad] };
-    data.set(this.dragMimeTypes[0]!, new vscode.DataTransferItem(this.drag));
-  }
-
-  async handleDrop(target: BaumKnoten | undefined, data: vscode.DataTransfer): Promise<void> {
-    const drag = data.get(this.dragMimeTypes[0]!)?.value;
-    if (!this.drag || drag !== this.drag) return;
-    this.drag = undefined;
-    if (drag.snapshot !== JSON.stringify(getBaum())) {
-      await vscode.window.showWarningMessage('Der Baum wurde inzwischen geändert. Bitte erneut ziehen.');
-      return;
-    }
-    const ziel = target instanceof FolderNode ? target.pfad : target?.pfad.slice(0, -1) ?? [];
-    if (await verschiebeEintrag(drag.source, ziel)) this.refresh();
-  }
