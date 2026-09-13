@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
+import { randomBytes } from 'node:crypto';
 
 /** Zufaelliger Nonce, damit die Content Security Policy nur unser Skript erlaubt. */
 function nonce(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  return Array.from({ length: 32 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  return randomBytes(24).toString('base64');
 }
 
 export function renderWebview(webview: vscode.Webview, extensionUri: vscode.Uri, title: string): string {
@@ -20,7 +20,7 @@ export function renderWebview(webview: vscode.Webview, extensionUri: vscode.Uri,
         content="default-src 'none'; img-src ${webview.cspSource} data: blob:; style-src ${webview.cspSource}; script-src 'nonce-${n}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link href="${style}" rel="stylesheet">
-  <title>${title}</title>
+  <title>${title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</title>
 </head>
 <body>
   <div id="stage">
