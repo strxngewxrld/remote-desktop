@@ -34,7 +34,7 @@ import {
   createLogger,
 } from 'ts-rdp';
 import type { RdpDiagnostics, EgfxVideoFrame, LogLevel } from 'ts-rdp';
-import { RdpConnection, secretKey, credentialSecretKey } from './connections.js';
+import { RdpConnection, secretKey, credentialSecretKey, parseUsername } from './connections.js';
 import { BandbreitenProfilName, berechnePerformanceFlags, istProfilName } from './bandbreite.js';
 import { FarbName, farbe as farbeZu, symbolDateiname, symbolSvg } from './farben.js';
 import { CertificateTrustStore, TrustPolicy } from './trust.js';
@@ -359,6 +359,7 @@ export function diagnoseZeilen(
 export class RdpSession {
   private client?: RdpClient;
   private disposed = false;
+  private startGeneration = 0;
   private modifiersSynced = false;
   /** Wenn das Webview keine Binaerdaten empfangen kann, wird auf Base64 umgestellt. */
   private useBase64 = false;
@@ -447,14 +448,6 @@ export class RdpSession {
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')],
       },
     );
-    panel.webview.html = renderWebview(panel.webview, context.extensionUri, connection.name || connection.host);
-    // Das farbige Symbol ist das Einzige am Tab selbst, was sich einfaerben
-    // laesst - `vscode.Tab` kennt keine Farbe. Faellt es aus, bleibt es beim
-    // gewoehnlichen Symbol.
-    panel.iconPath =
-      (await farbSymbolUri(context, connection.color)) ??
-      vscode.Uri.joinPath(context.extensionUri, 'media', 'rdp-icon.svg');
-
     const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBar.command = 'rdp.disconnect';
 
@@ -463,6 +456,10 @@ export class RdpSession {
     session.wirePanel();
     session.diagnoseSichtbar = RdpSession.diagnoseStartzustand(context);
     RdpSession.merkeSitzung(session);
+    // Listener müssen vor dem Laden stehen: das Webview kann sofort ready senden.
+    panel.webview.html = renderWebview(panel.webview, context.extensionUri, connection.name || connection.host);
+    const icon = await farbSymbolUri(context, connection.color);
+    if (!session.disposed) panel.iconPath = icon ?? vscode.Uri.joinPath(context.extensionUri, 'media', 'rdp-icon.svg');
     return session;
   }
 
@@ -559,13 +556,17 @@ export class RdpSession {
           this.zwischenablage?.stoppeAbfrage();
         }
       }),
-      this.panel.webview.onDidReceiveMessage((message) => this.handleWebviewMessage(message)),
+      this.panel.webview.onDidReceiveMessage((message) => this.handleWebviewMessage(message).catch(error => {
+        this.log(`Webview-Ereignis fehlgeschlagen: ${String(error)}`);
+      })),
     );
   }
 
   private async handleWebviewMessage(message: any): Promise<void> {
+    if (this.disposed) return;
     switch (message?.type) {
       case 'ready':
+        if (this.lastReady) break;
         // Der Zustand des Overlays geht vor dem Verbindungsaufbau hinueber:
         // die Webview soll ihn nicht erst nach dem ersten Bild erfahren.
         this.setzeDiagnose(this.diagnoseSichtbar);
@@ -692,6 +693,9 @@ export class RdpSession {
   // ------------------------------------------------------------ Verbindung
 
   private async start(ready: ReadyMessage): Promise<void> {
+    if (this.disposed) return;
+    const generation = ++this.startGeneration;
+    const cancelled = () => this.disposed || generation !== this.startGeneration;
     this.lastReady = ready;
     const config = vscode.workspace.getConfiguration('rdp');
     const host = this.connection.host;
@@ -718,9 +722,11 @@ export class RdpSession {
         port,
         connectTimeout: config.get<number>('connectTimeout', 15000),
       });
+      if (cancelled()) return;
       this.log(`Zertifikat von ${host}: ${certificate.subject} (${certificate.fingerprint256})`);
 
       const approved = await this.trustStore.confirm(`${host}:${port}`, certificate, policy);
+      if (cancelled()) return;
       if (approved === false) {
         this.setState('error', 'Verbindung abgebrochen', 'Dem Serverzertifikat wurde nicht vertraut.', 'Erneut versuchen');
         return;
@@ -728,6 +734,7 @@ export class RdpSession {
       const expectedFingerprint = certificate.fingerprint256;
 
       const credentials = await this.resolveCredentials();
+      if (cancelled()) return;
       if (!credentials) {
         this.setState('error', 'Verbindung abgebrochen', 'Es wurden keine Zugangsdaten eingegeben.', 'Erneut versuchen');
         return;
@@ -797,11 +804,13 @@ export class RdpSession {
       this.client = client;
       this.wireClient(client);
       await client.connect();
+      if (cancelled()) { client.disconnect(); return; }
 
       if (credentials.shouldSave) {
         await this.context.secrets.store(this.anmeldeSecretKey ?? secretKey(this.connection), credentials.password);
       }
     } catch (error) {
+      if (cancelled()) return;
       const err = error as Error;
       this.log(`Fehler: ${err.stack ?? err.message}`);
       this.setState('error', 'Verbindung fehlgeschlagen', humanizeError(err), 'Erneut verbinden');
@@ -957,13 +966,10 @@ export class RdpSession {
       if (username === undefined) return undefined;
     }
 
-    if (!username.trim()) return undefined;
-    let domain = (prompt ? this.basisDomain : this.connection.domain) ?? '';
-    if (username.includes('\\')) {
-      const [d, u] = username.split('\\', 2);
-      domain = d;
-      username = u;
-    }
+    const login = parseUsername(username);
+    if (!login) return undefined;
+    username = login.username;
+    const domain = login.domain ?? (prompt ? this.basisDomain : this.connection.domain) ?? '';
     this.connection.domain = domain;
 
     // Den tatsächlich verwendeten Benutzernamen auch dem Passwortschlüssel zugrunde legen.
