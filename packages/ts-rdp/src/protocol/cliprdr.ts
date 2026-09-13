@@ -58,17 +58,23 @@ export const CLIPRDR_CHANNEL_NAME = 'cliprdr';
 /**
  * Optionsfeld des Kanals im Client Network Data (MS-RDPBCGR 2.2.1.3.4.1).
  *
- * Von den vier Bits traegt genau eines Bedeutung:
+ * Von den vier Bits tragen zwei Bedeutung:
  *  - CHANNEL_OPTION_COMPRESS_RDP (0x00800000) erlaubt dem Server, die
  *    Kanaldaten mitzukomprimieren, wenn er ohnehin komprimiert. Zwischenablage
  *    ist Text, also genau der Fall, in dem sich das lohnt.
- *  - CHANNEL_OPTION_INITIALIZED, CHANNEL_OPTION_ENCRYPT_RDP und
- *    CHANNEL_OPTION_SHOW_PROTOCOL sind laut 2.2.1.3.4.1 ausdruecklich
- *    unbenutzt bzw. vom Server zu ignorieren. Ob der Kanalkopf sichtbar ist,
- *    entscheidet allein CHANNEL_FLAG_SHOW_PROTOCOL im Block selbst.
+ *  - CHANNEL_OPTION_SHOW_PROTOCOL (0x00200000) heisst laut 2.2.1.3.4.1 zwar
+ *    "vom Server zu ignorieren", ist aber alles andere als folgenlos: die
+ *    Windows-Gegenstelle legt dem Endpunkt genau dann den CHANNEL_PDU_HEADER
+ *    vor die Nutzdaten, wenn der Kanal so angemeldet wurde (siehe die
+ *    Beschreibung von WTSVirtualChannelRead). Wer die Option anmeldet, muss
+ *    deshalb in jedem Block CHANNEL_FLAG_SHOW_PROTOCOL setzen - sonst sieht
+ *    rdpclip die ersten acht Nutzbyte als Kanalkopf an und verstummt.
+ *    Darum kuemmert sich `buildChannelChunks` anhand dieser Optionen.
+ *  - CHANNEL_OPTION_INITIALIZED und CHANNEL_OPTION_ENCRYPT_RDP sind laut
+ *    2.2.1.3.4.1 unbenutzt und vom Server zu ignorieren.
  *
- * Gesetzt werden sie trotzdem alle vier, weil mstsc genau diese Kombination
- * (0xC0A00000) sendet: es kostet nichts und faellt keinem Server auf.
+ * Gesetzt werden trotzdem alle vier, weil mstsc, FreeRDP und rdesktop genau
+ * diese Kombination (0xC0A00000) senden.
  */
 export const CLIPRDR_CHANNEL_OPTIONS =
   (CHANNEL_OPTION_INITIALIZED |

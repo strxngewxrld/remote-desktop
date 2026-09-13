@@ -427,6 +427,13 @@ export class RdpClient extends EventEmitter {
   private shareId = 0;
   private channelIds = new Map<string, number>();
   /**
+   * Optionen, mit denen wir jeden statischen Kanal im Client Network Data
+   * angemeldet haben (MCS-Kanal-ID -> options). Gebraucht wird davon
+   * CHANNEL_OPTION_SHOW_PROTOCOL: davon haengt ab, ob jeder Block den
+   * CHANNEL_PDU_HEADER sichtbar machen muss.
+   */
+  private channelOptionen = new Map<number, number>();
+  /**
    * Der vom Server benannte I/O-Kanal (MS-RDPBCGR 2.2.1.4.4). Meist 1003, aber
    * der Server darf einen anderen waehlen - dann muessen alle PDUs dorthin.
    */
@@ -650,6 +657,7 @@ export class RdpClient extends EventEmitter {
     this.userId = 0;
     this.shareId = 0;
     this.channelIds.clear();
+    this.channelOptionen.clear();
     this.statischeZusammensetzer.clear();
     this.selectedProtocol = PROTOCOL_RDP;
     this.palette = undefined;
@@ -846,6 +854,7 @@ export class RdpClient extends EventEmitter {
         const id = serverData.network!.channelIds[index];
         if (id === undefined) return;
         this.channelIds.set(def.name, id);
+        this.channelOptionen.set(id, def.options >>> 0);
         if (def.name === 'drdynvc') this.dynvcChannelId = id;
       });
       this.log.info(
@@ -1111,6 +1120,18 @@ export class RdpClient extends EventEmitter {
     }
   }
 
+  /**
+   * Muss auf diesem Kanal jeder Block CHANNEL_FLAG_SHOW_PROTOCOL tragen?
+   *
+   * Genau dann, wenn wir den Kanal mit CHANNEL_OPTION_SHOW_PROTOCOL angemeldet
+   * haben. So halten es auch FreeRDP (`freerdp_channel_send` in
+   * libfreerdp/core/channels.c) und rdesktop (`channel_send_chunk`). Fuer
+   * drdynvc ist die Option nicht gesetzt, dort aendert sich damit nichts.
+   */
+  private zeigeProtokoll(channelId: number): boolean {
+    return ((this.channelOptionen.get(channelId) ?? 0) & gcc.CHANNEL_OPTION_SHOW_PROTOCOL) !== 0;
+  }
+
   /** Name eines statischen Kanals, sonst die ID als Zeichenkette. */
   private kanalName(channelId: number): string {
     for (const [name, id] of this.channelIds) {
@@ -1346,7 +1367,11 @@ export class RdpClient extends EventEmitter {
   private sendDynvc(data: Buffer): void {
     if (this.dynvcChannelId === undefined) return;
     this.log.debug(`DVC gesendet: ${data.length} Byte (${data.subarray(0, 24).toString('hex')})`);
-    for (const chunk of buildChannelChunks(data, this.chunkGroesse())) {
+    for (const chunk of buildChannelChunks(
+      data,
+      this.chunkGroesse(),
+      this.zeigeProtokoll(this.dynvcChannelId),
+    )) {
       this.sendMcs(this.dynvcChannelId, chunk);
     }
   }
@@ -1728,10 +1753,13 @@ export class RdpClient extends EventEmitter {
       );
     }
     const chunkGroesse = this.chunkGroesse();
-    const bloecke = buildChannelChunks(data, chunkGroesse);
+    const zeigeProtokoll = this.zeigeProtokoll(channelId);
+    const bloecke = buildChannelChunks(data, chunkGroesse, zeigeProtokoll);
     this.log.debug(
       `Kanal ${channelId}: ${data.length} Byte in ${bloecke.length} Block/Bloecken ` +
-        `zu je hoechstens ${chunkGroesse} Byte`,
+        `zu je hoechstens ${chunkGroesse} Byte, Kopf-Flags 0x` +
+        `${parseChannelChunk(bloecke[0]).flags.toString(16)}` +
+        `${zeigeProtokoll ? ' (SHOW_PROTOCOL, der Endpunkt sieht den Kanalkopf)' : ''}`,
     );
     for (const block of bloecke) this.sendMcs(channelId, block);
   }
