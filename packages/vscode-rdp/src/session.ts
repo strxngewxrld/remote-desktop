@@ -35,7 +35,13 @@ import { RdpConnection, secretKey } from './connections.js';
 import { BandbreitenProfilName, berechnePerformanceFlags, istProfilName } from './bandbreite.js';
 import { FarbName, farbe as farbeZu, symbolDateiname, symbolSvg } from './farben.js';
 import { CertificateTrustStore, TrustPolicy } from './trust.js';
-import { resolveKeyboardLayout } from './keyboardLayouts.js';
+import {
+  MacTastenabbildung,
+  cmdAbbildungAktiv,
+  resolveKeyboardLayout,
+  type CmdAbbildungEinstellung,
+} from './keyboardLayouts.js';
+import { ermittleLaufzeit, tastaturPlattform } from './extension.js';
 import { renderWebview } from './webview.js';
 import {
   Zwischenablagebruecke,
@@ -589,6 +595,15 @@ export class RdpSession {
         break;
       case 'focus':
         vscode.commands.executeCommand('setContext', 'rdp.sessionFocused', !!message.focused);
+        // Beim Fokusverlust weiss niemand mehr, was noch gedrueckt ist.
+        if (!message.focused) this.macAbbildung.zuruecksetzen();
+        break;
+      case 'plattform':
+        // Die Plattform des Nutzers, gemeldet vom Webview. Nur die zaehlt:
+        // unter Remote-SSH ist process.platform die des Sprungbretts.
+        this.setzeTastaturPlattform(
+          typeof message.plattform === 'string' ? message.plattform : undefined,
+        );
         break;
       case 'clipboardSend':
         // Rueckfallebene: der Anwender hat Text ins Feld gelegt.
@@ -1304,6 +1319,36 @@ export class RdpSession {
     }
   }
 
+  /** Zustand der Cmd-Taste; nur in Gebrauch, solange `cmdAufStrg` gilt. */
+  private readonly macAbbildung = new MacTastenabbildung();
+  /** Bildet Cmd auf Strg ab (Einstellung `rdp.macCommandKey`). */
+  private cmdAufStrg = false;
+  /** Rohe Plattformauskunft des Webviews, sobald sie da ist. */
+  private webviewPlattform: string | undefined;
+
+  /**
+   * Die Meldung des Webviews auswerten und die Abbildung neu entscheiden.
+   *
+   * Aufgerufen, sobald das Webview seine Plattform nennt, und erneut, wenn
+   * sich die Einstellung aendert.
+   */
+  private setzeTastaturPlattform(roh: string | undefined): void {
+    if (roh !== undefined) this.webviewPlattform = roh;
+    const gewaehlt = tastaturPlattform(ermittleLaufzeit(), this.webviewPlattform);
+    const einstellung = vscode.workspace
+      .getConfiguration('rdp')
+      .get<CmdAbbildungEinstellung>('macCommandKey', 'auto');
+    const vorher = this.cmdAufStrg;
+    this.cmdAufStrg = cmdAbbildungAktiv(einstellung, gewaehlt.plattform, gewaehlt.verlaesslich);
+    if (!this.cmdAufStrg) this.macAbbildung.zuruecksetzen();
+    if (this.cmdAufStrg === vorher && roh === undefined) return;
+    this.log(
+      `Tastatur: Plattform ${gewaehlt.plattform} (${gewaehlt.quelle}` +
+        `${gewaehlt.verlaesslich ? '' : ', unzuverlässig'}), Einstellung "${einstellung}" – ` +
+        `Cmd-Kürzel werden ${this.cmdAufStrg ? 'auf Strg abgebildet' : 'nicht abgebildet'}`,
+    );
+  }
+
   private handleKey(message: any): void {
     const client = this.client;
     if (!client?.isConnected) return;
@@ -1316,6 +1361,12 @@ export class RdpSession {
       if (message.modifiers.scrollLock) flags |= SYNC_SCROLL_LOCK;
       client.sendSyncEvent(flags);
       this.modifiersSynced = true;
+    }
+
+    if (this.cmdAufStrg) {
+      const ergebnis = this.macAbbildung.taste(String(message.code ?? ''), !!message.down);
+      for (const t of ergebnis.ereignisse) client.sendKeyScancode(t.scancode, t.down, t.extended);
+      if (!ergebnis.normalWeiter) return;
     }
 
     const mapping = lookupScancode(message.code);
@@ -1440,6 +1491,8 @@ export class RdpSession {
     // Die Rahmenbreite steht in den Einstellungen und darf sich sofort
     // auswirken - die Kennfarbe selbst haengt an der Verbindung.
     this.sendeFarbe();
+    // Die Cmd-Abbildung greift ohne Neuverbinden; die Plattform ist bekannt.
+    this.setzeTastaturPlattform(undefined);
     // Richtung und Groessengrenze stecken in der Bruecke; sie greifen erst bei
     // der naechsten Verbindung. Die Knopfsperre im Webview laesst sich dagegen
     // sofort nachziehen.
