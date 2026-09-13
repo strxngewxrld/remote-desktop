@@ -70,6 +70,7 @@ export type {
   CliprdrSessionOptions,
   CliprdrFormat,
   CliprdrCapabilities,
+  CliprdrLogStufe,
   CliprdrPdu,
   ZwischenablageRichtung,
 } from './protocol/cliprdr.js';
