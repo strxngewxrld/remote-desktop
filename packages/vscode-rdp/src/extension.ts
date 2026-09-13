@@ -55,7 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     output,
-    vscode.window.registerTreeDataProvider('rdpConnections', tree),
+    vscode.window.createTreeView('rdpConnections', { treeDataProvider: tree, dragAndDropController: tree }),
 
     vscode.commands.registerCommand('rdp.connect', async () => {
       const connection = await promptForConnection();
