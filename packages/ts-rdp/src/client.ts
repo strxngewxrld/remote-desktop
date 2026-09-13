@@ -64,6 +64,7 @@ import {
 } from './protocol/updates.js';
 import {
   FASTPATH_FRAGMENT_LAST,
+  FASTPATH_FRAGMENT_FIRST,
   FASTPATH_FRAGMENT_NEXT,
   FASTPATH_FRAGMENT_SINGLE,
   FASTPATH_OUTPUT_COMPRESSION_USED,
@@ -394,6 +395,8 @@ export const CORE_INPUT_CHANNEL_NAME = 'Microsoft::Windows::RDS::CoreInput';
 /** Kanal fuer Aufloesungswechsel im laufenden Betrieb (MS-RDPEDISP 2.1). */
 export const DISPLAY_CONTROL_CHANNEL_NAME = edisp.DISPLAY_CONTROL_CHANNEL_NAME;
 
+const MAX_FRAGMENT_BYTES = 16 * 1024 * 1024;
+
 /**
  * Windows oeffnet diese drei Kanaele als Einheit. Nimmt ein Client nur einen
  * davon an, kann das serverseitige Grafik-Subsystem beim Start scheitern
@@ -459,7 +462,7 @@ export class RdpClient extends EventEmitter {
   /** Alle Kanaele, die der Server oeffnen wollte - auch die abgelehnten. */
   private readonly angeboteneKanaele: string[] = [];
   /** Zusammensetzen von DATA_FIRST/DATA je dynamischem Kanal. */
-  private readonly dynamicFragments = new Map<number, { erwartet: number; teile: Buffer[] }>();
+  private readonly dynamicFragments = new Map<number, { erwartet: number; empfangen: number; teile: Buffer[] }>();
   /**
    * Ein ZGFX-Dekompressor je dynamischem Kanal. Der Verlaufspuffer gehoert zum
    * Kanal, nicht zur einzelnen Nachricht - ein Rueckverweis darf auf eine
@@ -487,6 +490,8 @@ export class RdpClient extends EventEmitter {
   private queuedFrames: RdpFrame[] = [];
   /** Reassemblierung fragmentierter Fastpath-Updates. */
   private fragments: Buffer[] = [];
+  private fragmentBytes = 0;
+  private fragmentCode?: number;
   /** Wurde der Handshake bereits mit der TLS-Rueckfallebene wiederholt? */
   private triedLegacyTls = false;
   /** TLS-Profil des aktuellen Transports - beim Wiederverbinden wiederverwendet. */
@@ -664,6 +669,8 @@ export class RdpClient extends EventEmitter {
     this.pointerCache.clear();
     this.queuedFrames = [];
     this.fragments = [];
+    this.fragmentBytes = 0;
+    this.fragmentCode = undefined;
     this.pendingSharePayload = undefined;
     this.phase = 'connecting';
     this.transport = this.createTransport(tlsProfile);
@@ -1158,7 +1165,7 @@ export class RdpClient extends EventEmitter {
       case dvc.DVC_CMD_CREATE: {
         const name = nachricht.name ?? '';
         const id = nachricht.channelId!;
-        const angenommen = this.wantsDynamicChannel(name);
+        const angenommen = this.wantsDynamicChannel(name) && (this.dynamicChannels.has(id) || this.dynamicChannels.size < 64);
         if (!this.angeboteneKanaele.includes(name)) this.angeboteneKanaele.push(name);
         this.log.info(`DVC: Server oeffnet Kanal "${name}" (ID ${id}) - ${angenommen ? 'angenommen' : 'abgelehnt'}`);
         if (angenommen) this.dynamicChannels.set(id, name);
@@ -1183,8 +1190,13 @@ export class RdpClient extends EventEmitter {
       }
 
       case dvc.DVC_CMD_DATA_FIRST: {
+        const id = nachricht.channelId!;
+        if (!this.dynamicChannels.has(id)) break;
+        this.dynamicFragments.delete(id);
+        if (!nachricht.totalLength || nachricht.totalLength > MAX_FRAGMENT_BYTES) throw new RdpProtocolError('DVC: ungültige Fragmentlänge');
         this.dynamicFragments.set(nachricht.channelId!, {
           erwartet: nachricht.totalLength ?? 0,
+          empfangen: nachricht.data?.length ?? 0,
           teile: [nachricht.data ?? Buffer.alloc(0)],
         });
         this.pruefeDynamicFragment(nachricht.channelId!);
@@ -1192,9 +1204,11 @@ export class RdpClient extends EventEmitter {
       }
 
       case dvc.DVC_CMD_DATA: {
+        if (!this.dynamicChannels.has(nachricht.channelId!)) break;
         const offen = this.dynamicFragments.get(nachricht.channelId!);
         if (offen) {
-          offen.teile.push(nachricht.data ?? Buffer.alloc(0));
+          if (nachricht.data?.length) offen.teile.push(nachricht.data);
+          offen.empfangen += nachricht.data?.length ?? 0;
           this.pruefeDynamicFragment(nachricht.channelId!);
         } else {
           this.emitDynamicData(nachricht.channelId!, nachricht.data ?? Buffer.alloc(0));
@@ -1227,10 +1241,15 @@ export class RdpClient extends EventEmitter {
   private pruefeDynamicFragment(channelId: number): void {
     const offen = this.dynamicFragments.get(channelId);
     if (!offen) return;
-    const laenge = offen.teile.reduce((summe, teil) => summe + teil.length, 0);
-    if (laenge < offen.erwartet) return;
+    // Summieren pro Fragment wäre quadratisch in der Fragmentanzahl.
+    const gesamt = [...this.dynamicFragments.values()].reduce((summe, f) => summe + f.empfangen, 0);
+    if (offen.empfangen > offen.erwartet || gesamt > MAX_FRAGMENT_BYTES) {
+      this.dynamicFragments.delete(channelId);
+      throw new RdpProtocolError('DVC: Fragmentdaten überschreiten die Obergrenze');
+    }
+    if (offen.empfangen < offen.erwartet) return;
     this.dynamicFragments.delete(channelId);
-    this.emitDynamicData(channelId, Buffer.concat(offen.teile));
+    this.emitDynamicData(channelId, Buffer.concat(offen.teile, offen.empfangen));
   }
 
   private emitDynamicData(channelId: number, data: Buffer): void {
@@ -1516,15 +1535,30 @@ export class RdpClient extends EventEmitter {
         }
       }
       const size = r.uint16le();
-      const data = r.bytes(Math.min(size, r.remaining));
+      if (size > r.remaining) throw new RdpProtocolError('Fastpath: abgeschnittenes Update');
+      const data = r.bytes(size);
 
       let payload = data;
       if (fragmentation !== FASTPATH_FRAGMENT_SINGLE) {
-        this.fragments.push(data);
+        if (fragmentation === FASTPATH_FRAGMENT_FIRST) {
+          this.fragments = [];
+          this.fragmentBytes = 0;
+          this.fragmentCode = updateCode;
+        }
+        if (this.fragmentCode !== updateCode || data.length > MAX_FRAGMENT_BYTES - this.fragmentBytes) {
+          this.fragments = [];
+          this.fragmentBytes = 0;
+          this.fragmentCode = undefined;
+          throw new RdpProtocolError('Fastpath: ungültige Fragmentfolge oder Obergrenze überschritten');
+        }
+        this.fragmentBytes += data.length;
+        if (data.length) this.fragments.push(data);
         if (fragmentation === FASTPATH_FRAGMENT_NEXT) continue;
         if (fragmentation !== FASTPATH_FRAGMENT_LAST) continue;
-        payload = Buffer.concat(this.fragments);
+        payload = Buffer.concat(this.fragments, this.fragmentBytes);
         this.fragments = [];
+        this.fragmentBytes = 0;
+        this.fragmentCode = undefined;
       }
 
       this.handleFastpathUpdate(updateCode, new BinaryReader(payload));

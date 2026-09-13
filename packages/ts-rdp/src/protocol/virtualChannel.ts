@@ -58,6 +58,7 @@ export function buildChannelChunks(
   chunkSize = DEFAULT_CHUNK_SIZE,
   zeigeProtokoll = false,
 ): Buffer[] {
+  if (!Number.isInteger(chunkSize) || chunkSize <= 0) throw new RdpProtocolError('Virtueller Kanal: ungültige Chunkgröße');
   const out: Buffer[] = [];
   const total = data.length;
   const aufgeteilt = total > chunkSize;
@@ -80,24 +81,38 @@ export function buildChannelChunks(
 export class ChannelReassembler {
   private teile: Buffer[] = [];
   private erwartet = 0;
+  private empfangen = 0;
+  private aktiv = false;
 
   constructor(private readonly maxLength = 16 * 1024 * 1024) {}
 
   push(chunk: ChannelChunk): Buffer | undefined {
     if (chunk.flags & CHANNEL_FLAG_FIRST) {
-      this.teile = [];
+      this.reset();
       this.erwartet = chunk.totalLength;
-      if (this.erwartet > this.maxLength) {
+      if (!Number.isSafeInteger(this.erwartet) || this.erwartet < 0 || this.erwartet > this.maxLength) {
+        this.reset();
         throw new RdpProtocolError(
-          `Virtueller Kanal: angekuendigte Laenge ${this.erwartet} uebersteigt die Obergrenze`,
+          `Virtueller Kanal: ungültige angekuendigte Laenge ${chunk.totalLength} (Obergrenze ${this.maxLength})`,
         );
       }
+      this.aktiv = true;
     }
-    this.teile.push(chunk.data);
+    if (!this.aktiv || chunk.totalLength !== this.erwartet || chunk.data.length > this.erwartet - this.empfangen) {
+      this.reset();
+      throw new RdpProtocolError('Virtueller Kanal: ungültige Fragmentfolge oder Laenge');
+    }
+    this.empfangen += chunk.data.length;
+    // Leere Zwischenfragmente dürfen die Anzahl gespeicherter Buffer nicht erhöhen.
+    if (chunk.data.length) this.teile.push(chunk.data);
 
     if (!(chunk.flags & CHANNEL_FLAG_LAST)) return undefined;
-    const vollstaendig = Buffer.concat(this.teile);
-    this.teile = [];
+    if (this.empfangen !== this.erwartet) {
+      this.reset();
+      throw new RdpProtocolError('Virtueller Kanal: letzte Nachricht ist unvollständig');
+    }
+    const vollstaendig = Buffer.concat(this.teile, this.empfangen);
+    this.reset();
     return vollstaendig;
   }
 
@@ -109,6 +124,8 @@ export class ChannelReassembler {
   reset(): void {
     this.teile = [];
     this.erwartet = 0;
+    this.empfangen = 0;
+    this.aktiv = false;
   }
 }
 
