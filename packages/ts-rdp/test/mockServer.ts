@@ -161,7 +161,9 @@ export class MockRdpServer extends EventEmitter {
   /** Zusammensetzer je statischem Kanal ausser drdynvc. */
   private readonly statischeZusammensetzer = new Map<number, ChannelReassembler>();
   /** Jeder empfangene Block eines statischen Kanals, ungefiltert. */
-  readonly statischeBloecke: Array<{ channelId: number; length: number }> = [];
+  readonly statischeBloecke: Array<{ channelId: number; length: number; flags: number }> = [];
+  /** Kopf-Flags jedes Blocks, den der Client auf drdynvc geschickt hat. */
+  readonly dynvcBloecke: Array<{ length: number; flags: number }> = [];
   /** Offene DATA_FIRST-Folgen je DVC-Kanal. */
   private readonly dvcFragmente = new Map<number, { erwartet: number; teile: Buffer[] }>();
 
@@ -281,13 +283,14 @@ export class MockRdpServer extends EventEmitter {
   private handleStatischenKanal(channelId: number, payload: Buffer): void {
     // Jeden einzelnen Block mitschreiben: nur so laesst sich pruefen, dass der
     // Client die ausgehandelte Chunkgrenze einhaelt.
-    this.statischeBloecke.push({ channelId, length: payload.length });
+    const block = parseChannelChunk(payload);
+    this.statischeBloecke.push({ channelId, length: payload.length, flags: block.flags });
     let zusammensetzer = this.statischeZusammensetzer.get(channelId);
     if (!zusammensetzer) {
       zusammensetzer = new ChannelReassembler();
       this.statischeZusammensetzer.set(channelId, zusammensetzer);
     }
-    const vollstaendig = zusammensetzer.push(parseChannelChunk(payload));
+    const vollstaendig = zusammensetzer.push(block);
     if (!vollstaendig) return;
     const name = this.statischerName(channelId);
     this.empfangeneReihenfolge.push(`static:${name}`);
@@ -611,7 +614,9 @@ export class MockRdpServer extends EventEmitter {
 
   /** Bloecke des statischen Kanals zu DVC-Nachrichten zusammensetzen. */
   private handleDynvcFromClient(payload: Buffer): void {
-    const vollstaendig = this.dynvcReassembler.push(parseChannelChunk(payload));
+    const block = parseChannelChunk(payload);
+    this.dynvcBloecke.push({ length: payload.length, flags: block.flags });
+    const vollstaendig = this.dynvcReassembler.push(block);
     if (!vollstaendig) return;
 
     // Die CREATE-Antwort des Clients traegt statt des Namens einen 4-Byte-
