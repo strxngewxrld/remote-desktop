@@ -87,6 +87,7 @@ export {
   zerlegePfad,
   musterPasst,
   trenneSuchmuster,
+  suchmusterFuer,
   waehleNebenversion,
 } from './protocol/rdpdr.js';
 export type {

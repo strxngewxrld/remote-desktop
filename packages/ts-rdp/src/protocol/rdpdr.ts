@@ -1343,6 +1343,34 @@ export function trenneSuchmuster(pfad: string): { pfad: string; muster?: string 
   return { pfad };
 }
 
+/**
+ * Das Suchmuster einer Verzeichnisanfrage bestimmen.
+ *
+ * Hier stossen zwei Lesarten aufeinander. MS-RDPEFS 2.2.3.3.10 nennt das
+ * Feld Path schlicht "the directory on which this operation will be
+ * performed". In der Praxis haengt Windows aber das Suchmuster an - "\repo\*"
+ * beim Blaettern, "\repo\desktop.ini" beim Pruefen, ob eine bestimmte Datei
+ * da ist. Beides muss richtig beantwortet werden, und ein blosser Blick auf
+ * Sternchen und Fragezeichen reicht nicht: "desktop.ini" traegt keines und
+ * ist trotzdem ein Muster.
+ *
+ * Die Unterscheidung gelingt ueber das bereits geoeffnete Verzeichnis. Deckt
+ * sich alles vor dem letzten Segment mit dem Pfad des Handles, dann ist das
+ * letzte Segment das Muster. Sonst ist der ganze Pfad als Verzeichnis
+ * gemeint, und es wird nicht gefiltert.
+ *
+ * `verzeichnis` kommt aus dem Handle, nicht aus der Anfrage. Das ist der
+ * Punkt: der Pfad der Anfrage wird hier nur *verglichen*, niemals benutzt, um
+ * auf das Dateisystem zuzugreifen.
+ */
+export function suchmusterFuer(anfragePfad: string, verzeichnis: string): string | undefined {
+  const teile = anfragePfad.split(/[\\/]/).filter((t) => t !== '');
+  if (teile.length === 0) return undefined;
+  const davor = teile.slice(0, -1).join('/');
+  if (davor.toLowerCase() !== verzeichnis.toLowerCase()) return undefined;
+  return teile[teile.length - 1];
+}
+
 // ======================================================================
 //  Dateisystem-Schnittstelle
 // ======================================================================
@@ -2294,10 +2322,10 @@ export class RdpdrSession {
     }
 
     if (anfrage.initialQuery || datei.eintraege === undefined) {
-      const { muster } = trenneSuchmuster(anfrage.path);
       // Das Verzeichnis steht im Handle, nicht im Pfad der Anfrage: das Handle
       // hat die Pfadpruefung schon hinter sich, und nur der Musterteil der
       // Anfrage ist hier ueberhaupt von Belang.
+      const muster = suchmusterFuer(anfrage.path, datei.pfad);
       const passt = musterPasst(muster);
       const inhalt = await laufwerk.dateisystem.liste(datei.pfad);
       const eintraege = this.mitPunkteintraegen(inhalt).filter((e) => passt(e.name));

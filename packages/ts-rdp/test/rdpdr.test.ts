@@ -67,6 +67,7 @@ import {
   parseRenameInformation,
   parseServerAnnounce,
   preferredDosName,
+  suchmusterFuer,
   trenneSuchmuster,
   zerlegePfad,
 } from '../src/protocol/rdpdr.js';
@@ -639,6 +640,18 @@ describe('RDPDR - Suchmuster', () => {
 
   test('Der Vergleich achtet nicht auf Gross- und Kleinschreibung', () => {
     assert.equal(musterPasst('*.TS')('Datei.ts'), true);
+  });
+
+  test('suchmusterFuer richtet sich am geoeffneten Verzeichnis aus', () => {
+    // Deckt sich alles vor dem letzten Segment mit dem Handle, ist das letzte
+    // Segment das Muster - auch ohne Sternchen.
+    assert.equal(suchmusterFuer('\\repo\\*', 'repo'), '*');
+    assert.equal(suchmusterFuer('\\repo\\desktop.ini', 'repo'), 'desktop.ini');
+    assert.equal(suchmusterFuer('\\*', ''), '*');
+    // Deckt es sich nicht, ist der ganze Pfad als Verzeichnis gemeint.
+    assert.equal(suchmusterFuer('\\repo', 'repo'), undefined);
+    assert.equal(suchmusterFuer('\\..\\..\\etc\\*', 'repo'), undefined);
+    assert.equal(suchmusterFuer('\\', ''), undefined);
   });
 
   test('Das Muster wird vom Pfad getrennt', () => {
