@@ -240,7 +240,7 @@ class ServerLaufwerk {
       for (let i = 0; i < anzahl; i++) {
         const deviceId = pdu.body.readUInt32LE(offset + 4);
         const datenLaenge = pdu.body.readUInt32LE(offset + 16);
-        const name = pdu.body.subarray(offset + 20, offset + 20 + datenLaenge).toString('ucs2').replace(/\0+$/, '');
+        const name = pdu.body.subarray(offset + 20, offset + 20 + datenLaenge).toString('utf8').replace(/\0+$/, '');
         this.geraete.push({ deviceId, name });
         offset += 20 + datenLaenge;
         // Jedes Geraet bekommt eine eigene Antwort (2.2.2.1).

@@ -197,14 +197,22 @@ describe('RDPDR - Geraeteliste nach 2.2.1.3 und 2.2.3.1', () => {
     // PreferredDosName: acht Byte ASCII, nullterminiert - also sieben Zeichen.
     assert.deepEqual(b.subarray(12, 20), Buffer.from('Arbeits\0', 'ascii'));
     const laenge = b.readUInt32LE(20);
-    assert.equal(laenge, ('Arbeitsbereich'.length + 1) * 2);
-    assert.equal(b.subarray(24, 24 + laenge).toString('ucs2'), 'Arbeitsbereich\0');
+    assert.equal(laenge, Buffer.byteLength('Arbeitsbereich\0'));
+    assert.equal(b.subarray(24, 24 + laenge).toString('utf8'), 'Arbeitsbereich\0');
     assert.equal(b.length, 24 + laenge);
   });
 
   test('PreferredDosName ersetzt die in 2.2.1.3 verbotenen Zeichen', () => {
     assert.equal(preferredDosName('a/b\\c|d'), 'a_b_c_d');
     assert.equal(preferredDosName('Vielzulangername'), 'Vielzul');
+  });
+
+  test('Windows liest den vollständigen Freigabenamen bis zum ersten Nullbyte', () => {
+    const body = parseRdpdrPdu(buildDeviceListAnnounce([{ deviceId: 1, name: 'VS Code' }])).body;
+    const data = body.subarray(24, 24 + body.readUInt32LE(20));
+    assert.equal(data.subarray(0, data.indexOf(0)).toString('utf8'), 'VS_Code');
+    assert.equal(data.indexOf(0), data.length - 1);
+    assert.equal(body.subarray(12, 20).toString('ascii'), 'VS_Code\0');
   });
 });
 

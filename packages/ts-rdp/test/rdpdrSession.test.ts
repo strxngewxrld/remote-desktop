@@ -355,6 +355,32 @@ async function bisBereit(a: Aufbau): Promise<void> {
   await schlafe(0);
 }
 
+test('Eine alte Freigabeantwort darf nach erneutem Server Announce keine Geräte mehr anmelden', async () => {
+  const gesendet: Buffer[] = [];
+  const antworten: Array<(value: any[]) => void> = [];
+  const sitzung = new RdpdrSession({
+    computerName: 'VSCODE', send: data => gesendet.push(data),
+    laufwerke: () => new Promise(resolve => antworten.push(resolve)),
+  });
+  const handshake = () => {
+    sitzung.verarbeite(serverAnnounce());
+    sitzung.verarbeite(serverCapabilities());
+    sitzung.verarbeite(clientIdConfirm());
+  };
+  handshake();
+  handshake();
+  assert.equal(antworten.length, 2);
+  const liste = [{ deviceId: DEVICE_ID, name: 'Repo', dateisystem: new Speicher({ repo: null }) }];
+  antworten[0]!(liste);
+  await schlafe(0);
+  assert.equal(sitzung.diagnose.freigabeLaeuft, true);
+  assert.equal(gesendet.filter(data => parseRdpdrPdu(data).packetId === PAKID_CORE_DEVICELIST_ANNOUNCE).length, 0);
+  antworten[1]!(liste);
+  await schlafe(0);
+  assert.equal(gesendet.filter(data => parseRdpdrPdu(data).packetId === PAKID_CORE_DEVICELIST_ANNOUNCE).length, 1);
+  sitzung.dispose();
+});
+
 /** Ein Handle oeffnen und seine FileId liefern. */
 async function oeffne(
   a: Aufbau,
@@ -369,6 +395,18 @@ async function oeffne(
 }
 
 // -------------------------------------------------------------------- Tests
+
+test('I/O-Diagnose nennt Operation und Status, aber keine Dateipfade', async () => {
+  const a = baue();
+  await bisBereit(a);
+  const result = await oeffne(a, 'repo/README.md');
+  assert.equal(result.status, STATUS_SUCCESS);
+  const lines = a.protokoll.filter(line => line.startsWith('RDPDR I/O'));
+  assert.ok(lines.some(line => line.includes('Anfrage: create') && line.includes('Anfrage=900')));
+  assert.ok(lines.some(line => line.includes('Status=0x00000000') && line.includes('Bytes=21')));
+  assert.ok(lines.every(line => !line.includes('README') && !line.includes('repo/')));
+  a.sitzung.dispose();
+});
 
 describe('RDPDR-Sitzung - Handshake nach 3.2.5.1', () => {
   test('Auf das Server Announce folgen Antwort und Rechnername, in dieser Reihenfolge', () => {
