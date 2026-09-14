@@ -289,7 +289,7 @@ describe('Laufwerksumleitung über den Kanal rdpdr', () => {
   });
 
   /** Sitzung mit angemeldetem Kanal `rdpdr` und verdrahteten Gegenseiten. */
-  async function sitzung(opts: { nurLesen?: boolean; laufwerke?: boolean } = {}) {
+  async function sitzung(opts: { nurLesen?: boolean; laufwerke?: boolean; frueherAuftakt?: boolean } = {}) {
     const server = new MockRdpServer({ ...certificate, width: WIDTH, height: HEIGHT });
     offeneServer.push(server);
     const port = await server.listen();
@@ -326,15 +326,26 @@ describe('Laufwerksumleitung über den Kanal rdpdr', () => {
     });
 
     client.on('staticChannelData', (e: { name: string; data: Buffer }) => {
+      assert.equal(client.isConnected, true, 'Kanaldaten dürfen erst nach connect ankommen');
       if (e.name === RDPDR_CHANNEL_NAME) laufwerk.verarbeite(e.data);
     });
 
     const serverSeite = new ServerLaufwerk(server);
+    if (opts.frueherAuftakt) server.once('clientInfo', () => serverSeite.auftakt());
     const verbunden = once(client, 'connect');
     await client.connect();
     await verbunden;
     return { client, server, laufwerk, serverSeite, protokoll };
   }
+
+  test('Ein RDPDR-Auftakt vor der Aktivierung wird nach connect beantwortet', async () => {
+    const { serverSeite, protokoll } = await sitzung({ frueherAuftakt: true });
+    await warteAuf(() => serverSeite.hat(PAKID_CORE_CLIENT_NAME), 'frühe RDPDR-Antwort', 1000);
+    serverSeite.faehigkeiten();
+    await warteAuf(() => serverSeite.geraete.length === 1, 'Geräteliste');
+    await warteAuf(() => protokoll.some(n => n.includes('ist im Explorer verfuegbar')), 'Gerätebestätigung');
+    assert.equal(serverSeite.geraete[0]!.name, 'Arbeitsbereich');
+  });
 
   test('Der Handshake laeuft in der Reihenfolge aus 3.2.5.1 ab', async () => {
     const { serverSeite } = await sitzung();
