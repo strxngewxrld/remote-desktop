@@ -21,9 +21,12 @@ Befehlspalette an; Kontextmenüs enthalten nur den jeweiligen Befehlsnamen.
 
 Verbindungen und Ordner lassen sich im Baum per Drag-and-drop in einen Ordner
 oder auf die freie Fläche der obersten Ebene verschieben. Ein farbig markierter
-Server bekommt beim Öffnen einen Farbpunkt direkt im Tab-Titel, auch bei
-ausgeblendeten Tab-Symbolen. Die Emoji-Farbtöne hängen vom Betriebssystem ab;
-die graue Kennung verwendet einen neutralen weißen Kreis.
+Server bekommt beim Öffnen ein eigenes SVG-Icon im Tab: Rot/Kreis,
+Orange/Raute, Gelb/Dreieck, Grün/Quadrat, Blau/Sechseck, Violett/Stern,
+Grau/Ring. Der Titel bleibt ohne Emojis. Die Icons werden mit der Extension
+ausgeliefert und brauchen keinen Schreibzugriff auf den Extension-Speicher.
+VS Code muss Editor-Icons anzeigen (`workbench.editor.showIcons: true`);
+die Extension verändert diese globale Einstellung nicht.
 
 **Verbinden als …** ist als Personen-Button direkt am Servereintrag und im
 Kontextmenü verfügbar. Es bietet die effektiven, vererbten Profile und
@@ -70,6 +73,13 @@ Fehlt das Laufwerk weiterhin, unter **RDP: Protokoll anzeigen** die Zeilen
 `Laufwerk:` und `RDPDR:` prüfen. Ein bereiter `rdpdr`-Kanal allein belegt noch
 keine erfolgreiche Geräteankündigung. Auch eine serverseitige Richtlinie kann
 die Umleitung verhindern; siehe [Microsofts Dokumentation zur Laufwerksumleitung](https://learn.microsoft.com/en-us/azure/virtual-desktop/redirection-configure-drives-storage).
+
+Ein Clientfehler bei vorzeitig eintreffendem RDPDR-Handshake wurde behoben:
+Nachrichten anderer MCS-Kanäle werden während Lizenzierung/Aktivierung jetzt
+gepuffert und nach dem `connect`-Ereignis an die Laufwerksumleitung übergeben.
+Nach Aktualisierung der Extension ist eine neue RDP-Verbindung nötig. Im
+Protokoll sollten anschließend `RDPDR: Server-Version`, die Geräteankündigung
+und bei Bestätigung `ist im Explorer verfuegbar` erscheinen.
 
 ## Befehlsübersicht
 
