@@ -194,12 +194,6 @@ export const RDPDR_DTYP_SMARTCARD = 0x00000020;
 /** Feste Groesse des Feldes PreferredDosName in Byte. */
 export const PREFERRED_DOS_NAME_SIZE = 8;
 
-/**
- * Zeichen, die laut 2.2.1.3 im PreferredDosName verboten sind. Ein ":" ist nur
- * als letztes Zeichen erlaubt - bei echten Laufwerken steht dort "C:".
- */
-const VERBOTENE_DOSNAME_ZEICHEN = /[<>"/\\|]/;
-
 // ------------------------------------------------------- Konstanten 2.2.1.4
 
 export const IRP_MJ_CREATE = 0x00000000;
@@ -575,22 +569,28 @@ export interface RdpdrGeraet {
  * STATUS_ACCESS_DENIED quittiert, und dann fehlt das Laufwerk ganz.
  */
 export function preferredDosName(name: string): string {
-  const gesaeubert = Array.from(name, (z) => (VERBOTENE_DOSNAME_ZEICHEN.test(z) ? '_' : z)).join('');
+  const gesaeubert = driveWireName(name).replace(/[^\x20-\x7e]/g, '_');
   return gesaeubert.substring(0, PREFERRED_DOS_NAME_SIZE - 1);
+}
+
+/** Windows-kompatibler Freigabename, entsprechend FreeRDP drive_register_drive_path. */
+export function driveWireName(name: string): string {
+  return name.replace(/[<>"/\\|:\x00-\x20\x7f]/g, '_') || 'VS_Code';
 }
 
 /**
  * DR_DEVICELIST_ANNOUNCE fuer Dateisystemgeraete (2.2.3.1).
  *
- * DeviceData traegt den vollen Namen als nullterminiertes UTF-16LE. Das ist
- * nur zulaessig, weil wir DRIVE_CAPABILITY_VERSION_02 angekuendigt haben; ist
+ * DeviceData traegt den vollen Namen als nullterminiertes UTF-8 wie FreeRDP.
+ * MS-RDPEFS nennt hier Unicode, Windows liest diesen Namen jedoch byteweise;
+ * UTF-16LE führte zu einer Freigabe namens "V" statt "VS Code". Ist
  * DeviceDataLength ungleich null, ignoriert der Server den PreferredDosName.
  * Gesetzt wird er trotzdem - fuer Server, die die Version 2 nicht koennen.
  */
 export function buildDeviceListAnnounce(geraete: readonly RdpdrGeraet[]): Buffer {
   const w = writer().uint32le(geraete.length);
   for (const geraet of geraete) {
-    const voll = Buffer.from(geraet.name + '\0', 'ucs2');
+    const voll = Buffer.from(driveWireName(geraet.name) + '\0', 'utf8');
     w.uint32le(RDPDR_DTYP_FILESYSTEM)
       .uint32le(geraet.deviceId)
       .ascii(preferredDosName(geraet.name), PREFERRED_DOS_NAME_SIZE)
@@ -1521,6 +1521,9 @@ export function waehleNebenversion(serverMinor: number): number {
  *  5. Danach beantworten wir Device-I/O-Anfragen, bis der Kanal endet.
  */
 export class RdpdrSession {
+  private generation = 0;
+  private diagnoseAnfragen = 0;
+  private diagnoseAntworten = 0;
   private serverVersionMinor = 0;
   private nebenversion = RDPDR_VERSION_MINOR;
   private clientId = 0;
@@ -1573,6 +1576,12 @@ export class RdpdrSession {
 
   private sende(daten: Buffer): void {
     if (this.beendet) return;
+    if (daten.length >= 16 && daten.readUInt16LE(2) === PAKID_CORE_DEVICE_IOCOMPLETION) {
+      const status = daten.readUInt32LE(12);
+      if (this.diagnoseAntworten++ < 100 || (status !== STATUS_SUCCESS && status !== STATUS_NO_MORE_FILES)) {
+        this.protokoll(`RDPDR I/O Antwort: Gerät=${daten.readUInt32LE(4)}, Anfrage=${daten.readUInt32LE(8)}, Status=0x${status.toString(16).padStart(8, '0')}, Bytes=${daten.length}`);
+      }
+    }
     this.opts.send(daten);
   }
 
@@ -1584,6 +1593,7 @@ export class RdpdrSession {
    * liefe.
    */
   dispose(): void {
+    this.generation++;
     this.beendet = true;
     this.offeneDateien.clear();
   }
@@ -1596,6 +1606,9 @@ export class RdpdrSession {
    * Geraetereferenzen freizugeben.
    */
   zuruecksetzen(): void {
+    this.generation++;
+    this.diagnoseAnfragen = 0;
+    this.diagnoseAntworten = 0;
     this.serverVersionMinor = 0;
     this.nebenversion = RDPDR_VERSION_MINOR;
     this.clientId = 0;
@@ -1736,6 +1749,7 @@ export class RdpdrSession {
     if (this.angekuendigt || this.kuendigtGerade) return;
     if (!this.capsGesehen || !this.clientIdBestaetigt) return;
     this.kuendigtGerade = true;
+    const generation = this.generation;
 
     void (async () => {
       let liste: readonly RdpdrLaufwerk[] = [];
@@ -1744,7 +1758,7 @@ export class RdpdrSession {
       } catch (err) {
         this.protokoll(`RDPDR: die Laufwerksliste konnte nicht ermittelt werden - ${(err as Error).message}`);
       }
-      if (this.beendet) return;
+      if (this.beendet || generation !== this.generation) return;
       this.kuendigtGerade = false;
       this.angekuendigt = true;
 
@@ -1760,7 +1774,7 @@ export class RdpdrSession {
       for (const laufwerk of liste) this.laufwerke.set(laufwerk.deviceId, laufwerk);
       this.sende(buildDeviceListAnnounce(liste.map((l) => ({ deviceId: l.deviceId, name: l.name }))));
       this.protokoll(
-        `RDPDR: ${liste.length} Laufwerk(e) angekuendigt (${liste.map((l) => l.name).join(', ')})` +
+        `RDPDR: ${liste.length} Laufwerk(e) angekuendigt (${liste.map((l) => driveWireName(l.name)).join(', ')})` +
           `${this.nurLesen ? ', nur lesen' : ', lesen und schreiben'}`,
       );
     })();
@@ -1769,7 +1783,7 @@ export class RdpdrSession {
   private behandleDeviceReply(body: Buffer): void {
     const antwort = parseDeviceAnnounceResponse(body);
     const laufwerk = this.laufwerke.get(antwort.deviceId);
-    const name = laufwerk?.name ?? `Geraet ${antwort.deviceId}`;
+    const name = laufwerk ? driveWireName(laufwerk.name) : `Geraet ${antwort.deviceId}`;
     if (antwort.resultCode === STATUS_SUCCESS) {
       this.protokoll(`RDPDR: "${name}" ist im Explorer verfuegbar`);
       return;
@@ -1803,6 +1817,11 @@ export class RdpdrSession {
       return;
     }
 
+    if (this.diagnoseAnfragen++ < 100) {
+      const details = 'fsInformationClass' in anfrage ? `, Klasse=${anfrage.fsInformationClass}`
+        : anfrage.art === 'create' ? `, Zugriff=0x${anfrage.desiredAccess.toString(16)}, Disposition=${anfrage.createDisposition}, Optionen=0x${anfrage.createOptions.toString(16)}, Pfadzeichen=${anfrage.path.length}` : '';
+      this.protokoll(`RDPDR I/O Anfrage: ${anfrage.art}, Gerät=${anfrage.deviceId}, Handle=${anfrage.fileId}, Anfrage=${anfrage.completionId}${details}`);
+    }
     const laufwerk = this.laufwerke.get(anfrage.deviceId);
     if (!laufwerk) {
       this.protokoll(`RDPDR: Anfrage fuer unbekanntes Geraet ${anfrage.deviceId} abgelehnt`);
