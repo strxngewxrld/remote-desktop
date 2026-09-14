@@ -36,7 +36,7 @@ import {
 import type { RdpDiagnostics, EgfxVideoFrame, LogLevel } from 'ts-rdp';
 import { RdpConnection, secretKey, credentialSecretKey, parseUsername } from './connections.js';
 import { BandbreitenProfilName, berechnePerformanceFlags, istProfilName } from './bandbreite.js';
-import { FarbName, farbe as farbeZu, symbolDateiname, symbolSvg } from './farben.js';
+import { FarbName, farbe as farbeZu, farbigerTabTitel, symbolDateiname, symbolSvg } from './farben.js';
 import { CertificateTrustStore, TrustPolicy } from './trust.js';
 import {
   MacTastenabbildung,
@@ -440,7 +440,7 @@ export class RdpSession {
   ): Promise<RdpSession> {
     const panel = vscode.window.createWebviewPanel(
       'rdpSession',
-      connection.name || connection.host,
+      farbigerTabTitel(connection.name || connection.host, connection.color),
       vscode.ViewColumn.Active,
       {
         enableScripts: true,
@@ -458,8 +458,8 @@ export class RdpSession {
     RdpSession.merkeSitzung(session);
     // Listener müssen vor dem Laden stehen: das Webview kann sofort ready senden.
     panel.webview.html = renderWebview(panel.webview, context.extensionUri, connection.name || connection.host);
-    const icon = await farbSymbolUri(context, connection.color);
-    if (!session.disposed) panel.iconPath = icon ?? vscode.Uri.joinPath(context.extensionUri, 'media', 'rdp-icon.svg');
+    // Der Farbpunkt steht im Titel und benötigt kein aktiviertes Icon-Theme.
+    if (!farbeZu(connection.color)) panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'rdp-icon.svg');
     return session;
   }
 

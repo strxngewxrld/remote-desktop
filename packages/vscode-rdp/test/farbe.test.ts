@@ -313,12 +313,11 @@ describe('Kennfarbe - Sitzung', () => {
     kontext.entsorgeAlles();
   });
 
-  test('Das Panel bekommt das eingefaerbte Symbol', async () => {
+  test('Der Farbpunkt steht unabhängig von Tab-Symbolen direkt im Titel', async () => {
+    einstellungen.set('workbench.editor.showIcons', false);
     await oeffne({ name: 'Prod', host: '10.0.0.1', color: 'red' });
-    assert.equal(
-      notizen.panels[0]!.iconPath?.toString(),
-      `file:///erweiterung/ablage/farbsymbole/${symbolDateiname('red')}`,
-    );
+    assert.equal(notizen.panels[0]!.title, '🔴 Prod');
+    assert.equal(notizen.panels[0]!.iconPath, undefined);
   });
 
   test('Ohne Farbe bleibt es beim gewoehnlichen Symbol', async () => {
