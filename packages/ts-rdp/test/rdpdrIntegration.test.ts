@@ -339,12 +339,16 @@ describe('Laufwerksumleitung über den Kanal rdpdr', () => {
   }
 
   test('Ein RDPDR-Auftakt vor der Aktivierung wird nach connect beantwortet', async () => {
-    const { serverSeite, protokoll } = await sitzung({ frueherAuftakt: true });
+    const { serverSeite, protokoll, laufwerk } = await sitzung({ frueherAuftakt: true });
     await warteAuf(() => serverSeite.hat(PAKID_CORE_CLIENT_NAME), 'frühe RDPDR-Antwort', 1000);
     serverSeite.faehigkeiten();
     await warteAuf(() => serverSeite.geraete.length === 1, 'Geräteliste');
     await warteAuf(() => protokoll.some(n => n.includes('ist im Explorer verfuegbar')), 'Gerätebestätigung');
     assert.equal(serverSeite.geraete[0]!.name, 'Arbeitsbereich');
+    assert.deepEqual(laufwerk.diagnose, {
+      serverAnnounce: true, capabilities: true, clientIdBestaetigt: true,
+      freigabeLaeuft: false, listeVerarbeitet: true, laufwerke: 1,
+    });
   });
 
   test('Der Handshake laeuft in der Reihenfolge aus 3.2.5.1 ab', async () => {

@@ -1550,6 +1550,18 @@ export class RdpdrSession {
     return this.angekuendigt;
   }
 
+  /** Nur Protokollzustand, keine Datei- oder Anmeldeinhalte. */
+  get diagnose() {
+    return {
+      serverAnnounce: this.serverVersionMinor !== 0,
+      capabilities: this.capsGesehen,
+      clientIdBestaetigt: this.clientIdBestaetigt,
+      freigabeLaeuft: this.kuendigtGerade,
+      listeVerarbeitet: this.angekuendigt,
+      laufwerke: this.laufwerke.size,
+    };
+  }
+
   /** Zahl der gerade offenen Datei-Handles - fuer Protokoll und Tests. */
   get offeneHandles(): number {
     return this.offeneDateien.size;

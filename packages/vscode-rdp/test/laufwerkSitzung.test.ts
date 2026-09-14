@@ -194,6 +194,13 @@ describe('Laufwerk in der Sitzung - Anmeldung des Kanals', () => {
     await warteBis(() => sitzung.isConnected, 'aktive Sitzung');
     assert.equal(server.virtualChannelIds.has('rdpdr'), true);
     await warteBis(() => protokollEnthaelt(ausgabe, 'Kanal rdpdr bereit'), 'Bereitmeldung');
+    assert.ok(protokollEnthaelt(ausgabe, 'Client-Build: unbundled-test; Diagnose: drive-v3;'));
+    assert.ok(protokollEnthaelt(ausgabe, '1 Workspace-Ordner'));
+    const intern = sitzung as any;
+    intern.protokolliereLaufwerkDiagnose(intern.client, intern.laufwerk);
+    assert.ok(protokollEnthaelt(ausgabe, 'empfangen=0 Byte'));
+    assert.ok(protokollEnthaelt(ausgabe, '"serverAnnounce":false'));
+    assert.ok(protokollEnthaelt(ausgabe, 'Freigabe-Rückfrage ist noch nicht erreicht'));
   });
 
   test('Mit der Einstellung aus wird der Kanal gar nicht erst angemeldet', async () => {
