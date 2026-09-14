@@ -69,3 +69,34 @@ wurde deshalb Diagnose, kein weiterer spekulativer Protokoll-Fix:
 Für die nächste Eingrenzung: F5-Sitzung vollständig stoppen, erneut starten,
 verbinden, mindestens zehn Sekunden warten und den neuen Dump prüfen. Noch
 keine bestätigte Ursache für den verbleibenden Fehler am echten Server.
+
+## Dump 12:40: fehlender RDPSND-Kompatibilitätskanal
+
+Der neue Dump bestätigt `drive-v3`, den richtigen Extension-Pfad und einen
+Workspace-Ordner. Nach acht Sekunden sind auf `rdpdr` **0 Byte** eingegangen;
+alle Handshake-Schritte sind aus. Somit fehlt bereits Server Announce, nicht
+erst die Zustimmung oder das Lesen der Repository-Dateien.
+
+Für Windows ist eine Abhängigkeit der Geräteumleitung vom zusätzlichen
+`rdpsnd`-Kanal dokumentiert: [FreeRDP Plugins](https://github.com/FreeRDP/FreeRDP/wiki/Plugins).
+[Apache Guacamole](https://github.com/apache/guacamole-server/blob/main/src/protocols/rdp/rdp.c)
+lädt deshalb bei Laufwerksumleitung beide Kanäle, auch ohne Audiowiedergabe.
+Unsere Extension meldete bisher nur `rdpdr` an. Das ist eine zum beobachteten
+Stillstand passende Kompatibilitätslücke; die Bestätigung am echten Server
+steht noch aus.
+
+Bei aktivierter Laufwerksumleitung wird jetzt zusätzlich `rdpsnd` angemeldet.
+Ein minimaler Handler beantwortet Audioformat-/Versionsaushandlung mit einer
+leeren Formatliste und deaktiviertem UDP, sowie gegebenenfalls Quality Mode
+und Training. Es werden keine Audioformate akzeptiert oder Audiodaten an das
+Webview weitergegeben. Bei deaktivierter Laufwerksumleitung bleiben beide
+Kanäle abgemeldet. Referenz: [MS-RDPEA Client Audio Formats](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/d58d4d57-cb36-453a-866f-86beacc6d79b).
+
+Neue Kennung: `drive-v4-rdpsnd`. Beim nächsten F5-Start muss die Kanalliste
+auch `rdpsnd` enthalten. Erwarteter Fortschritt: `RDPDR: Server-Version`,
+Freigabe-Rückfrage und Gerätebestätigung. Ein neuer Integrationstest modelliert
+einen Server, der RDPDR erst nach RDPSND-Aushandlung startet; zusätzlich prüfen
+Unit-Tests leere Formatlisten, Quality Mode, Training und fehlerhafte Längen.
+
+Prüfergebnis: Build und Typecheck erfolgreich; 717 Bibliotheks- und 469
+Extension-Tests bestanden, einschließlich des neuen RDPSND/RDPDR-Ablaufs.
