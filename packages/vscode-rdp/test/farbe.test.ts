@@ -25,7 +25,7 @@ import {
   normalisiereBaum,
 } from '../src/connections.js';
 import type { RdpBaumEintrag, RdpConnection, RdpFolder } from '../src/connections.js';
-import { FARBEN, istFarbName, symbolDateiname, symbolSvg } from '../src/farben.js';
+import { FARBEN, FARB_NAMEN, istFarbName, symbolDateiname, symbolSvg } from '../src/farben.js';
 import { RdpSession, farbSymbolUri } from '../src/session.js';
 import { CertificateTrustStore } from '../src/trust.js';
 import { activate, deactivate } from '../src/extension.js';
@@ -266,18 +266,27 @@ describe('Kennfarbe - Panelsymbol', () => {
     assert.ok(svg.includes(`fill="${FARBEN.green.hex}"`));
   });
 
-  test('Die Datei landet im Ablageort der Extension', async () => {
+  test('Das Icon ist ein mitgeliefertes Asset ohne Schreibzugriff', async () => {
     const ort = await farbSymbolUri(kontext as never, 'blue');
     assert.ok(ort, 'es gibt einen Ort');
-    assert.equal(ort.fsPath, `/erweiterung/ablage/farbsymbole/${symbolDateiname('blue')}`);
-    const geschrieben = notizen.geschriebeneDateien.at(-1);
-    assert.equal(geschrieben?.pfad, ort.fsPath);
-    assert.ok(Buffer.from(geschrieben!.inhalt).toString('utf8').includes(FARBEN.blue.hex));
+    assert.equal(ort.fsPath, `/erweiterung/media/tab-icons/${symbolDateiname('blue')}`);
+    assert.equal(notizen.geschriebeneDateien.length, 0);
   });
 
   test('Ohne Farbe wird gar nichts geschrieben', async () => {
     assert.equal(await farbSymbolUri(kontext as never, undefined), undefined);
     assert.equal(notizen.geschriebeneDateien.length, 0);
+  });
+
+  test('Alle Farben haben mitgelieferte SVGs mit unterscheidbaren Formen', () => {
+    const formen = new Set<string>();
+    for (const name of FARB_NAMEN) {
+      const svg = readFileSync(join(__dirname, '../../media/tab-icons', symbolDateiname(name)), 'utf8');
+      assert.ok(svg.includes(FARBEN[name].hex));
+      assert.ok(svg.includes('viewBox="0 0 24 24"'));
+      formen.add(svg.replace(/#[0-9a-f]{6}/g, '#COLOR'));
+    }
+    assert.equal(formen.size, FARB_NAMEN.length);
   });
 });
 
@@ -313,11 +322,11 @@ describe('Kennfarbe - Sitzung', () => {
     kontext.entsorgeAlles();
   });
 
-  test('Der Farbpunkt steht unabhängig von Tab-Symbolen direkt im Titel', async () => {
+  test('Das Panel erhält ein echtes Icon und einen unveränderten Titel', async () => {
     einstellungen.set('workbench.editor.showIcons', false);
     await oeffne({ name: 'Prod', host: '10.0.0.1', color: 'red' });
-    assert.equal(notizen.panels[0]!.title, '🔴 Prod');
-    assert.equal(notizen.panels[0]!.iconPath, undefined);
+    assert.equal(notizen.panels[0]!.title, 'Prod');
+    assert.equal(notizen.panels[0]!.iconPath?.toString(), 'file:///erweiterung/media/tab-icons/rdp-red.svg');
   });
 
   test('Ohne Farbe bleibt es beim gewoehnlichen Symbol', async () => {

@@ -36,7 +36,7 @@ import {
 import type { RdpDiagnostics, EgfxVideoFrame, LogLevel } from 'ts-rdp';
 import { RdpConnection, secretKey, credentialSecretKey, parseUsername } from './connections.js';
 import { BandbreitenProfilName, berechnePerformanceFlags, istProfilName } from './bandbreite.js';
-import { FarbName, farbe as farbeZu, farbigerTabTitel, symbolDateiname, symbolSvg } from './farben.js';
+import { FarbName, farbe as farbeZu, symbolDateiname } from './farben.js';
 import { CertificateTrustStore, TrustPolicy } from './trust.js';
 import {
   MacTastenabbildung,
@@ -150,17 +150,12 @@ export function bildAusDatenUrl(datenUrl: unknown): Buffer | undefined {
 }
 
 /**
- * Schreibt das eingefaerbte Panelsymbol und liefert dessen Ort.
+ * Liefert das mitgelieferte Panelsymbol mit eigener Form und Farbe.
  *
  * `WebviewPanel.iconPath` nimmt zwar auch einen `ThemeIcon`, aber dessen Farbe
  * wertet VS Code laut eigener API-Dokumentation nur im `TreeItem` aus. Ein
- * farbiges Tabsymbol geht deshalb nur ueber eine Datei, in der die Farbe schon
- * steht - sie wird im Ablageort der Extension erzeugt, der auch unter
- * Remote-SSH auf der richtigen Seite liegt.
- *
- * Schlaegt das Schreiben fehl, gibt es `undefined` und die Sitzung behaelt das
- * gewoehnliche Symbol. Ein fehlendes Tabsymbol ist kein Grund, die Verbindung
- * nicht aufzubauen.
+ * farbiges Tabsymbol nutzt eine SVG-Datei. Die Assets liegen in der Extension;
+ * Schreibrechte auf globalStorage und asynchrone Dateierzeugung sind unnötig.
  */
 export async function farbSymbolUri(
   context: vscode.ExtensionContext,
@@ -168,15 +163,7 @@ export async function farbSymbolUri(
 ): Promise<vscode.Uri | undefined> {
   const kennung = farbeZu(name);
   if (!kennung || !name) return undefined;
-  const ordner = vscode.Uri.joinPath(context.globalStorageUri, 'farbsymbole');
-  const ziel = vscode.Uri.joinPath(ordner, symbolDateiname(name));
-  try {
-    await vscode.workspace.fs.createDirectory(ordner);
-    await vscode.workspace.fs.writeFile(ziel, Buffer.from(symbolSvg(kennung.hex), 'utf8'));
-    return ziel;
-  } catch {
-    return undefined;
-  }
+  return vscode.Uri.joinPath(context.extensionUri, 'media', 'tab-icons', symbolDateiname(name));
 }
 
 // ------------------------------------------------------------ Diagnosewerte
@@ -440,7 +427,7 @@ export class RdpSession {
   ): Promise<RdpSession> {
     const panel = vscode.window.createWebviewPanel(
       'rdpSession',
-      farbigerTabTitel(connection.name || connection.host, connection.color),
+      connection.name || connection.host,
       vscode.ViewColumn.Active,
       {
         enableScripts: true,
@@ -458,8 +445,8 @@ export class RdpSession {
     RdpSession.merkeSitzung(session);
     // Listener müssen vor dem Laden stehen: das Webview kann sofort ready senden.
     panel.webview.html = renderWebview(panel.webview, context.extensionUri, connection.name || connection.host);
-    // Der Farbpunkt steht im Titel und benötigt kein aktiviertes Icon-Theme.
-    if (!farbeZu(connection.color)) panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'rdp-icon.svg');
+    const icon = await farbSymbolUri(context, connection.color);
+    if (!session.disposed) panel.iconPath = icon ?? vscode.Uri.joinPath(context.extensionUri, 'media', 'rdp-icon.svg');
     return session;
   }
 
