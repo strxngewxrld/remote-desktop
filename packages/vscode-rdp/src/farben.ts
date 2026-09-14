@@ -14,8 +14,8 @@
  * und kennt kein Farbfeld, und `workbench.colorCustomizations` wirkt auf alle
  * Tabs zugleich. Was geht, ist:
  *
- *  - das **Symbol** des Webview-Panels (`WebviewPanel.iconPath`) - dort steht
- *    im Tab ein eingefaerbtes SVG neben dem Titel,
+ *  - ein farbiger Emoji-Kreis direkt im **Titel** des Webview-Panels,
+ *    unabhängig von der Sichtbarkeit der Tab-Symbole,
  *  - ein farbiger **Rahmen** um die Sitzungsflaeche im Webview,
  *  - die **Vordergrundfarbe** des Statusleisteneintrags
  *    (`StatusBarItem.color` nimmt `string | ThemeColor`; `backgroundColor`
@@ -30,6 +30,12 @@
  */
 
 export type FarbName = 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray';
+
+/** Im Titel sichtbar, auch wenn VS Code Tab-Symbole ausblendet. Graue Kennung: neutraler Kreis. */
+export function farbigerTabTitel(titel: string, name: FarbName | undefined): string {
+  const punkte: Record<FarbName, string> = { red: '🔴', orange: '🟠', yellow: '🟡', green: '🟢', blue: '🔵', purple: '🟣', gray: '⚪' };
+  return name && istFarbName(name) ? `${punkte[name]} ${titel}` : titel;
+}
 
 export interface Farbe {
   /** Klarname in der Auswahlliste. */
