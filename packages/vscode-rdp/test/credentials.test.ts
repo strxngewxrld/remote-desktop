@@ -2,12 +2,32 @@ import { einstellungen, zuruecksetzen, ExtensionContext, antworten } from './vsc
 import { strict as assert } from 'node:assert';
 import { beforeEach, test } from 'node:test';
 import { loeseCredentialsAuf, credentialSecretKey, parseUsername } from '../src/connections.js';
-import { verwalteCredentials } from '../src/credentials.js';
+import { verwalteCredentials, waehleAnmeldung } from '../src/credentials.js';
 import { RdpSession } from '../src/session.js';
 
 beforeEach(() => zuruecksetzen());
 const admin = { id: 'admin', name: 'Admin', username: 'administrator' };
 const user = { id: 'user', name: 'Benutzer', username: 'user' };
+
+test('Verbinden als wählt einmalig ein anderes Profil ohne den Standard zu ändern', async () => {
+  const connection = { name: 'Server', host: 'server', credentials: [admin, user], defaultCredential: admin.id };
+  antworten.auswahlen.push(1);
+  const selected = await waehleAnmeldung(connection);
+  assert.equal(selected?.defaultCredential, user.id);
+  assert.deepEqual(selected?.credentials, [user]);
+  assert.equal(connection.defaultCredential, admin.id);
+  assert.equal(connection.credentials.length, 2);
+});
+
+test('Verbinden als unterstützt neue Zugangsdaten und Abbruch', async () => {
+  const connection = { name: 'Server', host: 'server', username: 'alt', credentials: [admin] };
+  antworten.auswahlen.push(1);
+  const selected = await waehleAnmeldung(connection);
+  assert.equal(selected?.promptCredentials, true);
+  assert.equal(selected?.username, undefined);
+  assert.deepEqual(selected?.credentials, []);
+  assert.equal(await waehleAnmeldung(connection), undefined);
+});
 
 test('Domäne und UPN bleiben erhalten; unvollständige Anmeldungen werden abgelehnt', () => {
   assert.deepEqual(parseUsername(' DOM\\alice '), { domain: 'DOM', username: 'alice' });

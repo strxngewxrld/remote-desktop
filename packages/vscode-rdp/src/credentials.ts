@@ -1,9 +1,25 @@
 import * as vscode from 'vscode';
 import { randomUUID } from 'node:crypto';
 import {
-  BaumKnoten, ConnectionNode, FolderNode, CredentialSettings, Credential,
+  BaumKnoten, ConnectionNode, FolderNode, CredentialSettings, Credential, RdpConnection,
   credentialSecretKey, schreibeEintragAn, loeseCredentialsAuf, parseUsername,
 } from './connections.js';
+
+/** Einmalige Auswahl; weder gespeicherte Verbindung noch Standardprofil verändern. */
+export async function waehleAnmeldung(connection: RdpConnection): Promise<RdpConnection | undefined> {
+  const profiles = connection.promptCredentials ? [] : loeseCredentialsAuf([connection]).credentials ?? [];
+  const items: Array<{ label: string; description?: string; profile?: Credential }> = profiles.map(profile => ({
+    label: profile.name,
+    description: `${profile.domain ? profile.domain + '\\' : ''}${profile.username}${profile.id === connection.defaultCredential ? ' (Standard)' : ''}`,
+    profile,
+  }));
+  items.push({ label: 'Andere Zugangsdaten …', description: 'Benutzername und Passwort eingeben' });
+  const selected = await vscode.window.showQuickPick(items, { title: `Verbinden als: ${connection.name || connection.host}`, ignoreFocusOut: true });
+  if (!selected) return undefined;
+  return selected.profile
+    ? { ...connection, credentials: [{ ...selected.profile }], defaultCredential: selected.profile.id, promptCredentials: false }
+    : { ...connection, credentials: [], defaultCredential: undefined, username: undefined, promptCredentials: true };
+}
 
 /** Metadaten in Einstellungen, Passwörter ausschließlich in SecretStorage. */
 export async function verwalteCredentials(context: vscode.ExtensionContext, node?: BaumKnoten): Promise<void> {

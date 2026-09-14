@@ -2,7 +2,7 @@
  * Einstiegspunkt der Extension: Befehle, Seitenleiste und Sitzungsverwaltung.
  */
 import * as vscode from 'vscode';
-import { verwalteCredentials } from './credentials.js';
+import { verwalteCredentials, waehleAnmeldung } from './credentials.js';
 import {
   BaumKnoten,
   ConnectionNode,
@@ -74,6 +74,13 @@ export function activate(context: vscode.ExtensionContext): void {
       // Werte, die der Eintrag von seinen Ordnern erbt.
       const connection = node?.aufgeloest ?? (await pickConnectionNode('Verbindung auswählen'))?.aufgeloest;
       if (connection) await openSession(context, connection, output, trustStore);
+    }),
+
+    vscode.commands.registerCommand('rdp.connectAs', async (node?: ConnectionNode) => {
+      const connection = node?.aufgeloest ?? (await pickConnectionNode('Verbinden als …'))?.aufgeloest;
+      if (!connection) return;
+      const selected = await waehleAnmeldung(connection);
+      if (selected) await openSession(context, selected, output, trustStore);
     }),
 
     vscode.commands.registerCommand('rdp.addConnection', async (node?: BaumKnoten) => {
