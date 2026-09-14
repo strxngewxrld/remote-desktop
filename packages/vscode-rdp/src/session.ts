@@ -443,7 +443,7 @@ export class RdpSession {
     statusBar.command = 'rdp.disconnect';
 
     const session = new RdpSession(panel, context, connection, output, trustStore, statusBar);
-    session.log(`Client-Build: ${BUILD_INFO}; Diagnose: drive-v4-rdpsnd; Extension: ${context.extensionUri.toString()}`);
+    session.log(`Client-Build: ${BUILD_INFO}; Diagnose: drive-v5-io; Extension: ${context.extensionUri.toString()}`);
     session.disposables.push(statusBar);
     session.wirePanel();
     session.diagnoseSichtbar = RdpSession.diagnoseStartzustand(context);
