@@ -50,6 +50,12 @@
     ],
     "commands": [
       {
+        "command": "rdp.connectAs",
+        "title": "Verbinden als …",
+        "category": "RDP",
+        "icon": "$(account)"
+      },
+      {
         "command": "rdp.manageCredentials",
         "title": "Zugangsdaten verwalten…",
         "category": "RDP",
@@ -261,6 +267,8 @@
         }
       ],
       "view/item/context": [
+        { "command": "rdp.connectAs", "when": "view == rdpConnections && viewItem == rdpConnection", "group": "inline@2" },
+        { "command": "rdp.connectAs", "when": "view == rdpConnections && viewItem == rdpConnection", "group": "0_connect@2" },
         { "command": "rdp.manageCredentials", "when": "view == rdpConnections", "group": "1_modify@8" },
         {
           "command": "rdp.connectSaved",
