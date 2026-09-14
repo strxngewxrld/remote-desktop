@@ -37,6 +37,7 @@ import type { RdpDiagnostics, EgfxVideoFrame, LogLevel } from 'ts-rdp';
 import { RdpConnection, secretKey, credentialSecretKey, parseUsername } from './connections.js';
 import { BandbreitenProfilName, berechnePerformanceFlags, istProfilName } from './bandbreite.js';
 import { FarbName, farbe as farbeZu, symbolDateiname } from './farben.js';
+import { BUILD_INFO } from './buildInfo.js';
 import { CertificateTrustStore, TrustPolicy } from './trust.js';
 import {
   MacTastenabbildung,
@@ -367,6 +368,7 @@ export class RdpSession {
   // --- Laufwerksumleitung (MS-RDPEFS). Fehlt der Kanal, bleibt alles
   // undefined und die Sitzung verhaelt sich wie ohne diese Erweiterung.
   private laufwerk?: RdpdrSession;
+  private laufwerkDiagnoseTimer?: NodeJS.Timeout;
   /** Horcher auf Aenderungen am Arbeitsbereich; nur waehrend der Sitzung. */
   private arbeitsbereichHorcher?: vscode.Disposable;
   private zwischenablageFeldSichtbar = false;
@@ -439,6 +441,7 @@ export class RdpSession {
     statusBar.command = 'rdp.disconnect';
 
     const session = new RdpSession(panel, context, connection, output, trustStore, statusBar);
+    session.log(`Client-Build: ${BUILD_INFO}; Diagnose: drive-v3; Extension: ${context.extensionUri.toString()}`);
     session.disposables.push(statusBar);
     session.wirePanel();
     session.diagnoseSichtbar = RdpSession.diagnoseStartzustand(context);
@@ -1077,6 +1080,7 @@ export class RdpSession {
       // Beim RDPDR-Kanal gilt dasselbe, und dazu kommt: offene Datei-Handles
       // zeigen auf eine Verbindung, die es nicht mehr gibt.
       this.laufwerk?.zuruecksetzen();
+      clearTimeout(this.laufwerkDiagnoseTimer);
       this.setState('closed', 'Sitzung beendet', reason ?? 'Die Verbindung wurde geschlossen.', 'Erneut verbinden');
       this.updateStatusBar();
     });
@@ -1100,6 +1104,7 @@ export class RdpSession {
    * eine verneinte Antwort kostet nur die Ankuendigung, nicht die Sitzung.
    */
   private starteLaufwerk(client: RdpClient): void {
+    clearTimeout(this.laufwerkDiagnoseTimer);
     this.laufwerk?.dispose();
     this.laufwerk = undefined;
     this.arbeitsbereichHorcher?.dispose();
@@ -1161,6 +1166,11 @@ export class RdpSession {
       },
     });
     this.laufwerk = sitzung;
+    this.laufwerkDiagnoseTimer = setTimeout(() => {
+      if (this.disposed || this.client !== client || this.laufwerk !== sitzung) return;
+      this.protokolliereLaufwerkDiagnose(client, sitzung);
+    }, 8000);
+    this.laufwerkDiagnoseTimer.unref();
 
     // Änderungen am Arbeitsbereich wirken sich unterschiedlich aus, und das
     // gehört ins Protokoll, damit niemand vergeblich im Explorer sucht:
@@ -1187,8 +1197,15 @@ export class RdpSession {
 
     this.log(
       `Laufwerk: Kanal rdpdr bereit (${einstellungen.nurLesen ? 'nur lesen' : 'lesen und schreiben'}, ` +
-        `${einstellungen.ausschluss.length} Ausschlussmuster)`,
+        `${einstellungen.ausschluss.length} Ausschlussmuster; ${zugriff.ordnernamen().length} Workspace-Ordner)`,
     );
+  }
+
+  private protokolliereLaufwerkDiagnose(client: RdpClient, sitzung: RdpdrSession): void {
+    const id = client.getStaticChannelId(RDPDR_CHANNEL_NAME);
+    const bytes = id === undefined ? 0 : client.getDiagnostics().virtualChannelBytes[id] ?? 0;
+    this.log(`Laufwerk-Diagnose: Kanal=${id ?? 'fehlt'}, empfangen=${bytes} Byte, Zustand=${JSON.stringify(sitzung.diagnose)}`);
+    if (bytes === 0) this.log('Laufwerk-Diagnose: Auf rdpdr wurden bisher keine Nutzdaten empfangen; die Freigabe-Rückfrage ist noch nicht erreicht.');
   }
 
   // ------------------------------------------------------- Zwischenablage
@@ -1764,6 +1781,7 @@ export class RdpSession {
 
   dispose(): void {
     if (this.disposed) return;
+    clearTimeout(this.laufwerkDiagnoseTimer);
     this.disposed = true;
     this.clearWatchdog();
     if (this.diagnoseTimer) {

@@ -14,6 +14,7 @@ const options = {
   sourcemap: true,
   minify: !watch,
   logLevel: 'info',
+  define: { __RDP_BUILD_TIME__: JSON.stringify(new Date().toISOString()) },
 };
 
 if (watch) {
