@@ -29,6 +29,8 @@ import {
   CLIPRDR_CHANNEL_DEF,
   CLIPRDR_CHANNEL_NAME,
   RDPDR_CHANNEL_DEF,
+  RDPSND_CHANNEL_DEF,
+  silentAudioReplies,
   RDPDR_CHANNEL_NAME,
   RdpdrSession,
   createLogger,
@@ -441,7 +443,7 @@ export class RdpSession {
     statusBar.command = 'rdp.disconnect';
 
     const session = new RdpSession(panel, context, connection, output, trustStore, statusBar);
-    session.log(`Client-Build: ${BUILD_INFO}; Diagnose: drive-v3; Extension: ${context.extensionUri.toString()}`);
+    session.log(`Client-Build: ${BUILD_INFO}; Diagnose: drive-v4-rdpsnd; Extension: ${context.extensionUri.toString()}`);
     session.disposables.push(statusBar);
     session.wirePanel();
     session.diagnoseSichtbar = RdpSession.diagnoseStartzustand(context);
@@ -766,7 +768,7 @@ export class RdpSession {
           // Ebenso fuer die Laufwerksumleitung: ohne die Einstellung wird der
           // Kanal gar nicht erst angemeldet, und getStaticChannelId('rdpdr')
           // bleibt undefined.
-          ...(laufwerkEinstellungen.aktiv ? [RDPDR_CHANNEL_DEF] : []),
+          ...(laufwerkEinstellungen.aktiv ? [RDPSND_CHANNEL_DEF, RDPDR_CHANNEL_DEF] : []),
         ],
         enableGraphicsPipeline: config.get<boolean>('graphicsPipeline', true),
         // Der Display Control Channel wird angefragt, sobald das Mitziehen
@@ -1021,6 +1023,12 @@ export class RdpSession {
     client.on('staticChannelData', (e: { name: string; data: Buffer }) => {
       if (e.name === CLIPRDR_CHANNEL_NAME) this.zwischenablage?.verarbeite(e.data);
       else if (e.name === RDPDR_CHANNEL_NAME) this.laufwerk?.verarbeite(e.data);
+      else if (e.name === RDPSND_CHANNEL_DEF.name) {
+        try {
+          for (const reply of silentAudioReplies(e.data)) client.sendVirtualChannel(RDPSND_CHANNEL_DEF.name, reply);
+          if (e.data[0] === 7) this.log('RDPSND: Kompatibilitätskanal ausgehandelt, keine Audioformate/Audiowiedergabe');
+        } catch (error) { this.log(`RDPSND: ${String(error)}`); }
+      }
     });
 
     client.on('bitmap', (tiles: DecodedBitmap[]) => this.sendTiles(tiles));
