@@ -21,7 +21,14 @@ Befehlspalette an; Kontextmenüs enthalten nur den jeweiligen Befehlsnamen.
 
 Verbindungen und Ordner lassen sich im Baum per Drag-and-drop in einen Ordner
 oder auf die freie Fläche der obersten Ebene verschieben. Ein farbig markierter
-Server bekommt beim Öffnen einen gefüllten Farbpunkt im Tab.
+Server bekommt beim Öffnen einen Farbpunkt direkt im Tab-Titel, auch bei
+ausgeblendeten Tab-Symbolen. Die Emoji-Farbtöne hängen vom Betriebssystem ab;
+die graue Kennung verwendet einen neutralen weißen Kreis.
+
+**Verbinden als …** ist als Personen-Button direkt am Servereintrag und im
+Kontextmenü verfügbar. Es bietet die effektiven, vererbten Profile und
+**Andere Zugangsdaten …** für eine manuelle Anmeldung an. Die Auswahl gilt nur
+für diese Sitzung; der gespeicherte Standard bleibt unverändert.
 
 Über **Zugangsdaten verwalten…** im Ansichtsmenü werden Profile auf oberster
 Ebene gepflegt; derselbe Befehl im Kontextmenü verwaltet Profile am Ordner oder
@@ -38,6 +45,33 @@ nativen Paste-Ereignisses und funktioniert damit auch unabhängig vom Dateisyste
 des Extension-Hosts. Das Standardlimit ist insgesamt 64 MiB
 (`rdp.clipboard.maxFileSizeMb`). Ordner und Dateien in Gegenrichtung sind noch
 nicht unterstützt; Text bleibt in beide Richtungen verfügbar.
+
+## Repository unter Windows öffnen
+
+1. Das Repository als Ordner im **gleichen VS-Code-Fenster** öffnen, aus dem
+   die RDP-Sitzung gestartet wird. Bei Remote-SSH/Containern sind dies die
+   Ordner des entfernten Extension-Hosts, nicht automatisch die des Macs.
+2. `rdp.driveRedirection.enabled` auf `true` setzen (Vorgabe) und die Sitzung
+   neu verbinden. `rdp.driveRedirection.access` bleibt zunächst `readOnly`.
+3. Die Freigabe-Rückfrage mit **Freigeben** oder **Nur dieses Mal** bestätigen.
+   Wurde früher abgelehnt: bei offener Sitzung **RDP: Laufwerksfreigaben
+   vergessen** ausführen und anschließend neu verbinden.
+4. Im Windows-Explorer **Dieser PC** bzw. `\\tsclient\` öffnen. Das Laufwerk
+   heißt standardmäßig **VS Code**; darunter liegt ein Unterordner pro
+   Workspace-Ordner. Ein eigener Laufwerksbuchstabe wird nicht automatisch
+   eingerichtet. Dies ist RDP-Umleitung, keine SMB-Freigabe.
+
+Für Änderungen am Repository `rdp.driveRedirection.access` bewusst auf
+`readWrite` setzen, neu verbinden und Schreibrecht bestätigen. Ausgeschlossene
+Dateien (u. a. `.git`, `.env`, Schlüssel) und Symlinks bleiben unsichtbar;
+die Freigabe ist damit kein vollständiger Git-Checkout für Windows.
+
+Fehlt das Laufwerk weiterhin, unter **RDP: Protokoll anzeigen** die Zeilen
+`Laufwerk:` und `RDPDR:` prüfen. Ein bereiter `rdpdr`-Kanal allein belegt noch
+keine erfolgreiche Geräteankündigung. Auch eine serverseitige Richtlinie kann
+die Umleitung verhindern; siehe [Microsofts Dokumentation zur Laufwerksumleitung](https://learn.microsoft.com/en-us/azure/virtual-desktop/redirection-configure-drives-storage).
+
+## Befehlsübersicht
 
 | Befehl | Wirkung |
 |---|---|
