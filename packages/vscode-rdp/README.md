@@ -81,6 +81,11 @@ Nach Aktualisierung der Extension ist eine neue RDP-Verbindung nötig. Im
 Protokoll sollten anschließend `RDPDR: Server-Version`, die Geräteankündigung
 und bei Bestätigung `ist im Explorer verfuegbar` erscheinen.
 
+Für Windows-Kompatibilität wird zusammen mit der Laufwerksumleitung zusätzlich
+`rdpsnd` angemeldet. Manche Windows-Server starten den Geräte-Handshake sonst
+nicht. Dieser Hilfskanal akzeptiert **keine Audioformate** und implementiert
+keine Audiowiedergabe; die leere Formatauswahl dient nur der Aushandlung.
+
 ## Befehlsübersicht
 
 | Befehl | Wirkung |
