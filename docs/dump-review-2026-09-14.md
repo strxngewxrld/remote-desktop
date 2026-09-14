@@ -100,3 +100,56 @@ Unit-Tests leere Formatlisten, Quality Mode, Training und fehlerhafte Längen.
 
 Prüfergebnis: Build und Typecheck erfolgreich; 717 Bibliotheks- und 469
 Extension-Tests bestanden, einschließlich des neuen RDPSND/RDPDR-Ablaufs.
+
+## Dump 12:46: Laufwerk angekündigt, Zugriff auf `\\tsclient\V` scheitert
+
+Windows bestätigt um 12:47:11 erstmals das Laufwerk. RDPSND hat damit den
+fehlenden Geräte-Handshake behoben. Der Screenshot nennt jedoch `V` statt
+des vollständigen Freigabenamens. Die bisherige UTF-16LE-Kodierung erzeugt
+bereits nach dem ersten Zeichen ein Nullbyte. Für Windows-Kompatibilität
+wird DeviceData jetzt wie bei [FreeRDP](https://github.com/FreeRDP/FreeRDP/blob/master/channels/drive/client/drive_main.c)
+als nullterminierter UTF-8-Name übertragen. Leerzeichen und unzulässige
+Pfadzeichen werden ersetzt; aus `VS Code` wird `VS_Code`.
+MS-RDPEFS bezeichnet dieses Feld als Unicode; die bisher daraus abgeleitete
+UTF-16LE-Annahme wird für dieses Feld korrigiert. Andere Unicode-Felder,
+insbesondere Dateipfade und Client Name, bleiben UTF-16LE.
+
+Zudem startet Windows den Geräte-Handshake während einer offenen Freigabefrage
+erneut. Im Dump folgen zwei Geräteankündigungen. Eine Generation pro Handshake
+verhindert jetzt, dass eine verspätete Freigabeantwort des alten Handshakes
+erneut Geräte anmeldet oder den Zustand des neuen Ablaufs verändert.
+
+Die Sitzung ist laut Dump ausdrücklich nur lesend freigegeben. Schreibzugriff
+ist implementiert: Im verwendeten Extension-Development-Host
+`rdp.driveRedirection.access` auf `readWrite` setzen, neu verbinden und die
+zusätzliche Schreibfreigabe bestätigen. Die sichere globale Vorgabe bleibt
+`readOnly`; ausgeschlossene Dateien bleiben auch mit Schreibrecht unsichtbar.
+
+Diese Korrekturen benötigen noch den Windows-Livetest. Der vollständige
+Netzwerk-Testlauf wurde vom Freigabesystem wegen eines Nutzungslimits abgelehnt;
+Build, Typecheck und separate Unit-Tests ohne Netzwerk wurden ausgeführt.
+
+## Dump 14:27: I/O erreicht den Client, Öffnen scheitert weiterhin
+
+Der korrigierte Freigabename `VS_Code` erscheint im Screenshot und wird im
+Dump bestätigt. Anders als im Null-Byte-Dump folgen jetzt zahlreiche
+eingehende RDPDR-Nachrichten mit 56 bis 82 Byte sowie Antworten mit 20, 21,
+42 und 56 Byte. Die Größen passen zu Create-, Close- und Metadatenoperationen;
+ohne protokollierte Anfrageart/Status ist dies allein noch kein Beweis für
+deren erfolgreichen Abschluss. Die aktuelle Sitzung läuft weiterhin nur lesend.
+
+Für die verbleibende Fehlersuche ergänzt `drive-v5-io` die ersten 100
+I/O-Anfragen/-Antworten um Operation, Geräte-ID, Handle, Completion-ID,
+Informationsklasse und Antwortstatus. Weitere Fehlerantworten werden ebenfalls
+protokolliert (ausgenommen reguläres Ende der Verzeichnisaufzählung).
+Dateipfade und Nutzdaten werden in diesen Diagnosezeilen nicht ausgegeben.
+Ein Test prüft erfolgreiche Create-Antworten und das Ausbleiben von Dateipfaden.
+
+Kein weiterer Protokoll-Fix aus bloßen Paketgrößen abgeleitet. Für die konkrete
+Ursache werden nach erneutem F5-Start und einem Öffnungsversuch die Zeilen
+`RDPDR I/O Anfrage` und `RDPDR I/O Antwort` benötigt.
+
+Die frühere Freigabesperre ist beim erneuten Versuch nicht mehr aufgetreten:
+Die vollständige Testsuite wurde diesmal erfolgreich ausgeführt (720
+Bibliotheks- und 469 Extension-Tests). Die ausstehenden Änderungen wurden
+zusammen mit der I/O-Diagnose committed. Der Windows-Livezugriff bleibt offen.

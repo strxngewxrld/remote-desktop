@@ -60,7 +60,7 @@ nicht unterstützt; Text bleibt in beide Richtungen verfügbar.
    Wurde früher abgelehnt: bei offener Sitzung **RDP: Laufwerksfreigaben
    vergessen** ausführen und anschließend neu verbinden.
 4. Im Windows-Explorer **Dieser PC** bzw. `\\tsclient\` öffnen. Das Laufwerk
-   heißt standardmäßig **VS Code**; darunter liegt ein Unterordner pro
+   heißt standardmäßig **VS_Code** (`\\tsclient\VS_Code`); darunter liegt ein Unterordner pro
    Workspace-Ordner. Ein eigener Laufwerksbuchstabe wird nicht automatisch
    eingerichtet. Dies ist RDP-Umleitung, keine SMB-Freigabe.
 
@@ -68,6 +68,17 @@ Für Änderungen am Repository `rdp.driveRedirection.access` bewusst auf
 `readWrite` setzen, neu verbinden und Schreibrecht bestätigen. Ausgeschlossene
 Dateien (u. a. `.git`, `.env`, Schlüssel) und Symlinks bleiben unsichtbar;
 die Freigabe ist damit kein vollständiger Git-Checkout für Windows.
+
+Beispiel für die VS-Code-Einstellungen (JSON):
+
+```json
+"rdp.driveRedirection.enabled": true,
+"rdp.driveRedirection.access": "readWrite"
+```
+
+Die Vorgabe bleibt aus Sicherheitsgründen `readOnly`. `readWrite` unterstützt
+Anlegen, Ändern, Umbenennen und Löschen; es ist keine reine Leseumleitung.
+Der Windows-Freigabename ersetzt Leerzeichen und Pfadsonderzeichen durch `_`.
 
 Fehlt das Laufwerk weiterhin, unter **RDP: Protokoll anzeigen** die Zeilen
 `Laufwerk:` und `RDPDR:` prüfen. Ein bereiter `rdpdr`-Kanal allein belegt noch
