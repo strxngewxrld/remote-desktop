@@ -12,6 +12,7 @@
  */
 export { RdpClient, serverPublicKeyDer } from './client.js';
 export { probeServerCertificate } from './probe.js';
+export { RDPSND_CHANNEL_DEF, silentAudioReplies } from './protocol/rdpsnd.js';
 export {
   isTlsCompatibilityError,
   LEGACY_TLS_PROFILE,

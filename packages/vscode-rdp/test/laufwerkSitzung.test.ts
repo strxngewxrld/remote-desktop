@@ -193,8 +193,9 @@ describe('Laufwerk in der Sitzung - Anmeldung des Kanals', () => {
     const { sitzung, ausgabe } = await starteSitzung();
     await warteBis(() => sitzung.isConnected, 'aktive Sitzung');
     assert.equal(server.virtualChannelIds.has('rdpdr'), true);
+    assert.equal(server.virtualChannelIds.has('rdpsnd'), true);
     await warteBis(() => protokollEnthaelt(ausgabe, 'Kanal rdpdr bereit'), 'Bereitmeldung');
-    assert.ok(protokollEnthaelt(ausgabe, 'Client-Build: unbundled-test; Diagnose: drive-v3;'));
+    assert.ok(protokollEnthaelt(ausgabe, 'Client-Build: unbundled-test; Diagnose: drive-v4-rdpsnd;'));
     assert.ok(protokollEnthaelt(ausgabe, '1 Workspace-Ordner'));
     const intern = sitzung as any;
     intern.protokolliereLaufwerkDiagnose(intern.client, intern.laufwerk);
@@ -209,6 +210,7 @@ describe('Laufwerk in der Sitzung - Anmeldung des Kanals', () => {
     const { sitzung, ausgabe } = await starteSitzung();
     await warteBis(() => sitzung.isConnected, 'aktive Sitzung');
     assert.equal(server.virtualChannelIds.has('rdpdr'), false);
+    assert.equal(server.virtualChannelIds.has('rdpsnd'), false);
     await warteBis(
       () => protokollEnthaelt(ausgabe, 'Laufwerk: in den Einstellungen abgeschaltet'),
       'Protokolleintrag',
@@ -263,6 +265,33 @@ describe('Laufwerk in der Sitzung - Rueckfallebenen', () => {
     serverAuftakt();
     await warteBis(() => gesehen.packetIds.includes(rdpdr.PAKID_CORE_DEVICELIST_ANNOUNCE), 'Geräteliste');
     assert.equal(protokollEnthaelt(ausgabe, 'gebe 1 Ordner frei'), true);
+  });
+
+  test('Server mit RDPSND-Abhängigkeit erhält Geräte nach stummer Aushandlung', async () => {
+    setzeArbeitsbereichsOrdner(['/arbeit/frontend']);
+    dateien.set('/arbeit/frontend/README.md', Buffer.from('# x\n'));
+    antworten.meldungen.push('Freigeben');
+    const { sitzung, ausgabe } = await starteSitzung();
+    await warteBis(() => sitzung.isConnected, 'aktive Sitzung');
+    assert.ok(server.virtualChannelIds.has('rdpsnd'));
+    const gesehen = horcheAufRdpdr();
+    let formats = false;
+    const horcher = (e: { name: string; data: Buffer }) => {
+      if (e.name !== 'rdpsnd' || e.data[0] !== 7) return;
+      assert.equal(e.data.readUInt16LE(18), 0, 'keine Audioformate akzeptieren');
+      formats = true;
+      serverAuftakt();
+    };
+    server.on('staticChannelData', horcher);
+    aufraeumer.push(() => server.off('staticChannelData', horcher));
+    const angebot = Buffer.alloc(24);
+    angebot[0] = 7;
+    angebot.writeUInt16LE(20, 2);
+    angebot.writeUInt16LE(8, 21);
+    server.sendStaticChannelData('rdpsnd', angebot);
+    await warteBis(() => gesehen.packetIds.includes(rdpdr.PAKID_CORE_DEVICELIST_ANNOUNCE), 'Geräteliste nach RDPSND');
+    assert.ok(formats);
+    assert.ok(protokollEnthaelt(ausgabe, 'keine Audioformate/Audiowiedergabe'));
   });
 
   test('Ein Server ohne RDPDR-Auftakt laesst die Sitzung unberuehrt', async () => {
