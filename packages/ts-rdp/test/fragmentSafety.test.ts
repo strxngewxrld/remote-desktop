@@ -4,6 +4,17 @@ import { RdpClient } from '../src/client.js';
 import { ChannelReassembler, buildChannelChunks } from '../src/protocol/virtualChannel.js';
 import { buildDataFirst, buildData } from '../src/protocol/dvc.js';
 
+test('Handshake frame queue bounds bytes and number of fragments', () => {
+  const client = new RdpClient({ host: 'unused' }) as any;
+  const frame = { fastpath: false, flags: 0, payload: Buffer.alloc(1) };
+  client.queuedFrameBytes = 16 * 1024 * 1024;
+  assert.throws(() => client.queueHandshakeFrame(frame), { code: 'RDP_PROTOCOL' });
+  client.queuedFrameBytes = 0;
+  for (let i = 0; i < 4096; i++) client.queueHandshakeFrame(frame);
+  assert.throws(() => client.queueHandshakeFrame(frame), { code: 'RDP_PROTOCOL' });
+  assert.equal(client.queuedFrames.length, 4096);
+});
+
 test('Static channel enforces actual length, sequence and resets after rejection', () => {
   const r = new ChannelReassembler(4);
   assert.throws(() => r.push({ totalLength: 4, flags: 2, data: Buffer.from('ab') }));

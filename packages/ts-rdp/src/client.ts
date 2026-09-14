@@ -486,8 +486,9 @@ export class RdpClient extends EventEmitter {
   private activations = 0;
   private pointerCache = new Map<number, PointerImage>();
 
-  /** Fastpath-Frames, die waehrend des Handshakes eintreffen, werden zwischengespeichert. */
+  /** Frühe Grafik- und Kanaldaten erst nach connect an die Verbraucher ausliefern. */
   private queuedFrames: RdpFrame[] = [];
+  private queuedFrameBytes = 0;
   /** Reassemblierung fragmentierter Fastpath-Updates. */
   private fragments: Buffer[] = [];
   private fragmentBytes = 0;
@@ -651,7 +652,9 @@ export class RdpClient extends EventEmitter {
     // statischen Desktop nie wieder eines bekommen.
     this.emit('connect');
     // Zuerst die waehrend des Handshakes eingetroffenen Frames, danach der laufende Strom.
-    for (const frame of this.queuedFrames.splice(0)) this.handleFrame(frame);
+    const queued = this.queuedFrames.splice(0);
+    this.queuedFrameBytes = 0;
+    for (const frame of queued) this.handleFrame(frame);
     this.transport.startFlowing();
   }
 
@@ -668,6 +671,7 @@ export class RdpClient extends EventEmitter {
     this.palette = undefined;
     this.pointerCache.clear();
     this.queuedFrames = [];
+    this.queuedFrameBytes = 0;
     this.fragments = [];
     this.fragmentBytes = 0;
     this.fragmentCode = undefined;
@@ -1010,18 +1014,31 @@ export class RdpClient extends EventEmitter {
     }
   }
 
-  /** Naechste MCS-Nutzlast waehrend des Handshakes; Fastpath-Frames werden gepuffert. */
+  private queueHandshakeFrame(frame: RdpFrame): void {
+    if (this.queuedFrames.length >= 4096 || this.queuedFrameBytes + frame.payload.length > MAX_FRAGMENT_BYTES) {
+      throw new RdpError('Zu viele frühe Kanal-/Grafikdaten während des Handshakes', 'RDP_PROTOCOL');
+    }
+    this.queuedFrames.push(frame);
+    this.queuedFrameBytes += frame.payload.length;
+  }
+
+  /** Nur I/O-Kanal-PDUs gehören zur Lizenz-/Aktivierungsphase. */
   private async nextMcsPayload(): Promise<Buffer> {
     for (;;) {
       const raw = await this.transport.nextFrame('tpkt');
       const frame = parseFrame(raw);
       if (frame.fastpath) {
-        this.queuedFrames.push(frame);
+        this.queueHandshakeFrame(frame);
         continue;
       }
       // X.224-Data-Header (3 Byte) ueberspringen.
       const indication = mcs.parseSendDataIndication(frame.payload.subarray(3));
       if (!indication) throw new RdpError('Der Server hat die MCS-Verbindung getrennt', 'RDP_DISCONNECTED');
+      if (indication.channelId !== this.ioChannelId) {
+        this.queueHandshakeFrame(frame);
+        this.log.debug(`Frühe Nachricht auf Kanal ${indication.channelId} (${this.kanalName(indication.channelId)}) bis zur Aktivierung gepuffert`);
+        continue;
+      }
       if (indication.payload.length > 0) return indication.payload;
     }
   }
