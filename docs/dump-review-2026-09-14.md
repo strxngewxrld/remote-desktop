@@ -45,3 +45,27 @@ installierten VS Code bleibt erforderlich.
 
 Abschlussprüfung: Build und Typecheck erfolgreich; 715 Bibliotheks- und
 468 Extension-Tests bestanden, keine Fehlschläge.
+
+## Weiterhin fehlendes Mapping nach erneutem F5-Start
+
+Der Nutzer bestätigt F5 als Startweg. `launch.json` ruft `npm: build` auf;
+dieser baut zuerst `ts-rdp/dist` und danach das Extension-Bundle. Die geprüften
+Windows-Registry-Werte zeigen keine Sperre an den beiden abgefragten Stellen
+(Policy-Wert fehlt, RDP-Tcp `fDisableCdm=0`). Damit ist weder ein alter VSIX-Stand
+noch eine Sperre an diesen Stellen die belegte Ursache.
+
+Der Dump um 09:01 enthält weiterhin keine RDPDR-Handshake-Meldungen. Ergänzt
+wurde deshalb Diagnose, kein weiterer spekulativer Protokoll-Fix:
+
+- `Client-Build`: UTC-Zeitpunkt des Bundler-Aufrufs, Diagnosekennung `drive-v3`
+  und Extension-Pfad. Bei Watch gilt der Zeitpunkt des Watch-Starts.
+- Die Kanal-Bereitmeldung enthält die Zahl der geöffneten Workspace-Ordner.
+- Nach acht Sekunden meldet `Laufwerk-Diagnose` empfangene Kanalbytes und
+  erreichte Handshake-Schritte; die Meldung funktioniert auch bei sichtbarem
+  Desktop, unabhängig vom Grafik-Watchdog.
+- Timer werden bei Trennung, Neuaufbau und Dispose beendet. Die Diagnose
+  protokolliert keine Passwörter, Dateiinhalte oder Dateinamen.
+
+Für die nächste Eingrenzung: F5-Sitzung vollständig stoppen, erneut starten,
+verbinden, mindestens zehn Sekunden warten und den neuen Dump prüfen. Noch
+keine bestätigte Ursache für den verbleibenden Fehler am echten Server.
