@@ -195,7 +195,7 @@ describe('Laufwerk in der Sitzung - Anmeldung des Kanals', () => {
     assert.equal(server.virtualChannelIds.has('rdpdr'), true);
     assert.equal(server.virtualChannelIds.has('rdpsnd'), true);
     await warteBis(() => protokollEnthaelt(ausgabe, 'Kanal rdpdr bereit'), 'Bereitmeldung');
-    assert.ok(protokollEnthaelt(ausgabe, 'Client-Build: unbundled-test; Diagnose: drive-v5-io;'));
+    assert.ok(protokollEnthaelt(ausgabe, 'Client-Build: unbundled-test; Diagnose: drive-v7-write;'));
     assert.ok(protokollEnthaelt(ausgabe, '1 Workspace-Ordner'));
     const intern = sitzung as any;
     intern.protokolliereLaufwerkDiagnose(intern.client, intern.laufwerk);

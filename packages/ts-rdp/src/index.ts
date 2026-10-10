@@ -80,6 +80,8 @@ export type {
 export * as rdpdr from './protocol/rdpdr.js';
 export {
   RdpdrSession,
+  RdpdrStatusFehler,
+  STATUS_ACCESS_DENIED,
   RDPDR_CHANNEL_NAME,
   RDPDR_CHANNEL_DEF,
   RDPDR_CHANNEL_OPTIONS,

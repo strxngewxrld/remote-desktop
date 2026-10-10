@@ -37,6 +37,8 @@
  */
 import {
   musterPasst,
+  RdpdrStatusFehler,
+  STATUS_ACCESS_DENIED,
   type DateiEintrag,
   type RdpdrDateisystem,
   type RdpdrLaufwerk,
@@ -525,8 +527,19 @@ export class ArbeitsbereichDateisystem implements RdpdrDateisystem {
     if (!ziel || ziel.ordner < 0 || ziel.segmente.length === 0) {
       // Ein neuer Ordner unmittelbar in der Wurzel waere ein neuer
       // Arbeitsbereichsordner - das entscheidet der Benutzer in VS Code,
-      // nicht der Server.
-      throw new Error(`"${pfad}" kann nicht angelegt werden`);
+      // nicht der Server. Der Explorer landet nach dem Oeffnen des Laufwerks
+      // genau dort, also ist "Neu > Textdokument" in der Wurzel der erste
+      // Versuch, den jemand unternimmt. ACCESS_DENIED sagt ihm das richtige;
+      // ein allgemeiner Fehlschlag ergaebe nur "Der Vorgang ist
+      // fehlgeschlagen", und die Ursache stuende nirgends.
+      // Ein Pfad mit hoechstens einem Segment liegt unmittelbar in der Wurzel;
+      // alles Tiefere ist ein unbekannter oder ausgeschlossener Ordner.
+      const tiefe = pfad.split('/').filter((t) => t !== '').length;
+      const grund = tiefe <= 1
+        ? 'unmittelbar im Laufwerk geht das nicht, dort liegen nur die Ordner des Arbeitsbereichs - bitte in einem davon anlegen'
+        : 'der Pfad gehoert zu keinem freigegebenen Ordner';
+      this.protokoll(`Laufwerk: "${pfad}" wird nicht angelegt - ${grund}`);
+      throw new RdpdrStatusFehler(STATUS_ACCESS_DENIED, `"${pfad}" kann nicht angelegt werden - ${grund}`);
     }
     if (istVerzeichnis) {
       await this.opts.zugriff.erzeugeVerzeichnis(ziel.ordner, ziel.segmente);

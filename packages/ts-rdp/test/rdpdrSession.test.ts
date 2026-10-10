@@ -37,6 +37,7 @@ import {
   FileStandardInformation,
   GENERIC_READ,
   GENERIC_WRITE,
+  istSchreibanfrage,
   IRP_MJ_CLOSE,
   IRP_MJ_CREATE,
   IRP_MJ_DEVICE_CONTROL,
@@ -406,6 +407,41 @@ test('I/O-Diagnose nennt Operation und Status, aber keine Dateipfade', async () 
   assert.ok(lines.some(line => line.includes('Status=0x00000000') && line.includes('Bytes=21')));
   assert.ok(lines.every(line => !line.includes('README') && !line.includes('repo/')));
   a.sitzung.dispose();
+});
+
+test('Schreibende Vorgaenge bleiben auch nach 100 Anfragen im Protokoll', async () => {
+  // Der Explorer stellt beim Blaettern hunderte Metadatenanfragen. Faellt der
+  // eine Schreibversuch danach aus der Zaehlung, ist der Dump wertlos.
+  const a = baue({ nurLesen: false });
+  await bisBereit(a);
+  for (let i = 0; i < 120; i++) {
+    await oeffne(a, 'repo/README.md', {}, 1000 + i);
+  }
+  const vorher = a.protokoll.filter((z) => z.startsWith('RDPDR I/O')).length;
+  await oeffne(a, 'repo/neu.txt', { access: GENERIC_WRITE, disposition: FILE_CREATE }, 2000);
+  const zeilen = a.protokoll.filter((z) => z.startsWith('RDPDR I/O')).slice(vorher);
+  assert.ok(zeilen.some((z) => z.includes('Anfrage: create') && z.includes('Anfrage=2000') && z.includes('[schreibend]')));
+  assert.ok(zeilen.some((z) => z.startsWith('RDPDR I/O Antwort') && z.includes('Anfrage=2000')));
+  // Ein reines Lesen bleibt weiterhin gedeckelt.
+  const davor = a.protokoll.filter((z) => z.startsWith('RDPDR I/O')).length;
+  await oeffne(a, 'repo/README.md', {}, 2001);
+  assert.equal(a.protokoll.filter((z) => z.startsWith('RDPDR I/O')).length, davor);
+  a.sitzung.dispose();
+});
+
+test('istSchreibanfrage trennt Lesen von Aendern', () => {
+  const anfrage = (art: string, rest: Record<string, unknown> = {}) =>
+    ({ art, deviceId: 1, fileId: 1, completionId: 0, majorFunction: 0, minorFunction: 0, ...rest }) as never;
+  assert.equal(istSchreibanfrage(anfrage('read')), false);
+  assert.equal(istSchreibanfrage(anfrage('queryDirectory')), false);
+  assert.equal(istSchreibanfrage(anfrage('write')), true);
+  assert.equal(istSchreibanfrage(anfrage('setInformation')), true);
+  const create = (access: number, disposition: number, options = 0) =>
+    anfrage('create', { desiredAccess: access, createDisposition: disposition, createOptions: options });
+  assert.equal(istSchreibanfrage(create(GENERIC_READ, FILE_OPEN)), false);
+  assert.equal(istSchreibanfrage(create(GENERIC_WRITE, FILE_OPEN)), true);
+  assert.equal(istSchreibanfrage(create(GENERIC_READ, FILE_CREATE)), true);
+  assert.equal(istSchreibanfrage(create(GENERIC_READ, FILE_OPEN, FILE_DELETE_ON_CLOSE)), true);
 });
 
 describe('RDPDR-Sitzung - Handshake nach 3.2.5.1', () => {
@@ -903,9 +939,9 @@ describe('RDPDR-Sitzung - Verzeichnisaufzaehlung nach 2.2.3.3.10', () => {
       assert.equal(antwort.status, STATUS_SUCCESS);
       const puffer = antwort.rumpf.subarray(4);
       // FILE_BOTH_DIR_INFORMATION: FileNameLength steht bei Byte 60,
-      // der Name beginnt bei Byte 94.
+      // der Name beginnt bei Byte 93 - ohne das Reserved-Byte aus 2.4.8.
       const laenge = puffer.readUInt32LE(60);
-      namen.push(puffer.subarray(94, 94 + laenge).toString('ucs2'));
+      namen.push(puffer.subarray(93, 93 + laenge).toString('ucs2'));
     }
     assert.deepEqual(namen, ['.', '..', 'src', 'README.md']);
   });
@@ -942,7 +978,7 @@ describe('RDPDR-Sitzung - Verzeichnisaufzaehlung nach 2.2.3.3.10', () => {
       const antwort = antwortZu(a.gesendet, 130 + i);
       if (antwort.status !== STATUS_SUCCESS) break;
       const puffer = antwort.rumpf.subarray(4);
-      namen.push(puffer.subarray(94, 94 + puffer.readUInt32LE(60)).toString('ucs2'));
+      namen.push(puffer.subarray(93, 93 + puffer.readUInt32LE(60)).toString('ucs2'));
     }
     // "." und ".." passen nicht auf "*.ts".
     assert.deepEqual(namen, ['index.ts']);

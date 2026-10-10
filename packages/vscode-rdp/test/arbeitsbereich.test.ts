@@ -23,6 +23,7 @@ import {
   type EintragsArt,
   type LaufwerkEinstellungen,
 } from '../src/arbeitsbereich.js';
+import { RdpdrStatusFehler, STATUS_ACCESS_DENIED } from 'ts-rdp';
 
 // ------------------------------------------------------------- Attrappe
 
@@ -561,6 +562,23 @@ describe('Arbeitsbereich - Schreiben, wenn es erlaubt ist', () => {
   test('In der Wurzel laesst sich nichts anlegen - das waere ein Arbeitsbereichsordner', async () => {
     const { fs } = schreibbar();
     await assert.rejects(() => fs.erzeuge('neuesRepo', true));
+  });
+
+  test('Anlegen in der Wurzel meldet ACCESS_DENIED und nennt den Grund', async () => {
+    // Der Explorer landet nach dem Oeffnen des Laufwerks in der Wurzel, also
+    // ist "Neu > Textdokument" dort der erste Versuch. Ein allgemeiner
+    // Fehlschlag ergaebe nur "Der Vorgang ist fehlgeschlagen".
+    const { fs, protokoll } = schreibbar();
+    await assert.rejects(
+      () => fs.erzeuge('Neues Textdokument.txt', false),
+      (fehler: unknown) => {
+        assert.ok(fehler instanceof RdpdrStatusFehler);
+        assert.equal(fehler.status, STATUS_ACCESS_DENIED);
+        assert.match(fehler.message, /Ordner des Arbeitsbereichs/);
+        return true;
+      },
+    );
+    assert.ok(protokoll.some((z) => z.includes('Neues Textdokument.txt') && z.includes('Ordner des Arbeitsbereichs')));
   });
 
   test('Ein Arbeitsbereichsordner laesst sich nicht loeschen oder umbenennen', async () => {
