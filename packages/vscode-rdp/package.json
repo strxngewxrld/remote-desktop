@@ -2,7 +2,7 @@
   "name": "vscode-rdp",
   "displayName": "Remote Desktop (RDP)",
   "description": "Vollwertige RDP-Sitzungen direkt in VS Code - mit eigener TypeScript-Implementierung des Protokolls, inklusive NLA.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "license": "MIT",
   "author": "Tom Knüppel",
   "repository": {
@@ -244,7 +244,11 @@
     ],
     "menus": {
       "view/title": [
-        { "command": "rdp.manageCredentials", "when": "view == rdpConnections", "group": "8_settings" },
+        {
+          "command": "rdp.manageCredentials",
+          "when": "view == rdpConnections",
+          "group": "8_settings"
+        },
         {
           "command": "rdp.addConnection",
           "when": "view == rdpConnections",
@@ -277,9 +281,21 @@
         }
       ],
       "view/item/context": [
-        { "command": "rdp.connectAs", "when": "view == rdpConnections && viewItem == rdpConnection", "group": "inline@2" },
-        { "command": "rdp.connectAs", "when": "view == rdpConnections && viewItem == rdpConnection", "group": "0_connect@2" },
-        { "command": "rdp.manageCredentials", "when": "view == rdpConnections", "group": "1_modify@8" },
+        {
+          "command": "rdp.connectAs",
+          "when": "view == rdpConnections && viewItem == rdpConnection",
+          "group": "inline@2"
+        },
+        {
+          "command": "rdp.connectAs",
+          "when": "view == rdpConnections && viewItem == rdpConnection",
+          "group": "0_connect@2"
+        },
+        {
+          "command": "rdp.manageCredentials",
+          "when": "view == rdpConnections",
+          "group": "1_modify@8"
+        },
         {
           "command": "rdp.connectSaved",
           "when": "view == rdpConnections && viewItem == rdpConnection",
@@ -492,14 +508,47 @@
           "default": {},
           "description": "Vererbbare Zugangsdaten auf oberster Ebene. Verwaltung über Zugangsdaten verwalten; Passwörter liegen im sicheren Speicher.",
           "properties": {
-            "credentials": { "type": "array", "items": { "type": "object", "required": ["id", "name", "username"], "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "username": { "type": "string" }, "domain": { "type": "string" } } } },
-            "defaultCredential": { "type": "string", "description": "ID des Standardprofils; leer: Auswahl beim Verbinden." },
-            "promptCredentials": { "type": "boolean", "description": "Bei jeder Verbindung nach Zugangsdaten fragen." }
+            "credentials": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "name",
+                  "username"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": "string"
+                  },
+                  "domain": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "defaultCredential": {
+              "type": "string",
+              "description": "ID des Standardprofils; leer: Auswahl beim Verbinden."
+            },
+            "promptCredentials": {
+              "type": "boolean",
+              "description": "Bei jeder Verbindung nach Zugangsdaten fragen."
+            }
           }
         },
         "rdp.clipboard.maxFileSizeMb": {
           "scope": "application",
-          "type": "number", "default": 64, "minimum": 1, "maximum": 256,
+          "type": "number",
+          "default": 64,
+          "minimum": 1,
+          "maximum": 256,
           "description": "Maximale Gesamtgröße eingefügter Dateien in MiB. Dateien im Sitzungsfenster einfügen, anschließend im Zielordner auf dem Server einfügen."
         },
         "rdp.connections": {
@@ -535,10 +584,37 @@
                   "credentials": {
                     "type": "array",
                     "description": "Eigene Profile zusätzlich zu geerbten Profilen; Verwaltung über Zugangsdaten verwalten.",
-                    "items": { "type": "object", "required": ["id", "name", "username"], "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "username": { "type": "string" }, "domain": { "type": "string" } } }
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "name",
+                        "username"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "username": {
+                          "type": "string"
+                        },
+                        "domain": {
+                          "type": "string"
+                        }
+                      }
+                    }
                   },
-                  "defaultCredential": { "type": "string", "description": "ID des Standardprofils; leer: Auswahl beim Verbinden." },
-                  "promptCredentials": { "type": "boolean", "description": "Jedes Mal Benutzername und Passwort abfragen." },
+                  "defaultCredential": {
+                    "type": "string",
+                    "description": "ID des Standardprofils; leer: Auswahl beim Verbinden."
+                  },
+                  "promptCredentials": {
+                    "type": "boolean",
+                    "description": "Jedes Mal Benutzername und Passwort abfragen."
+                  },
                   "domain": {
                     "type": "string"
                   },
@@ -651,10 +727,37 @@
                       "credentials": {
                         "type": "array",
                         "description": "Profile dieses Ordners, zusätzlich zu geerbten Profilen.",
-                        "items": { "type": "object", "required": ["id", "name", "username"], "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "username": { "type": "string" }, "domain": { "type": "string" } } }
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "id",
+                            "name",
+                            "username"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "username": {
+                              "type": "string"
+                            },
+                            "domain": {
+                              "type": "string"
+                            }
+                          }
+                        }
                       },
-                      "defaultCredential": { "type": "string", "description": "ID des Standardprofils; leer: Auswahl beim Verbinden." },
-                      "promptCredentials": { "type": "boolean", "description": "Jedes Mal Benutzername und Passwort abfragen." },
+                      "defaultCredential": {
+                        "type": "string",
+                        "description": "ID des Standardprofils; leer: Auswahl beim Verbinden."
+                      },
+                      "promptCredentials": {
+                        "type": "boolean",
+                        "description": "Jedes Mal Benutzername und Passwort abfragen."
+                      },
                       "domain": {
                         "type": "string"
                       },
