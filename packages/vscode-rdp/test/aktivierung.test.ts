@@ -35,12 +35,11 @@ const versprocheneBefehle = manifest.contributes.commands.map((c) => c.command).
  * Befehle, die nicht zur Aktivierung gehoeren, sondern zur Sitzung: sie
  * entstehen mit der ersten offenen Sitzung und vergehen mit der letzten.
  * Geprueft werden sie dort, wo sie leben - in `diagnose.test.ts`,
- * `zwischenablage.test.ts` und `laufwerk.test.ts`.
+ * und `zwischenablage.test.ts`.
  */
 const SITZUNGSBEFEHLE = new Set([
   'rdp.toggleDiagnostics',
   'rdp.toggleClipboardPanel',
-  'rdp.forgetDriveApprovals',
 ]);
 
 /** Was `activate` selbst registrieren muss. */
@@ -153,6 +152,15 @@ describe('Befehle ohne offene Sitzung', () => {
       assert.deepEqual(notizen.hinweise, ['Es sind keine Verbindungen gespeichert.']);
     });
   }
+
+  test('rdp.forgetDriveApprovals loescht die gemerkten Antworten', async () => {
+    // Gebraucht wird der Befehl gerade vor dem Verbinden: ein einmal
+    // verweigertes Laufwerk taucht sonst nie wieder auf.
+    await kontext.globalState.update('rdp.driveRedirection.freigaben', { 'a:3389': 'verweigert' });
+    await notizen.befehle.get('rdp.forgetDriveApprovals')!();
+    assert.equal(kontext.globalState.get('rdp.driveRedirection.freigaben'), undefined);
+    assert.equal(notizen.hinweise.some((h) => h.includes('vergessen')), true);
+  });
 
   test('rdp.refreshConnections stoesst die Baumansicht an', async () => {
     const anbieter = notizen.baumAnbieter.get('rdpConnections')!;

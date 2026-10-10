@@ -60,15 +60,13 @@ import {
   eindeutigeOrdnernamen,
   leseEinstellungen as leseLaufwerkEinstellungen,
 } from './arbeitsbereich.js';
-import { frageFreigabe, vergissFreigaben, vscodeArbeitsbereichZugriff } from './arbeitsbereichZugriff.js';
+import { frageFreigabe, vscodeArbeitsbereichZugriff } from './arbeitsbereichZugriff.js';
 
 /** Ein Rastschritt des Mausrads, wie ihn Windows erwartet. */
 const WHEEL_STEP = 120;
 
 /** Befehl, der das Diagnose-Overlay ein- und ausblendet. */
 export const DIAGNOSE_BEFEHL = 'rdp.toggleDiagnostics';
-/** Befehl, der die gemerkten Antworten auf die Laufwerks-Rueckfrage vergisst. */
-export const LAUFWERK_FREIGABE_BEFEHL = 'rdp.forgetDriveApprovals';
 
 /** Befehl, der das Rueckfallfeld der Zwischenablage ein- und ausblendet. */
 export const ZWISCHENABLAGE_BEFEHL = 'rdp.toggleClipboardPanel';
@@ -386,9 +384,6 @@ export class RdpSession {
   /** Ebenso fuer das Rueckfallfeld der Zwischenablage. */
   private static zwischenablageBefehl?: vscode.Disposable;
 
-  /** Und fuer den Befehl, der die gemerkten Laufwerksfreigaben vergisst. */
-  private static laufwerkBefehl?: vscode.Disposable;
-
   // --- Diagnose. Alle Zaehler bleiben stehen, solange das Overlay aus ist.
   private diagnoseSichtbar = false;
   private diagnoseTimer?: NodeJS.Timeout;
@@ -486,18 +481,6 @@ export class RdpSession {
         RdpSession.gemeinteSitzung()?.schalteZwischenablagefeldUm(),
       );
     }
-    if (RdpSession.offeneSitzungen.size === 0 && !RdpSession.laufwerkBefehl) {
-      // Die Antwort auf die Freigabefrage wird gemerkt, auch ein Nein. Ohne
-      // einen Weg zurueck waere eine versehentlich verweigerte Freigabe
-      // endgueltig - und ein "Nie wieder fragen", das man nicht zuruecknehmen
-      // kann, ist kein Einverstaendnis, sondern eine Falle.
-      RdpSession.laufwerkBefehl = vscode.commands.registerCommand(LAUFWERK_FREIGABE_BEFEHL, async () => {
-        await vergissFreigaben(session.context);
-        vscode.window.showInformationMessage(
-          'Die gemerkten Laufwerksfreigaben sind vergessen. Beim nächsten Verbinden wird wieder gefragt.',
-        );
-      });
-    }
     RdpSession.offeneSitzungen.add(session);
   }
 
@@ -520,8 +503,6 @@ export class RdpSession {
       RdpSession.diagnoseBefehl = undefined;
       RdpSession.zwischenablageBefehl?.dispose();
       RdpSession.zwischenablageBefehl = undefined;
-      RdpSession.laufwerkBefehl?.dispose();
-      RdpSession.laufwerkBefehl = undefined;
     }
   }
 
