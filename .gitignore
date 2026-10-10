@@ -8,8 +8,9 @@ dist-integration/
 out/
 *.tsbuildinfo
 
-# Verpackte Extension
+# Verpackte Extension und die npm-Huelle fuer GitHub Packages
 *.vsix
+dist-publish/
 
 # Heruntergeladenes VS Code fuer die Integrationstests (~2 GB)
 .vscode-test/
