@@ -82,6 +82,8 @@ export interface WebviewUmgebung {
   groesseAendern(breite: number, hoehe: number): void;
   /** Ein Fensterereignis ausloesen, ohne die Groesse anzufassen. */
   loeseFensterEreignisAus(typ: string, ereignis?: unknown): void;
+  /** Ein Ereignis an der Zeichenflaeche ausloesen, etwa eine Mausbewegung. */
+  loeseCanvasEreignisAus(typ: string, ereignis: unknown): void;
   /** Was ueber drawImage auf die Zeichenflaeche kam - der Weg der Videobilder. */
   readonly videobilder: GezeichnetesVideobild[];
   /**
@@ -124,6 +126,9 @@ class ElementStub {
     this.horcher.set(typ, liste);
   }
   removeEventListener(): void {}
+  loeseAus(typ: string, ereignis: unknown): void {
+    for (const fn of this.horcher.get(typ) ?? []) fn(ereignis);
+  }
   getBoundingClientRect() {
     const { width, height } = this.rect;
     return { width, height, left: 0, top: 0, right: width, bottom: height };
@@ -401,6 +406,7 @@ export function starteWebview(
       loeseFensterEreignisAus('resize');
     },
     loeseFensterEreignisAus,
+    loeseCanvasEreignisAus: (typ: string, ereignis: unknown) => canvas.loeseAus(typ, ereignis),
     gesendet,
     gezeichnet,
     canvas: canvas as unknown as WebviewUmgebung['canvas'],

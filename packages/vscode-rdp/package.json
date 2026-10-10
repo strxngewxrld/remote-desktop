@@ -222,6 +222,12 @@
         "icon": "$(device-camera)"
       },
       {
+        "command": "rdp.addMonitor",
+        "category": "RDP",
+        "title": "Weiteren Monitor hinzufügen",
+        "icon": "$(multiple-windows)"
+      },
+      {
         "command": "rdp.clearCredentials",
         "category": "RDP",
         "title": "Gespeichertes Passwort löschen"
@@ -392,6 +398,11 @@
           "command": "rdp.screenshot",
           "when": "activeWebviewPanelId == rdpSession",
           "group": "navigation@1"
+        },
+        {
+          "command": "rdp.addMonitor",
+          "when": "activeWebviewPanelId == rdpSession",
+          "group": "navigation@2"
         }
       ],
       "commandPalette": [

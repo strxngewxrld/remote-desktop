@@ -65,6 +65,8 @@ VS Code Webview  ──Eingaben──▶  Extension-Host  ──TCP/TLS──▶
   Farbtiefe standardmäßig 32 bpp (`rdp.defaultColorDepth`)
 - Strg+Alt+Entf, Bildschirm neu anfordern, Leistungsoptionen (Hintergrundbild, Themes …)
 - Auflösung folgt der Panelgröße auch während der Sitzung (**MS-RDPEDISP**)
+- **Mehrere Monitore**: ein Knopf in der Titelleiste öffnet einen weiteren
+  Monitor als eigenes VS-Code-Fenster, rechts neben dem bisherigen
 - **H.264 (AVC420)** über WebCodecs im Webview, mit Rückfall auf die übrigen Codecs
 - **Zwischenablage** (MS-RDPECLIP): Text in beide Richtungen, Dateien vom
   Arbeitsplatz zum Server
@@ -203,8 +205,9 @@ Ehrlich benannt, statt später zu überraschen:
   Geräte-Handshake sonst nicht beginnen. Er nimmt keine Audioformate an.
 - **Kein AVC444.** H.264 wird nur als AVC420 dekodiert, und nur dort, wo der
   Webview WebCodecs anbietet. Ohne WebCodecs meldet der Client kein H.264.
-- **Kein Multi-Monitor.** Die Client Monitor Data meldet genau einen primären
-  Monitor.
+- **Weitere Monitore nur nebeneinander.** Jeder weitere Monitor sitzt rechts
+  vom bisher letzten, oben bündig. Er braucht Display Control (MS-RDPEDISP)
+  und einen Server, der mehrere Monitore zulässt.
 - **Nur NTLM, kein Kerberos.** NLA rechnet NTLMv2. In Domänen, die NTLM
   abschalten, scheitert die Anmeldung.
 - **Kein RD Gateway** (MS-TSGU).
@@ -226,8 +229,8 @@ Ehrlich benannt, statt später zu überraschen:
 
 - **Kerberos für NLA** (SPNEGO über CredSSP), damit Domänen ohne NTLM
   funktionieren.
-- **Multi-Monitor**: mehrere Monitore in der Client Monitor Data und im
-  Display-Control-Layout melden und auf mehrere Panels verteilen.
+- **Monitoranordnung wählbar machen** (links, oben, unten statt immer rechts)
+  und Screenshots über alle Monitore.
 
 ## Veröffentlichen
 

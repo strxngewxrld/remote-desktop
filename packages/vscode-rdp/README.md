@@ -93,6 +93,22 @@ Für Windows-Kompatibilität wird zusammen mit der Laufwerksumleitung zusätzlic
 nicht. Dieser Hilfskanal akzeptiert **keine Audioformate** und implementiert
 keine Audiowiedergabe; die leere Formatauswahl dient nur der Aushandlung.
 
+## Weitere Monitore
+
+Der Knopf **Weiteren Monitor hinzufügen** in der Titelleiste der Sitzung
+(neben dem Screenshot) öffnet ein zweites Panel und verschiebt es in ein
+eigenes VS-Code-Fenster. Der Server richtet dafür einen weiteren Monitor
+rechts neben dem bisher letzten ein; das Fenster zeigt genau diesen Teil des
+Desktops, Maus und Tastatur funktionieren dort wie im Hauptfenster. Die Größe
+folgt dem Fenster. Wer das Fenster schließt, entfernt den Monitor wieder; mit
+der Sitzung schließen sich alle ihre Monitore.
+
+Voraussetzung ist der Display Control Channel (MS-RDPEDISP, Einstellung
+`rdp.dynamicResolution`) und ein Server, der mehrere Monitore erlaubt. Fehlt
+beides, gibt es eine Meldung statt eines leeren Fensters. Screenshots zeigen
+nur den primären Monitor. Mit H.264 dekodiert jedes Fenster den ganzen
+Videostrom, die Rechenlast steigt also je Monitor.
+
 ## Befehlsübersicht
 
 | Befehl | Wirkung |
@@ -105,6 +121,7 @@ keine Audiowiedergabe; die leere Formatauswahl dient nur der Aushandlung.
 | `RDP: Skalierung umschalten` | Zwischen Einpassen und Originalgröße wechseln |
 | `RDP: Gespeichertes Passwort löschen` | Zugangsdaten aus dem sicheren Speicher entfernen |
 | `RDP: Protokoll anzeigen` | Ausgabekanal mit dem Verbindungsverlauf |
+| `RDP: Weiteren Monitor hinzufügen` | Zusätzliches Fenster als weiterer Monitor der Sitzung |
 | `RDP: Laufwerksfreigaben vergessen` | Gemerkte Antworten auf die Freigabefrage löschen; beim nächsten Verbinden wird wieder gefragt |
 | `RDP: Laufzeitumgebung anzeigen (lokal oder entfernt)` | Wo die Extension läuft und von welchem Rechner die RDP-Verbindung ausgeht – siehe [Remote-SSH](#remote-ssh-der-ssh-rechner-als-sprungbrett) |
 
@@ -255,8 +272,8 @@ Server. `Developer: Show Running Extensions` zeigt den Ort unabhängig davon an.
 
 ## Bekannte Grenzen
 
-Kein Audio. Kein Multi-Monitor (geplant) und kein RemoteApp/RAIL – es wird
-immer der ganze Desktop übertragen. H.264 nur als AVC420 und nur mit WebCodecs
+Kein Audio. Weitere Monitore nur rechts nebeneinander. Kein RemoteApp/RAIL –
+es wird immer der ganze Desktop übertragen. H.264 nur als AVC420 und nur mit WebCodecs
 im Webview, kein AVC444. Anmeldung per NLA nur über NTLM; Kerberos ist geplant,
 Domänen ohne NTLM werden bis dahin nicht unterstützt. Kein RD Gateway. Server,
 die eine Terminalserver-Lizenz (Per-Device-CAL) verlangen, werden nicht
