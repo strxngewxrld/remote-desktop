@@ -477,6 +477,7 @@
       "title": "Remote Desktop (RDP)",
       "properties": {
         "rdp.authentication": {
+          "scope": "application",
           "type": "object",
           "default": {},
           "description": "Vererbbare Zugangsdaten auf oberster Ebene. Verwaltung über Zugangsdaten verwalten; Passwörter liegen im sicheren Speicher.",
@@ -487,10 +488,12 @@
           }
         },
         "rdp.clipboard.maxFileSizeMb": {
+          "scope": "application",
           "type": "number", "default": 64, "minimum": 1, "maximum": 256,
           "description": "Maximale Gesamtgröße eingefügter Dateien in MiB. Dateien im Sitzungsfenster einfügen, anschließend im Zielordner auf dem Server einfügen."
         },
         "rdp.connections": {
+          "scope": "application",
           "type": "array",
           "default": [],
           "markdownDescription": "Gespeicherte Verbindungen und Ordner. Passwörter werden **nicht** hier abgelegt, sondern im sicheren Speicher von VS Code.\n\nEin Eintrag ist entweder eine Verbindung (`host`) oder ein Ordner (`type: \"folder\"` mit `children`). Ordner dürfen verschachtelt werden und vererben ihre `settings` an alles, was in ihnen liegt. Die Auflösungsreihenfolge lautet: Verbindung schlägt Ordner, Ordner schlägt Elternordner, Elternordner schlägt globale Einstellung. Das alte flache Format ohne Ordner bleibt unverändert gültig.",
@@ -766,6 +769,7 @@
           "description": "Diagnose-Overlay beim Start einer Sitzung einblenden. Der zuletzt über „RDP: Diagnose-Overlay ein-/ausblenden“ gewählte Zustand hat Vorrang."
         },
         "rdp.certificateTrust": {
+          "scope": "application",
           "type": "string",
           "default": "trust-on-first-use",
           "enum": [
@@ -870,11 +874,13 @@
           "markdownDescription": "Ruhezeit in Millisekunden, bevor nach einer Größenänderung eine neue Auflösung angefragt wird. Jeder Wechsel verwirft serverseitig den Bildschirminhalt, deshalb wird beim Ziehen an der Fensterkante nicht bei jedem Pixel angefragt."
         },
         "rdp.clipboard.enabled": {
+          "scope": "application",
           "type": "boolean",
           "default": true,
           "markdownDescription": "Zwischenablage zwischen VS Code und der Sitzung austauschen (**MS-RDPECLIP**, Kanal `cliprdr`). Text in beide Richtungen; Dateien vom Arbeitsplatz zum Server durch Einfügen im Sitzungsfenster."
         },
         "rdp.clipboard.direction": {
+          "scope": "application",
           "type": "string",
           "default": "both",
           "enum": [
@@ -890,6 +896,7 @@
           "description": "Erlaubte Richtung der Zwischenablage. Einschränken hilft gegen versehentlichen Abfluss von Daten in beide Richtungen."
         },
         "rdp.clipboard.maxSizeKb": {
+          "scope": "application",
           "type": "number",
           "default": 1024,
           "minimum": 1,
@@ -907,11 +914,13 @@
           "markdownDescription": "Die **Graphics Pipeline** (MS-RDPEGFX) anfordern. Windows Server 2019+ liefert Bildschirminhalte ausschließlich auf diesem Weg; ohne die Pipeline bleibt das Bild dort schwarz. Ältere Server nutzen weiterhin den klassischen Weg."
         },
         "rdp.driveRedirection.enabled": {
+          "scope": "application",
           "type": "boolean",
           "default": true,
           "markdownDescription": "Die Ordner des VS-Code-Arbeitsbereichs in der Sitzung als Laufwerk einblenden (**MS-RDPEFS**, Kanal `rdpdr`). Aus bedeutet: der Kanal wird gar nicht erst angemeldet. Beim ersten Verbinden je Server wird nachgefragt, bevor etwas freigegeben wird."
         },
         "rdp.driveRedirection.access": {
+          "scope": "application",
           "type": "string",
           "default": "readOnly",
           "enum": [
@@ -925,6 +934,7 @@
           "markdownDescription": "Rechte, die der Server auf den freigegebenen Ordnern bekommt. Die Vorgabe ist **nur lesen**: der Server sieht Quelltext, und das Schreibrecht dazu sollte eine bewusste Entscheidung sein. Ein unbekannter Wert gilt als „nur lesen“."
         },
         "rdp.driveRedirection.exclude": {
+          "scope": "application",
           "type": "array",
           "items": {
             "type": "string"
@@ -951,6 +961,7 @@
           "markdownDescription": "Name des Laufwerks, wie er im Explorer der Sitzung erscheint. Darunter liegt je Ordner des Arbeitsbereichs ein Unterordner – ein Laufwerk für alle Repositories, damit Laufwerksbuchstaben frei bleiben und ein neu geöffnetes Repository ohne neue Sitzung auftaucht."
         },
         "rdp.driveRedirection.maxFileSizeMb": {
+          "scope": "application",
           "type": "number",
           "default": 64,
           "minimum": 1,

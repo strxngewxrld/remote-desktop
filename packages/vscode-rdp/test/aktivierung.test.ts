@@ -21,6 +21,7 @@ interface Manifest {
     menus: Record<string, { command: string; when?: string }[]>;
     keybindings: { command: string; key: string }[];
     viewsWelcome: { view: string; contents: string }[];
+    configuration: { properties: Record<string, { scope?: string }> };
   };
 }
 
@@ -125,6 +126,31 @@ describe('Aktivierung', () => {
     assert.doesNotThrow(() => deactivate());
     assert.doesNotThrow(() => deactivate(), 'zweimal deaktivieren bleibt harmlos');
   });
+});
+
+describe('Einstellungen aus dem Arbeitsbereich', () => {
+  // Ein fremdes Repository bringt seine .vscode/settings.json mit. Duerfte sie
+  // diese Werte setzen, koennte sie Zertifikate abschalten, .env freigeben
+  // oder eine Verbindung mit gespeichertem Passwort auf ihren Server lenken.
+  const NUR_BENUTZER = [
+    'rdp.authentication',
+    'rdp.connections',
+    'rdp.certificateTrust',
+    'rdp.clipboard.enabled',
+    'rdp.clipboard.direction',
+    'rdp.clipboard.maxSizeKb',
+    'rdp.clipboard.maxFileSizeMb',
+    'rdp.driveRedirection.enabled',
+    'rdp.driveRedirection.access',
+    'rdp.driveRedirection.exclude',
+    'rdp.driveRedirection.maxFileSizeMb',
+  ];
+
+  for (const schluessel of NUR_BENUTZER) {
+    test(`${schluessel} gilt nur aus den Benutzereinstellungen`, () => {
+      assert.equal(manifest.contributes.configuration.properties[schluessel]?.scope, 'application');
+    });
+  }
 });
 
 describe('Befehle ohne offene Sitzung', () => {

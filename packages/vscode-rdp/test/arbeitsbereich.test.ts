@@ -16,7 +16,9 @@ import {
   alsRdpdrDateisystem,
   baueAusschluss,
   baueLaufwerk,
+  baueVorfahrenPruefung,
   eindeutigeOrdnernamen,
+  istNamensalias,
   leseEinstellungen,
   type ArbeitsbereichZugriff,
   type DateiAngabe,
@@ -127,7 +129,7 @@ function einstellungen(teil: Partial<LaufwerkEinstellungen> = {}): LaufwerkEinst
   };
 }
 
-function baue(teil: Partial<LaufwerkEinstellungen> = {}): {
+function baue(teil: Partial<LaufwerkEinstellungen> = {}, windowsHost = false): {
   fs: ArbeitsbereichDateisystem;
   attrappe: Attrappe;
   protokoll: string[];
@@ -147,6 +149,7 @@ function baue(teil: Partial<LaufwerkEinstellungen> = {}): {
   const fs = new ArbeitsbereichDateisystem({
     zugriff: attrappe,
     einstellungen: einstellungen(teil),
+    windowsHost,
     log: (n) => protokoll.push(n),
   });
   return { fs, attrappe, protokoll };
@@ -437,6 +440,50 @@ describe('Arbeitsbereich - Pfad-Fluchtversuche werden auch hier abgewiesen', () 
   test('Umbenennen in einen ausgeschlossenen Pfad scheitert', async () => {
     const { fs } = baue({ nurLesen: false, zugriff: 'readWrite' });
     await assert.rejects(() => fs.benenneUm('frontend/README.md', 'frontend/.git/README.md', true));
+  });
+});
+
+describe('Arbeitsbereich - Namensaliase und Pfadmuster', () => {
+  test('Doppelpunkt sowie Punkt oder Leerzeichen am Ende gelten immer als Alias', () => {
+    for (const name of ['.env.', '.env ', '.env::$DATA', 'README.md:zone']) {
+      assert.equal(istNamensalias(name, false), true, name);
+    }
+    assert.equal(istNamensalias('.env.local', false), false);
+    assert.equal(istNamensalias('README.md', true), false);
+  });
+
+  test('8.3-Kurznamen gelten nur unter Windows als Alias', () => {
+    assert.equal(istNamensalias('NODE_M~1', true), true);
+    assert.equal(istNamensalias('NODE_M~1', false), false);
+  });
+
+  test('Ein Alias auf eine ausgeschlossene Datei erreicht das Dateisystem nicht', async () => {
+    const { fs, attrappe } = baue({}, true);
+    attrappe.zugriffe.length = 0;
+    assert.equal(await fs.stat('frontend/.env.'), undefined);
+    assert.equal(await fs.stat('frontend/.env::$DATA'), undefined);
+    assert.equal(await fs.stat('frontend/NODE_M~1'), undefined);
+    assert.deepEqual(attrappe.zugriffe, []);
+  });
+
+  test('Die Vorfahrenpruefung trifft nur Verzeichnisse oberhalb eines Pfadmusters', () => {
+    const pruefe = baueVorfahrenPruefung(['.git', 'doku/geheim', 'a/*/c']);
+    assert.equal(pruefe(['doku']), true);
+    assert.equal(pruefe(['DOKU']), true);
+    assert.equal(pruefe(['doku', 'geheim']), false, 'der Eintrag selbst ist ohnehin ausgeschlossen');
+    assert.equal(pruefe(['src']), false);
+    assert.equal(pruefe(['a', 'b']), true);
+  });
+
+  test('Ein Verzeichnis ueber einem Pfadmuster laesst sich nicht umbenennen', async () => {
+    const { fs } = baue({ nurLesen: false, zugriff: 'readWrite', ausschluss: ['src/index.ts'] });
+    await assert.rejects(
+      () => fs.benenneUm('frontend/src', 'frontend/quelle', true),
+      (err: unknown) => err instanceof RdpdrStatusFehler && err.status === STATUS_ACCESS_DENIED,
+    );
+    assert.notEqual(await fs.stat('frontend/src'), undefined, 'das Verzeichnis ist unveraendert da');
+    // Andere Umbenennungen bleiben moeglich.
+    await fs.benenneUm('frontend/README.md', 'frontend/LIESMICH.md', true);
   });
 });
 
