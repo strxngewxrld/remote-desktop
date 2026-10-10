@@ -64,6 +64,14 @@ VS Code Webview  ──Eingaben──▶  Extension-Host  ──TCP/TLS──▶
 - Graphics Pipeline standardmäßig eingeschaltet (`rdp.graphicsPipeline`),
   Farbtiefe standardmäßig 32 bpp (`rdp.defaultColorDepth`)
 - Strg+Alt+Entf, Bildschirm neu anfordern, Leistungsoptionen (Hintergrundbild, Themes …)
+- Auflösung folgt der Panelgröße auch während der Sitzung (**MS-RDPEDISP**)
+- **H.264 (AVC420)** über WebCodecs im Webview, mit Rückfall auf die übrigen Codecs
+- **Zwischenablage** (MS-RDPECLIP): Text in beide Richtungen, Dateien vom
+  Arbeitsplatz zum Server
+- **Laufwerksumleitung** (MS-RDPEFS): die Ordner des Arbeitsbereichs als
+  Laufwerk `\\tsclient\VS_Code`, standardmäßig nur lesbar
+- Automatisches Wiederverbinden (Auto-Reconnect-Cookie), `.rdp`-Import und
+  -Export, Ordner mit vererbten Einstellungen, Tags, Bandbreitenprofile
 
 ## Loslegen
 
@@ -190,19 +198,16 @@ Ehrlich benannt, statt später zu überraschen:
 - **Keine Terminalserver-Lizenzausstellung.** Server mit Per-Device-CALs melden
   eine Lizenzanforderung, die dieser Client nicht bedienen kann. Windows ohne
   RDS-Rolle und xrdp sind nicht betroffen.
-- **Keine Zwischenablage, kein Audio, keine Laufwerksweiterleitung.** Die
-  Kanalinfrastruktur steht – statische Kanäle und DVC laufen für die Graphics
-  Pipeline –, aber `cliprdr`, `rdpsnd` und `rdpdr` selbst sind nicht umgesetzt.
-- **Kein H.264.** AVC420 und AVC444 werden nur zerlegt, nicht dekodiert; die
-  Bibliothek reicht den Bitstream durch, die Extension nimmt ihn nicht entgegen.
-  Bildbereiche, die ein Server in H.264 sendet, bleiben leer. Die angebotenen
-  EGFX-Capabilities (V8 und V8.1 ohne Flags) sind deshalb bewusst so gewählt,
-  dass Windows nicht auf H.264 ausweicht.
-- **Keine Auflösungsänderung durch den Client.** Die Sitzung wird mit der
-  Panelgröße beim Verbinden aufgebaut; MS-RDPEDISP (Display Control) fehlt.
-  Gibt der *Server* eine neue Größe vor, folgt der Client ihr.
+- **Kein Audio.** `rdpsnd` wird zusammen mit der Laufwerksumleitung nur als
+  stummer Hilfskanal angemeldet, weil manche Windows-Server den
+  Geräte-Handshake sonst nicht beginnen. Er nimmt keine Audioformate an.
+- **Kein AVC444.** H.264 wird nur als AVC420 dekodiert, und nur dort, wo der
+  Webview WebCodecs anbietet. Ohne WebCodecs meldet der Client kein H.264.
 - **Kein Multi-Monitor.** Die Client Monitor Data meldet genau einen primären
   Monitor.
+- **Nur NTLM, kein Kerberos.** NLA rechnet NTLMv2. In Domänen, die NTLM
+  abschalten, scheitert die Anmeldung.
+- **Kein RD Gateway** (MS-TSGU).
 - **Kein RemoteApp/RAIL.** Es wird immer der ganze Desktop übertragen.
 - **Keine Zeigerform über den Pipeline-Kanal.** `Microsoft::Windows::RDS::MouseCursor`
   wird angenommen, damit das Grafik-Subsystem des Servers startet, aber nicht
@@ -216,6 +221,41 @@ Ehrlich benannt, statt später zu überraschen:
 - **Die Library selbst nimmt weiterhin 16 bpp als Voreinstellung** (`RdpClient`
   ohne `colorDepth`). Die Extension fordert 32 bpp an. Der Server darf die
   Farbtiefe ohnehin vorgeben, und seine Angabe gewinnt.
+
+## Offene Punkte
+
+- **Kerberos für NLA** (SPNEGO über CredSSP), damit Domänen ohne NTLM
+  funktionieren.
+- **Multi-Monitor**: mehrere Monitore in der Client Monitor Data und im
+  Display-Control-Layout melden und auf mehrere Panels verteilen.
+
+## Veröffentlichen
+
+Die Extension wird von Hand in die **GitHub Package Registry** gestellt. In
+VS Code **Terminal → Task ausführen…** und dann:
+
+- **RDP: Veröffentlichen – Probelauf**: baut, testet und packt alles, ohne die
+  Version anzuheben und ohne hochzuladen.
+- **RDP: Veröffentlichen (GitHub Packages)**: fragt nach GitHub-Owner,
+  Versionssprung und einem Personal Access Token mit `write:packages`, hebt
+  die Version an, baut, testet, packt das VSIX und lädt es als npm-Paket
+  `@<owner>/vscode-rdp` hoch.
+- **RDP: VSIX bauen**: nur das VSIX, lokal unter `packages/vscode-rdp/`.
+
+GitHub Packages kennt kein VSIX-Format. Das npm-Paket ist deshalb nur eine
+Hülle um die VSIX-Datei; das Manifest der Extension bleibt unverändert. Das
+Skript dazu ist [`tools/publish-github.mjs`](tools/publish-github.mjs). Es
+lehnt ein Arbeitsverzeichnis mit offenen Änderungen ab, und das Token kommt nur
+über die Umgebung (`NODE_AUTH_TOKEN`), nie in eine Datei. Danach die neue
+Versionsnummer committen und taggen.
+
+Installieren auf einem Rechner, dessen npm bei GitHub angemeldet ist:
+
+```sh
+npm pack @<owner>/vscode-rdp --registry https://npm.pkg.github.com
+tar -xzf <owner>-vscode-rdp-<version>.tgz
+code --install-extension package/vscode-rdp-<version>.vsix
+```
 
 ## Lizenz
 

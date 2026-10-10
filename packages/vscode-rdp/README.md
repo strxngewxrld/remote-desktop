@@ -57,8 +57,8 @@ nicht unterstützt; Text bleibt in beide Richtungen verfügbar.
 2. `rdp.driveRedirection.enabled` auf `true` setzen (Vorgabe) und die Sitzung
    neu verbinden. `rdp.driveRedirection.access` bleibt zunächst `readOnly`.
 3. Die Freigabe-Rückfrage mit **Freigeben** oder **Nur dieses Mal** bestätigen.
-   Wurde früher abgelehnt: bei offener Sitzung **RDP: Laufwerksfreigaben
-   vergessen** ausführen und anschließend neu verbinden.
+   Wurde früher abgelehnt: **RDP: Laufwerksfreigaben vergessen** ausführen
+   und anschließend neu verbinden.
 4. Im Windows-Explorer **Dieser PC** bzw. `\\tsclient\` öffnen. Das Laufwerk
    heißt standardmäßig **VS_Code** (`\\tsclient\VS_Code`); darunter liegt ein Unterordner pro
    Workspace-Ordner. Ein eigener Laufwerksbuchstabe wird nicht automatisch
@@ -82,15 +82,11 @@ Der Windows-Freigabename ersetzt Leerzeichen und Pfadsonderzeichen durch `_`.
 
 Fehlt das Laufwerk weiterhin, unter **RDP: Protokoll anzeigen** die Zeilen
 `Laufwerk:` und `RDPDR:` prüfen. Ein bereiter `rdpdr`-Kanal allein belegt noch
-keine erfolgreiche Geräteankündigung. Auch eine serverseitige Richtlinie kann
-die Umleitung verhindern; siehe [Microsofts Dokumentation zur Laufwerksumleitung](https://learn.microsoft.com/en-us/azure/virtual-desktop/redirection-configure-drives-storage).
-
-Ein Clientfehler bei vorzeitig eintreffendem RDPDR-Handshake wurde behoben:
-Nachrichten anderer MCS-Kanäle werden während Lizenzierung/Aktivierung jetzt
-gepuffert und nach dem `connect`-Ereignis an die Laufwerksumleitung übergeben.
-Nach Aktualisierung der Extension ist eine neue RDP-Verbindung nötig. Im
-Protokoll sollten anschließend `RDPDR: Server-Version`, die Geräteankündigung
-und bei Bestätigung `ist im Explorer verfuegbar` erscheinen.
+keine erfolgreiche Geräteankündigung; erwartet werden `RDPDR: Server-Version`,
+die Geräteankündigung und `ist im Explorer verfuegbar`. Mit `rdp.logLevel` auf
+`debug` steht zusätzlich jede einzelne Dateianfrage des Servers im Protokoll
+(ohne Dateipfade). Auch eine serverseitige Richtlinie kann die Umleitung
+verhindern; siehe [Microsofts Dokumentation zur Laufwerksumleitung](https://learn.microsoft.com/en-us/azure/virtual-desktop/redirection-configure-drives-storage).
 
 Für Windows-Kompatibilität wird zusammen mit der Laufwerksumleitung zusätzlich
 `rdpsnd` angemeldet. Manche Windows-Server starten den Geräte-Handshake sonst
@@ -109,6 +105,7 @@ keine Audiowiedergabe; die leere Formatauswahl dient nur der Aushandlung.
 | `RDP: Skalierung umschalten` | Zwischen Einpassen und Originalgröße wechseln |
 | `RDP: Gespeichertes Passwort löschen` | Zugangsdaten aus dem sicheren Speicher entfernen |
 | `RDP: Protokoll anzeigen` | Ausgabekanal mit dem Verbindungsverlauf |
+| `RDP: Laufwerksfreigaben vergessen` | Gemerkte Antworten auf die Freigabefrage löschen; beim nächsten Verbinden wird wieder gefragt |
 | `RDP: Laufzeitumgebung anzeigen (lokal oder entfernt)` | Wo die Extension läuft und von welchem Rechner die RDP-Verbindung ausgeht – siehe [Remote-SSH](#remote-ssh-der-ssh-rechner-als-sprungbrett) |
 
 Über das Kontextmenü der Verbindungsliste kommen `Gespeicherte Verbindung öffnen`,
@@ -132,6 +129,11 @@ Alle Schalter liegen unter `rdp.*`:
 | `rdp.connectTimeout` | `15000` | Zeitlimit für den Verbindungsaufbau in Millisekunden |
 | `rdp.logLevel` | `info` | `error`, `warn`, `info`, `debug` oder `trace` |
 | `rdp.performance.*` | – | Hintergrundbild (aus), Themes (an), Menüanimationen (aus), Fensterinhalt beim Ziehen (aus), Schriftglättung (an) |
+| `rdp.dynamicResolution` | `true` | Auflösung folgt der Panelgröße auch während der Sitzung |
+| `rdp.clipboard.enabled` / `.direction` | `true` / beide | Zwischenablage an und in welche Richtung |
+| `rdp.driveRedirection.enabled` | `true` | Ordner des Arbeitsbereichs als Laufwerk freigeben |
+| `rdp.driveRedirection.access` | `readOnly` | `readWrite` erlaubt dem Server Anlegen, Ändern, Umbenennen und Löschen |
+| `rdp.driveRedirection.exclude` | `.git`, `.env`, Schlüssel … | Pfade, die der Server nicht sieht |
 
 Die Farbtiefe ist nur ein Wunsch: der Server gibt sie im Demand Active PDU vor,
 und diese Vorgabe wird übernommen.
@@ -177,7 +179,7 @@ für den RDP-Socket.
 | Gespeicherte Passwörter (`SecretStorage`) | **lokal** | „The API will always store the secrets on the client side" |
 | Gemerkte Zertifikatsfingerabdrücke | **lokal** | liegen im `globalState` des Arbeitsplatzes |
 | `.rdp`-Import und -Export | **entfernt** | die Dateidialoge zeigen das entfernte Dateisystem |
-| `rdp.connections` (Einstellungen) | je nach Ebene | User-Settings sind lokal, Workspace-Settings liegen beim Arbeitsbereich |
+| `rdp.connections` (Einstellungen) | **lokal** | nur aus den Benutzereinstellungen, siehe [Sicherheit](#sicherheit) |
 
 Dass Passwörter am Arbeitsplatz bleiben, ist die angenehme Nachricht: sie
 wandern nicht auf den SSH-Rechner. Sie sind damit aber auch an den Arbeitsplatz
@@ -232,12 +234,30 @@ die übliche Ursache: einen Eintrag unter `remote.extensionKind` in den
 Einstellungen. Ohne diese Warnung sähe der Fall aus wie ein nicht erreichbarer
 Server. `Developer: Show Running Extensions` zeigt den Ort unabhängig davon an.
 
+## Sicherheit
+
+- **Nur Benutzereinstellungen.** Verbindungen, Zugangsdaten-Profile,
+  `rdp.certificateTrust` sowie die Schalter für Zwischenablage und
+  Laufwerksumleitung gelten nur aus den Benutzereinstellungen. Ein geöffnetes
+  Repository kann sie über seine `.vscode/settings.json` nicht ändern, also
+  weder Zertifikatsprüfung abschalten noch `.env` freigeben noch eine
+  Verbindung mit gespeichertem Passwort auf einen anderen Server lenken.
+- **Zertifikate** werden vor der Anmeldung geprüft; ein geänderter
+  Fingerabdruck führt zu einer Warnung, nicht zu einer stillen Verbindung.
+- **Laufwerk:** nur lesbar, bis `readWrite` bewusst gesetzt und je Server
+  bestätigt ist. Ausgeschlossenes existiert für den Server nicht. Symlinks
+  werden nicht freigegeben. Namen, die Windows auf einen anderen Namen
+  abbildet – ein Doppelpunkt (Datenströme), ein Punkt oder Leerzeichen am Ende
+  und auf einem Windows-Host 8.3-Kurznamen wie `NODE_M~1` –, werden
+  abgewiesen. Ein Verzeichnis oberhalb eines Ausschlussmusters mit Pfad (etwa
+  `doku/geheim`) lässt sich nicht umbenennen, sonst würde der ausgeschlossene
+  Eintrag unter neuem Pfad sichtbar. Gelöschtes geht in den Papierkorb.
+
 ## Bekannte Grenzen
 
-Kein Audio. Kein
-Multi-Monitor und kein RemoteApp/RAIL – es wird immer der ganze Desktop
-übertragen. Die Auflösung wird beim Verbinden aus der Panelgröße bestimmt und
-vom Client danach nicht mehr geändert; gibt der Server eine neue Größe vor,
-folgt die Sitzung ihr. Bildbereiche, die ein Server in H.264 sendet, bleiben
-leer – es gibt keinen H.264-Decoder. Server, die eine Terminalserver-Lizenz
-(Per-Device-CAL) verlangen, werden nicht unterstützt.
+Kein Audio. Kein Multi-Monitor (geplant) und kein RemoteApp/RAIL – es wird
+immer der ganze Desktop übertragen. H.264 nur als AVC420 und nur mit WebCodecs
+im Webview, kein AVC444. Anmeldung per NLA nur über NTLM; Kerberos ist geplant,
+Domänen ohne NTLM werden bis dahin nicht unterstützt. Kein RD Gateway. Server,
+die eine Terminalserver-Lizenz (Per-Device-CAL) verlangen, werden nicht
+unterstützt.
