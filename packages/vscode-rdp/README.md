@@ -251,10 +251,28 @@ die übliche Ursache: einen Eintrag unter `remote.extensionKind` in den
 Einstellungen. Ohne diese Warnung sähe der Fall aus wie ein nicht erreichbarer
 Server. `Developer: Show Running Extensions` zeigt den Ort unabhängig davon an.
 
+## Anmeldung mit Kerberos
+
+`rdp.nla.protocol` steht auf `negotiate`: die Extension versucht Kerberos und
+nimmt NTLM, wenn Kerberos für diese Verbindung nicht geht. Kerberos braucht
+
+- den **Rechnernamen** des Servers, keine IP-Adresse – das Ticket gilt für
+  `TERMSRV/<name>`,
+- einen **Realm**: aus `benutzer@firma.de`, aus einer Domäne mit Punkt oder aus
+  `rdp.kerberos.realm`; ein NetBIOS-Name wie `FIRMA` reicht nicht,
+- einen erreichbaren **KDC**: per DNS (`_kerberos._tcp.<realm>`) oder fest in
+  `rdp.kerberos.kdc`,
+- eine Uhr, die höchstens fünf Minuten vom KDC abweicht.
+
+Was davon fehlt, steht im Protokoll (`Kerberos übersprungen …`). Lehnt der KDC
+das Passwort ab, gibt es keinen Rückfall auf NTLM – derselbe Fehlversuch würde
+sonst doppelt Richtung Kontosperre zählen. `kerberos` erzwingt Kerberos,
+`ntlm` schaltet es ab.
+
 ## Sicherheit
 
 - **Nur Benutzereinstellungen.** Verbindungen, Zugangsdaten-Profile,
-  `rdp.certificateTrust` sowie die Schalter für Zwischenablage und
+  `rdp.certificateTrust`, das Anmeldeverfahren samt KDC sowie die Schalter für Zwischenablage und
   Laufwerksumleitung gelten nur aus den Benutzereinstellungen. Ein geöffnetes
   Repository kann sie über seine `.vscode/settings.json` nicht ändern, also
   weder Zertifikatsprüfung abschalten noch `.env` freigeben noch eine
@@ -274,7 +292,7 @@ Server. `Developer: Show Running Extensions` zeigt den Ort unabhängig davon an.
 
 Kein Audio. Weitere Monitore nur rechts nebeneinander. Kein RemoteApp/RAIL –
 es wird immer der ganze Desktop übertragen. H.264 nur als AVC420 und nur mit WebCodecs
-im Webview, kein AVC444. Anmeldung per NLA nur über NTLM; Kerberos ist geplant,
-Domänen ohne NTLM werden bis dahin nicht unterstützt. Kein RD Gateway. Server,
+im Webview, kein AVC444. Kerberos ist noch nicht gegen einen Windows-DC
+erprobt, nur gegen MIT Kerberos. Kein RD Gateway. Server,
 die eine Terminalserver-Lizenz (Per-Device-CAL) verlangen, werden nicht
 unterstützt.

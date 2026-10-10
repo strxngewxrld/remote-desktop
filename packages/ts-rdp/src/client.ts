@@ -12,8 +12,12 @@ import { createPublicKey, X509Certificate } from 'node:crypto';
 import { BinaryReader } from './core/binary.js';
 import { backoffWartezeit, BackoffOptions, STANDARD_BACKOFF } from './core/backoff.js';
 import { createLogger, Logger, LogLevel, LogSink, nullLogger } from './core/log.js';
-import { ERROR_INFO_CODES, RdpError, RdpProtocolError } from './core/errors.js';
+import { ERROR_INFO_CODES, RdpAuthError, RdpError, RdpProtocolError } from './core/errors.js';
 import { CredSspClient } from './crypto/credssp.js';
+import { KerberosKontext, type CredSspKontext } from './kerberos/kontext.js';
+import { KerberosFehler, type KdcAdresse } from './kerberos/kdc.js';
+import { kerberosZiel } from './kerberos/ziel.js';
+import { KDC_ERR } from './kerberos/asn1.js';
 import { parseFrame, RdpFrame, RdpTransport, tpkt, tpktRaw } from './protocol/transport.js';
 import {
   buildChannelChunks,
@@ -140,6 +144,14 @@ export interface RdpClientOptions {
   clientName?: string;
   /** NLA (CredSSP) verwenden. Ohne Zugangsdaten nicht moeglich. */
   useNla?: boolean;
+  /**
+   * Anmeldeverfahren innerhalb von NLA. `ntlm` (Standard) wie bisher;
+   * `negotiate` versucht Kerberos und nimmt NTLM, wenn Kerberos hier nicht
+   * geht (IP-Adresse, kein Realm, KDC nicht erreichbar); `kerberos` verlangt es.
+   */
+  authProtocol?: 'ntlm' | 'negotiate' | 'kerberos';
+  /** Kerberos: Realm und KDC, falls sie sich nicht aus Domaene und DNS ergeben. */
+  kerberos?: { realm?: string; kdc?: KdcAdresse[] };
   /** Nur TLS ohne NLA zulassen (aeltere Server, xrdp mit Standardkonfiguration). */
   allowTlsOnly?: boolean;
   /**
@@ -731,6 +743,9 @@ export class RdpClient extends EventEmitter {
 
   private async negotiateSecurity(): Promise<void> {
     const wantNla = this.opts.useNla !== false && !!this.opts.username && !!this.opts.password;
+    // Das Ticket vor dem Verbindungsaufbau holen: waehrend CredSSP wartet der
+    // Server, und ein langsamer KDC soll ihn nicht in einen Zeitablauf treiben.
+    this.kerberosKontext = wantNla ? await this.bereiteKerberosVor() : undefined;
     let requested = PROTOCOL_SSL;
     if (wantNla) requested |= PROTOCOL_HYBRID;
 
@@ -765,8 +780,59 @@ export class RdpClient extends EventEmitter {
     }
   }
 
+  private kerberosKontext?: CredSspKontext;
+
+  /**
+   * Kerberos vorbereiten, wenn das Verfahren es erlaubt. Bei `negotiate`
+   * fuehrt alles, was nur bedeutet "Kerberos geht hier nicht", zu NTLM. Ein
+   * falsches Passwort dagegen nicht: NTLM wuerde mit demselben Passwort
+   * scheitern und das Konto ein zweites Mal Richtung Sperre zaehlen.
+   */
+  private async bereiteKerberosVor(): Promise<CredSspKontext | undefined> {
+    const art = this.opts.authProtocol ?? 'ntlm';
+    if (art === 'ntlm') return undefined;
+    const ziel = kerberosZiel({
+      host: this.opts.host,
+      benutzer: this.opts.username ?? '',
+      domain: this.opts.domain,
+      realm: this.opts.kerberos?.realm,
+    });
+    if (!ziel.ok) {
+      if (art === 'kerberos') throw new RdpAuthError(`Kerberos nicht moeglich: ${ziel.grund}`);
+      this.log.info(`Kerberos uebersprungen (${ziel.grund}) - Anmeldung mit NTLM`);
+      return undefined;
+    }
+    try {
+      const kontext = await KerberosKontext.erstellen(
+        {
+          realm: ziel.realm,
+          benutzer: ziel.benutzer,
+          passwort: this.opts.password ?? '',
+          kdc: this.opts.kerberos?.kdc,
+          // Bei negotiate ist Kerberos ein Versuch: ein KDC, der nicht antwortet,
+          // soll die Anmeldung nicht um das ganze Verbindungszeitlimit verzoegern.
+          zeitlimitMs: art === 'negotiate' ? Math.min(this.opts.connectTimeout ?? 5000, 5000) : this.opts.connectTimeout,
+        },
+        ziel.dienst,
+      );
+      this.log.info(`Kerberos: Ticket fuer ${ziel.dienst} im Realm ${ziel.realm} von ${kontext.kdc}`);
+      return kontext;
+    } catch (err) {
+      const fehler = err as KerberosFehler;
+      if (art === 'kerberos' || fehler.code === KDC_ERR.PREAUTH_FAILED) {
+        throw new RdpAuthError(fehler.message);
+      }
+      this.log.warn(`${fehler.message} - Anmeldung mit NTLM`);
+      return undefined;
+    }
+  }
+
   private async runCredSsp(socket: tls.TLSSocket): Promise<void> {
     const publicKey = serverPublicKeyDer(socket);
+    const kontext = this.kerberosKontext;
+    // Ein Kerberos-Kontext gilt fuer genau einen Verbindungsaufbau: der
+    // Authenticator traegt einen Zeitpunkt und darf nicht wiederholt werden.
+    this.kerberosKontext = undefined;
     const credssp = new CredSspClient(
       {
         domain: this.opts.domain ?? '',
@@ -776,16 +842,23 @@ export class RdpClient extends EventEmitter {
         servicePrincipalName: `TERMSRV/${this.opts.host}`,
       },
       publicKey,
+      kontext,
     );
 
     this.transport.write(credssp.start());
     for (;;) {
       const response = await this.transport.nextFrame('der');
-      const result = credssp.step(response);
+      let result;
+      try {
+        result = credssp.step(response);
+      } catch (err) {
+        if (err instanceof KerberosFehler) throw new RdpAuthError(err.message);
+        throw err;
+      }
       if (result.send) this.transport.write(result.send);
       if (result.done) break;
     }
-    this.log.info('NLA/CredSSP erfolgreich abgeschlossen');
+    this.log.info(`NLA/CredSSP erfolgreich abgeschlossen (${kontext ? 'Kerberos' : 'NTLM'})`);
   }
 
   private async mcsConnect(): Promise<void> {

@@ -345,6 +345,22 @@ export function diagnoseZeilen(
   return zeilen;
 }
 
+/**
+ * `rdp.kerberos.kdc` lesen: Rechnernamen, durch Komma oder Leerzeichen
+ * getrennt, wahlweise mit Port. Leer heisst: ueber DNS suchen.
+ */
+export function kdcAusEinstellung(wert: string): Array<{ host: string; port: number }> | undefined {
+  const eintraege = wert
+    .split(/[\s,]+/)
+    .map((e) => e.trim())
+    .filter(Boolean)
+    .map((e) => {
+      const m = /^(.+?)(?::(\d+))?$/.exec(e)!;
+      return { host: m[1]!, port: m[2] ? Number(m[2]) : 88 };
+    });
+  return eintraege.length ? eintraege : undefined;
+}
+
 /** Ein weiterer Monitor: ein eigenes Panel, das einen Ausschnitt des Desktops zeigt. */
 interface ZusatzMonitor {
   readonly panel: vscode.WebviewPanel;
@@ -787,6 +803,11 @@ export class RdpSession {
         // RemoteFX Progressive und Planar.
         ...(avc420An ? { graphicsCapsSets: AVC420_EGFX_CAPS, avcFrames: true } : {}),
         connectTimeout: config.get<number>('connectTimeout', 15000),
+        authProtocol: config.get<'negotiate' | 'kerberos' | 'ntlm'>('nla.protocol', 'negotiate'),
+        kerberos: {
+          realm: config.get<string>('kerberos.realm', '') || undefined,
+          kdc: kdcAusEinstellung(config.get<string>('kerberos.kdc', '')),
+        },
         performanceFlags: this.performanceFlags(config),
         logLevel: config.get<any>('logLevel', 'info'),
         logSink: (level, msg) => this.log(`[${level}] ${msg}`),

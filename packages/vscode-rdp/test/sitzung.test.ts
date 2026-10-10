@@ -20,7 +20,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { MockRdpServer } from './ts-rdp-quelle/test/mockServer.js';
 import { BinaryWriter } from 'ts-rdp';
-import { RdpSession } from '../src/session.js';
+import { RdpSession, kdcAusEinstellung } from '../src/session.js';
 import { CertificateTrustStore } from '../src/trust.js';
 import { secretKey } from '../src/connections.js';
 import type { RdpConnection } from '../src/connections.js';
@@ -774,5 +774,16 @@ describe('Sitzung - Plattform für die Tastatur', () => {
       'Protokolleintrag zur abgeschalteten Abbildung',
     );
     assert.match(ausgabe.zeilen.at(-1)!, /Plattform win32 \(webview\)/);
+  });
+});
+
+describe('Kerberos-Einstellungen', () => {
+  test('rdp.kerberos.kdc: Komma oder Leerzeichen trennen, Port 88 ist Vorgabe', () => {
+    assert.equal(kdcAusEinstellung(''), undefined);
+    assert.equal(kdcAusEinstellung('  '), undefined);
+    assert.deepEqual(kdcAusEinstellung('dc1.firma.de:8888, dc2.firma.de'), [
+      { host: 'dc1.firma.de', port: 8888 },
+      { host: 'dc2.firma.de', port: 88 },
+    ]);
   });
 });

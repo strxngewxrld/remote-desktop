@@ -40,6 +40,9 @@ VS Code Webview  ──Eingaben──▶  Extension-Host  ──TCP/TLS──▶
 
 **Protokoll**
 - X.224-Aushandlung, TLS und **NLA (CredSSP + NTLMv2)** mit MIC und Kanalbindung
+- **Kerberos für NLA** (SPNEGO, AES256/AES128 nach RFC 3962): Ticket vom KDC
+  (DNS-SRV oder fest eingetragen), gegenseitige Authentifizierung über AP-REP,
+  Nachrichtenschutz nach RFC 4121. Rückfall auf NTLM, wo Kerberos nicht geht
 - MCS-Domain, Capability Exchange, Lizenzphase
 - Bildschirmaktualisierungen über Fastpath und Slowpath, inklusive Reassemblierung
   fragmentierter Updates
@@ -108,7 +111,11 @@ verhält.
 359 Tests, `npm test` – 313 in `ts-rdp`, 46 in `vscode-rdp`:
 
 - **Krypto gegen offizielle Testvektoren**: MD4 (RFC 1320), RC4,
-  NTLMv2 inklusive Session Base Key aus MS-NLMP 4.2.4
+  NTLMv2 inklusive Session Base Key aus MS-NLMP 4.2.4, für Kerberos n-fold
+  (RFC 3961), AES-CTS und string-to-key (RFC 3962)
+- **Kerberos gegen MIT krb5kdc**: ein Wegwerf-Realm mit echtem KDC; das Ticket
+  prüft der Mock-Server mit dem Schlüssel aus einer MIT-Keytab. Ohne
+  `brew install krb5` werden diese Tests übersprungen
 - **Protokollkodierung**: X.224, BER/PER, GCC, MCS, Share-PDUs, Client Info
 - **RLE-Decoder**: jede Lauf- und Bildart einzeln, gegen handgebaute Ströme
 - **Codecs gegen die durchgerechneten Beispiele der Spezifikation**: planar
@@ -208,8 +215,10 @@ Ehrlich benannt, statt später zu überraschen:
 - **Weitere Monitore nur nebeneinander.** Jeder weitere Monitor sitzt rechts
   vom bisher letzten, oben bündig. Er braucht Display Control (MS-RDPEDISP)
   und einen Server, der mehrere Monitore zulässt.
-- **Nur NTLM, kein Kerberos.** NLA rechnet NTLMv2. In Domänen, die NTLM
-  abschalten, scheitert die Anmeldung.
+- **Kerberos noch nicht gegen einen Windows-DC erprobt.** Geprüft ist es
+  gegen MIT Kerberos (`test/kerberosMit.test.ts`) und einen Test-Acceptor, der
+  Windows' Wrap-Format nachstellt. Kein RC4-HMAC, kein KDC-Proxy (MS-KKDCP),
+  keine Realm-übergreifenden Tickets.
 - **Kein RD Gateway** (MS-TSGU).
 - **Kein RemoteApp/RAIL.** Es wird immer der ganze Desktop übertragen.
 - **Keine Zeigerform über den Pipeline-Kanal.** `Microsoft::Windows::RDS::MouseCursor`
@@ -227,8 +236,8 @@ Ehrlich benannt, statt später zu überraschen:
 
 ## Offene Punkte
 
-- **Kerberos für NLA** (SPNEGO über CredSSP), damit Domänen ohne NTLM
-  funktionieren.
+- **Kerberos am Windows-DC erproben** und danach den KDC-Proxy (MS-KKDCP)
+  für Rechner außerhalb des Firmennetzes.
 - **Monitoranordnung wählbar machen** (links, oben, unten statt immer rechts)
   und Screenshots über alle Monitore.
 

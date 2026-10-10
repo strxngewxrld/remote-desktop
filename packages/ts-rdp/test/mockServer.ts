@@ -12,6 +12,7 @@ import * as net from 'node:net';
 import * as tls from 'node:tls';
 import { elementLength } from '../src/asn1/der.js';
 import { MockCredSspServer } from './mockCredssp.js';
+import { MockKerberosCredSspServer, type KerberosErwartung } from './mockKerberos.js';
 import { BinaryReader, BinaryWriter } from '../src/core/binary.js';
 import * as ber from '../src/protocol/ber.js';
 import * as per from '../src/protocol/per.js';
@@ -56,6 +57,8 @@ export interface MockServerOptions {
   selectedProtocol?: number;
   /** Wenn gesetzt, verlangt der Server NLA und prueft diese Zugangsdaten. */
   credentials?: { domain: string; user: string; password: string };
+  /** NLA mit Kerberos statt NTLM: Dienstschluessel aus einer Keytab. */
+  kerberos?: Omit<KerberosErwartung, 'publicKey'>;
   /** Ob der Server das Refresh Rect PDU anbietet (echte Windows-Server tun das). */
   refreshRectSupport?: boolean;
   /** I/O-Kanal, den der Server im Server Network Data nennt (Standard 1003). */
@@ -135,7 +138,7 @@ export class MockRdpServer extends EventEmitter {
   private readonly openSockets = new Set<net.Socket | tls.TLSSocket>();
   private buffer = Buffer.alloc(0);
   private tlsActive = false;
-  private credssp?: MockCredSspServer;
+  private credssp?: { step(incoming: Buffer): { send?: Buffer; outcome?: unknown } };
   /** Zaehlt die TLS-Aufbauversuche - fuer den Test des Wiederholversuchs. */
   tlsAttempts = 0;
   /** Kanaele, auf denen der Client tatsaechlich gesendet hat. */
@@ -377,7 +380,7 @@ export class MockRdpServer extends EventEmitter {
 
     if (!this.tlsActive) {
       // Erster Frame: X.224 Connection Request -> Confirm, danach TLS.
-      const selected = this.opts.selectedProtocol ?? (this.opts.credentials ? 3 : 1);
+      const selected = this.opts.selectedProtocol ?? (this.opts.credentials || this.opts.kerberos ? 3 : 1);
       const confirm = new BinaryWriter()
         .uint8(0x0e)
         .uint8(0xd0)
@@ -470,11 +473,11 @@ export class MockRdpServer extends EventEmitter {
     });
     secure.on('error', () => {});
     secure.on('secure', () => this.emit('tls'));
-    if (this.opts.credentials) {
-      this.credssp = new MockCredSspServer({
-        ...this.opts.credentials,
-        publicKey: createPublicKey(this.opts.cert).export({ type: 'pkcs1', format: 'der' }),
-      });
+    const publicKey = createPublicKey(this.opts.cert).export({ type: 'pkcs1', format: 'der' });
+    if (this.opts.kerberos) {
+      this.credssp = new MockKerberosCredSspServer({ ...this.opts.kerberos, publicKey });
+    } else if (this.opts.credentials) {
+      this.credssp = new MockCredSspServer({ ...this.opts.credentials, publicKey });
     }
   }
 

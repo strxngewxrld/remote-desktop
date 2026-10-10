@@ -892,6 +892,34 @@
           "default": false,
           "description": "Diagnose-Overlay beim Start einer Sitzung einblenden. Der zuletzt über „RDP: Diagnose-Overlay ein-/ausblenden“ gewählte Zustand hat Vorrang."
         },
+        "rdp.nla.protocol": {
+          "scope": "application",
+          "type": "string",
+          "default": "negotiate",
+          "enum": [
+            "negotiate",
+            "kerberos",
+            "ntlm"
+          ],
+          "enumDescriptions": [
+            "Kerberos versuchen, NTLM nehmen, wenn Kerberos für diese Verbindung nicht geht",
+            "Nur Kerberos – scheitert, wenn kein Ticket zu bekommen ist",
+            "Nur NTLM, wie bis Version 1.1"
+          ],
+          "markdownDescription": "Anmeldeverfahren innerhalb von NLA. Kerberos braucht den **Rechnernamen** des Servers (keine IP-Adresse), einen Realm (aus `benutzer@domäne`, einer Domäne mit Punkt oder `#rdp.kerberos.realm#`) und einen erreichbaren KDC. Fehlt etwas davon, nimmt `negotiate` ohne Rückfrage NTLM. Ein vom KDC abgelehntes Passwort führt nicht zu NTLM – das Konto würde sonst doppelt Richtung Sperre zählen."
+        },
+        "rdp.kerberos.realm": {
+          "scope": "application",
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Kerberos-Realm (DNS-Name der Domäne, etwa `ad.firma.de`), falls er sich nicht aus Benutzername oder Domäne ergibt – zum Beispiel, weil die Domäne als NetBIOS-Name (`FIRMA`) eingetragen ist."
+        },
+        "rdp.kerberos.kdc": {
+          "scope": "application",
+          "type": "string",
+          "default": "",
+          "markdownDescription": "KDC fest vorgeben, etwa `dc1.firma.de` oder `dc1.firma.de:88, dc2.firma.de`. Leer: DNS-Eintrag `_kerberos._tcp.<realm>`, dann der Realm selbst als Rechnername."
+        },
         "rdp.certificateTrust": {
           "scope": "application",
           "type": "string",

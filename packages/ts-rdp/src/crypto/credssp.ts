@@ -7,6 +7,10 @@
  *   3. Client -> Server: TSRequest{negoTokens: NTLM AUTHENTICATE, pubKeyAuth, clientNonce}
  *   4. Server -> Client: TSRequest{pubKeyAuth}  (Bindung an den TLS-Kanal pruefen)
  *   5. Client -> Server: TSRequest{authInfo: verschluesselte Zugangsdaten}
+ *
+ * Mit Kerberos ist es ein Schritt weniger: der erste TSRequest traegt den
+ * AP-REQ (in SPNEGO), die Antwort das AP-REP, und danach geht es wie oben mit
+ * pubKeyAuth weiter. Das Verfahren steckt hinter `CredSspKontext`.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
@@ -20,6 +24,7 @@ import {
 } from '../asn1/der.js';
 import { NtlmClient, NtlmOptions } from './ntlm.js';
 import { RdpAuthError } from '../core/errors.js';
+import type { CredSspKontext } from '../kerberos/kontext.js';
 
 const CLIENT_TO_SERVER_MAGIC = 'CredSSP Client-To-Server Binding Hash';
 const SERVER_TO_CLIENT_MAGIC = 'CredSSP Server-To-Client Binding Hash';
@@ -106,8 +111,36 @@ function bindingHash(magic: string, nonce: Buffer, publicKey: Buffer): Buffer {
 
 export type CredSspResult = { send?: Buffer; done: boolean };
 
-export class CredSspClient {
+/** NTLM hinter der gemeinsamen Schnittstelle: drei Nachrichten, danach steht der Kontext. */
+class NtlmKontext implements CredSspKontext {
   private readonly ntlm: NtlmClient;
+  fertig = false;
+
+  constructor(opts: NtlmOptions) {
+    this.ntlm = new NtlmClient(opts);
+  }
+
+  start(): Buffer {
+    return this.ntlm.negotiate();
+  }
+
+  schritt(challenge: Buffer): Buffer {
+    this.ntlm.parseChallenge(challenge);
+    this.fertig = true;
+    return this.ntlm.authenticate();
+  }
+
+  seal(daten: Buffer): Buffer {
+    return this.ntlm.seal(daten);
+  }
+
+  unseal(daten: Buffer): Buffer {
+    return this.ntlm.unseal(daten);
+  }
+}
+
+export class CredSspClient {
+  private readonly kontext: CredSspKontext;
   private readonly nonce = randomBytes(32);
   private peerVersion = CLIENT_VERSION;
   private state: 'negotiate' | 'challenge' | 'pubkey' | 'done' = 'negotiate';
@@ -116,13 +149,15 @@ export class CredSspClient {
     private readonly opts: NtlmOptions,
     /** Oeffentlicher Schluessel des Serverzertifikats (DER), bindet CredSSP an den TLS-Kanal. */
     private readonly serverPublicKey: Buffer,
+    /** Ein anderes Verfahren als NTLM, etwa Kerberos. Die Zugangsdaten in `opts` gehen trotzdem an den Server. */
+    kontext?: CredSspKontext,
   ) {
-    this.ntlm = new NtlmClient(opts);
+    this.kontext = kontext ?? new NtlmKontext(opts);
   }
 
   /** Erste Nachricht an den Server. */
   start(): Buffer {
-    const token = this.ntlm.negotiate();
+    const token = this.kontext.start();
     this.state = 'challenge';
     return encodeTsRequest({ version: CLIENT_VERSION, negoTokens: [token] });
   }
@@ -139,8 +174,12 @@ export class CredSspClient {
       case 'challenge': {
         const challenge = req.negoTokens?.[0];
         if (!challenge) throw new RdpAuthError('CredSSP: CHALLENGE_MESSAGE fehlt in der Serverantwort');
-        this.ntlm.parseChallenge(challenge);
-        const authenticate = this.ntlm.authenticate();
+        const naechstes = this.kontext.schritt(challenge);
+        if (!this.kontext.fertig) {
+          // Das Verfahren braucht noch eine Runde, bevor pubKeyAuth folgen darf.
+          if (!naechstes) throw new RdpAuthError('CredSSP: die Anmeldung kommt nicht weiter');
+          return { send: encodeTsRequest({ version: CLIENT_VERSION, negoTokens: [naechstes] }), done: false };
+        }
 
         const useNonce = this.peerVersion >= NONCE_HASH_MIN_VERSION;
         const payload = useNonce
@@ -151,8 +190,8 @@ export class CredSspClient {
         return {
           send: encodeTsRequest({
             version: CLIENT_VERSION,
-            negoTokens: [authenticate],
-            pubKeyAuth: this.ntlm.seal(payload),
+            negoTokens: naechstes ? [naechstes] : undefined,
+            pubKeyAuth: this.kontext.seal(payload),
             clientNonce: useNonce ? this.nonce : undefined,
           }),
           done: false,
@@ -166,7 +205,7 @@ export class CredSspClient {
               'Meist bedeutet das falsche Zugangsdaten.',
           );
         }
-        const received = this.ntlm.unseal(req.pubKeyAuth);
+        const received = this.kontext.unseal(req.pubKeyAuth);
         const expected =
           this.peerVersion >= NONCE_HASH_MIN_VERSION
             ? bindingHash(SERVER_TO_CLIENT_MAGIC, this.nonce, this.serverPublicKey)
@@ -180,7 +219,7 @@ export class CredSspClient {
         this.state = 'done';
         const creds = encodeTsCredentials(this.opts.domain, this.opts.user, this.opts.password);
         return {
-          send: encodeTsRequest({ version: CLIENT_VERSION, authInfo: this.ntlm.seal(creds) }),
+          send: encodeTsRequest({ version: CLIENT_VERSION, authInfo: this.kontext.seal(creds) }),
           done: true,
         };
       }
