@@ -192,6 +192,45 @@ export function baueAusschluss(muster: readonly string[]): (segmente: readonly s
   };
 }
 
+/**
+ * Kann unter diesem Verzeichnis etwas liegen, das nur ueber seinen Pfad
+ * ausgeschlossen ist?
+ *
+ * Ein Muster mit Schraegstrich haengt am Pfad, nicht am Namen. Wer
+ * `doku` in `doku2` umbenennt, macht aus dem ausgeschlossenen `doku/geheim`
+ * ein sichtbares `doku2/geheim`. Solche Verzeichnisse duerfen deshalb nicht
+ * umbenannt werden. Die Pruefung ist bewusst grosszuegig: ein `*` gilt hier
+ * als genau ein Segment, ein Treffer zu viel kostet nur eine Umbenennung.
+ */
+export function baueVorfahrenPruefung(muster: readonly string[]): (segmente: readonly string[]) => boolean {
+  const pfadMuster: ((name: string) => boolean)[][] = [];
+  for (const m of muster) {
+    const wert = m.replace(/\\/g, '/').replace(/^\.\//, '');
+    if (!wert.includes('/')) continue;
+    pfadMuster.push(wert.split('/').filter((t) => t !== '').map((t) => musterPasst(t)));
+  }
+  return (segmente: readonly string[]): boolean =>
+    pfadMuster.some(
+      (teile) => teile.length > segmente.length && segmente.every((segment, i) => teile[i]!(segment)),
+    );
+}
+
+/**
+ * Namen, die Windows stillschweigend auf einen anderen Namen abbildet.
+ *
+ * Laeuft der Extension-Host unter Windows, erreicht `.env.` oder `.env ` die
+ * Datei `.env`, `.env::$DATA` deren Inhalt und ein 8.3-Kurzname wie
+ * `NODE_M~1` den Ordner `node_modules` - jeweils an jedem Ausschlussmuster
+ * vorbei, das auf den echten Namen zielt. Doppelpunkt und Punkt oder
+ * Leerzeichen am Ende kann Windows ohnehin nicht als Dateinamen anlegen,
+ * die Absage kostet dort also nichts. Kurznamen sind dagegen auch als
+ * echte Namen denkbar und werden nur abgewiesen, wenn der Host sie kennt.
+ */
+export function istNamensalias(segment: string, windowsHost: boolean): boolean {
+  if (segment.includes(':') || /[. ]$/.test(segment)) return true;
+  return windowsHost && /~\d/.test(segment);
+}
+
 // -------------------------------------------------------------- Ordnernamen
 
 /**
@@ -293,6 +332,8 @@ interface Aufgeloest {
 export interface ArbeitsbereichDateisystemOptionen {
   zugriff: ArbeitsbereichZugriff;
   einstellungen: LaufwerkEinstellungen;
+  /** Laeuft der Extension-Host unter Windows? Dann gibt es 8.3-Kurznamen. */
+  windowsHost?: boolean;
   log?(nachricht: string): void;
 }
 
@@ -309,6 +350,7 @@ export interface ArbeitsbereichDateisystemOptionen {
  */
 export class ArbeitsbereichDateisystem implements RdpdrDateisystem {
   private readonly istAusgeschlossen: (segmente: readonly string[]) => boolean;
+  private readonly hatPfadAusschlussDarunter: (segmente: readonly string[]) => boolean;
   /**
    * Zwischenspeicher fuer die zuletzt gelesene Datei.
    *
@@ -321,6 +363,7 @@ export class ArbeitsbereichDateisystem implements RdpdrDateisystem {
 
   constructor(private readonly opts: ArbeitsbereichDateisystemOptionen) {
     this.istAusgeschlossen = baueAusschluss(opts.einstellungen.ausschluss);
+    this.hatPfadAusschlussDarunter = baueVorfahrenPruefung(opts.einstellungen.ausschluss);
   }
 
   private protokoll(nachricht: string): void {
@@ -346,6 +389,10 @@ export class ArbeitsbereichDateisystem implements RdpdrDateisystem {
     for (const segment of roh) {
       if (segment === '.' || segment === '..' || segment.includes('\0') || segment.includes('\\')) {
         this.protokoll(`Laufwerk: Pfad "${pfad}" abgewiesen - unerlaubtes Segment "${segment}"`);
+        return undefined;
+      }
+      if (istNamensalias(segment, this.opts.windowsHost === true)) {
+        this.protokoll(`Laufwerk: Pfad "${pfad}" abgewiesen - "${segment}" koennte ein anderer Name derselben Datei sein`);
         return undefined;
       }
     }
@@ -573,6 +620,14 @@ export class ArbeitsbereichDateisystem implements RdpdrDateisystem {
       // Wurzel sein, und ein ausgeschlossenes Ziel loest gar nicht erst auf.
       throw new Error(`"${nach}" ist kein erlaubtes Ziel`);
     }
+    if (this.hatPfadAusschlussDarunter(quelle.segmente)) {
+      const angabe = await this.opts.zugriff.stat(quelle.ordner, quelle.segmente);
+      if (angabe?.art === 'verzeichnis') {
+        const grund = 'darunter liegt ein über seinen Pfad ausgeschlossener Eintrag, der nach dem Umbenennen sichtbar würde';
+        this.protokoll(`Laufwerk: "${von}" wird nicht umbenannt - ${grund}`);
+        throw new RdpdrStatusFehler(STATUS_ACCESS_DENIED, `"${von}" kann nicht umbenannt werden - ${grund}`);
+      }
+    }
     await this.opts.zugriff.benenneUm(quelle.ordner, quelle.segmente, ziel.ordner, ziel.segmente, ersetzen);
     this.vergiss();
   }
@@ -649,11 +704,13 @@ export function baueLaufwerk(opts: {
   zugriff: ArbeitsbereichZugriff;
   einstellungen: LaufwerkEinstellungen;
   deviceId?: number;
+  windowsHost?: boolean;
   log?(nachricht: string): void;
 }): RdpdrLaufwerk {
   const dateisystem = new ArbeitsbereichDateisystem({
     zugriff: opts.zugriff,
     einstellungen: opts.einstellungen,
+    windowsHost: opts.windowsHost,
     log: opts.log,
   });
   return {

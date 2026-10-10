@@ -1151,6 +1151,7 @@ export class RdpSession {
           baueLaufwerk({
             zugriff,
             einstellungen,
+            windowsHost: process.platform === 'win32',
             log: (nachricht) => this.log(nachricht),
           }),
         ];
