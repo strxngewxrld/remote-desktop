@@ -1524,6 +1524,13 @@ export interface RdpdrSessionOptions {
   maxLeseBytes?: number;
   /** Meldungen fuer das Sitzungsprotokoll. */
   log?(nachricht: string): void;
+  /**
+   * Eine Zeile je Device-I/O-Anfrage und -Antwort - nur fuer die Fehlersuche.
+   *
+   * Der Explorer stellt beim Blaettern hunderte Anfragen; im Normalbetrieb
+   * bleibt das deshalb aus. Dateipfade stehen in keiner dieser Zeilen.
+   */
+  ioLog?(nachricht: string): void;
 }
 
 /** Standardgrenze fuer eine Leseantwort: 4 MiB. */
@@ -1577,18 +1584,6 @@ export function waehleNebenversion(serverMinor: number): number {
  */
 export class RdpdrSession {
   private generation = 0;
-  private diagnoseAnfragen = 0;
-  private diagnoseAntworten = 0;
-  /**
-   * Offene Anfragen, deren Antwort auf jeden Fall ins Protokoll gehoert.
-   *
-   * Die Obergrenze von 100 Zeilen haelt das Protokoll lesbar, verdeckt aber
-   * ausgerechnet das, was man sucht: der Explorer stellt beim Blaettern
-   * hunderte Metadatenanfragen, und der eine Schreibversuch danach faellt aus
-   * der Zaehlung heraus. Schreibende Vorgaenge werden deshalb immer
-   * protokolliert - Anfrage und zugehoerige Antwort.
-   */
-  private readonly schreibAnfragen = new Set<string>();
   private serverVersionMinor = 0;
   private nebenversion = RDPDR_VERSION_MINOR;
   private clientId = 0;
@@ -1641,15 +1636,11 @@ export class RdpdrSession {
 
   private sende(daten: Buffer): void {
     if (this.beendet) return;
-    if (daten.length >= 16 && daten.readUInt16LE(2) === PAKID_CORE_DEVICE_IOCOMPLETION) {
+    if (this.opts.ioLog && daten.length >= 16 && daten.readUInt16LE(2) === PAKID_CORE_DEVICE_IOCOMPLETION) {
       const status = daten.readUInt32LE(12);
       const deviceId = daten.readUInt32LE(4);
       const completionId = daten.readUInt32LE(8);
-      const schreibend = this.schreibAnfragen.delete(`${deviceId}:${completionId}`);
-      const unterGrenze = this.diagnoseAntworten++ < 100;
-      if (schreibend || unterGrenze || (status !== STATUS_SUCCESS && status !== STATUS_NO_MORE_FILES)) {
-        this.protokoll(`RDPDR I/O Antwort: Gerät=${deviceId}, Anfrage=${completionId}, Status=0x${status.toString(16).padStart(8, '0')}, Bytes=${daten.length}`);
-      }
+      this.opts.ioLog(`RDPDR I/O Antwort: Gerät=${deviceId}, Anfrage=${completionId}, Status=0x${status.toString(16).padStart(8, '0')}, Bytes=${daten.length}`);
     }
     this.opts.send(daten);
   }
@@ -1665,7 +1656,6 @@ export class RdpdrSession {
     this.generation++;
     this.beendet = true;
     this.offeneDateien.clear();
-    this.schreibAnfragen.clear();
   }
 
   /**
@@ -1677,9 +1667,6 @@ export class RdpdrSession {
    */
   zuruecksetzen(): void {
     this.generation++;
-    this.diagnoseAnfragen = 0;
-    this.diagnoseAntworten = 0;
-    this.schreibAnfragen.clear();
     this.serverVersionMinor = 0;
     this.nebenversion = RDPDR_VERSION_MINOR;
     this.clientId = 0;
@@ -1888,20 +1875,11 @@ export class RdpdrSession {
       return;
     }
 
-    const schreibend = istSchreibanfrage(anfrage);
-    const unterGrenze = this.diagnoseAnfragen++ < 100;
-    if (schreibend || unterGrenze) {
+    if (this.opts.ioLog) {
       const details = 'fsInformationClass' in anfrage ? `, Klasse=${anfrage.fsInformationClass}`
         : anfrage.art === 'create' ? `, Zugriff=0x${anfrage.desiredAccess.toString(16)}, Disposition=${anfrage.createDisposition}, Optionen=0x${anfrage.createOptions.toString(16)}, Pfadzeichen=${anfrage.path.length}` : '';
-      const merkmal = schreibend ? ' [schreibend]' : '';
-      this.protokoll(`RDPDR I/O Anfrage: ${anfrage.art}, Gerät=${anfrage.deviceId}, Handle=${anfrage.fileId}, Anfrage=${anfrage.completionId}${details}${merkmal}`);
-    }
-    if (schreibend) {
-      // Die Menge bleibt klein: sie enthaelt nur unbeantwortete Anfragen. Die
-      // Obergrenze ist trotzdem da, damit ein Server, der nie eine Antwort
-      // abholt, den Speicher nicht fuellt.
-      if (this.schreibAnfragen.size > 256) this.schreibAnfragen.clear();
-      this.schreibAnfragen.add(`${anfrage.deviceId}:${anfrage.completionId}`);
+      const merkmal = istSchreibanfrage(anfrage) ? ' [schreibend]' : '';
+      this.opts.ioLog(`RDPDR I/O Anfrage: ${anfrage.art}, Gerät=${anfrage.deviceId}, Handle=${anfrage.fileId}, Anfrage=${anfrage.completionId}${details}${merkmal}`);
     }
     const laufwerk = this.laufwerke.get(anfrage.deviceId);
     if (!laufwerk) {
