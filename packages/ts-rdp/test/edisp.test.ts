@@ -225,3 +225,26 @@ describe('MS-RDPEDISP - Grenzen der Spezifikation', () => {
     assert.equal(edisp.DISPLAY_CONTROL_CHANNEL_NAME, 'Microsoft::Windows::RDS::DisplayControl');
   });
 });
+
+describe('MS-RDPEDISP - Monitore nebeneinander', () => {
+  test('Der erste ist primaer bei (0, 0), jeder weitere rechts daneben', () => {
+    const anordnung = edisp.anordnungNebeneinander([
+      { width: 1920, height: 1080 },
+      { width: 1281, height: 1024 },
+      { width: 800, height: 600 },
+    ]);
+    assert.deepEqual(
+      anordnung.map((m) => [m.flags, m.left, m.top, m.width, m.height]),
+      [
+        [edisp.DISPLAYCONTROL_MONITOR_PRIMARY, 0, 0, 1920, 1080],
+        // Die ungerade Breite wird gerade gemacht, bevor der naechste anschliesst.
+        [0, 1920, 0, 1280, 1024],
+        [0, 3200, 0, 800, 600],
+      ],
+    );
+  });
+
+  test('Ein einzelner Monitor entspricht primaerMonitor', () => {
+    assert.deepEqual(edisp.anordnungNebeneinander([{ width: 1280, height: 800 }]), [edisp.primaerMonitor(1280, 800)]);
+  });
+});

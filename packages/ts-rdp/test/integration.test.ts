@@ -866,6 +866,19 @@ describe('Dynamische virtuelle Kanäle und Graphics Pipeline', () => {
     return egfxPdu(RDPGFX_CMDID_RESETGRAPHICS, Buffer.concat([body, fuellung]));
   }
 
+  /** RESETGRAPHICS mit beliebiger Monitorliste; Kanten wie auf dem Draht inklusive. */
+  function resetGraphicsMonitore(
+    width: number,
+    height: number,
+    monitore: Array<{ left: number; top: number; right: number; bottom: number; flags: number }>,
+  ): Buffer {
+    const w = new BinaryWriter().uint32le(width).uint32le(height).uint32le(monitore.length);
+    for (const m of monitore) w.uint32le(m.left).uint32le(m.top).uint32le(m.right).uint32le(m.bottom).uint32le(m.flags);
+    const body = w.toBuffer();
+    const fuellung = Buffer.alloc(340 - EGFX_HEADER_SIZE - body.length);
+    return egfxPdu(RDPGFX_CMDID_RESETGRAPHICS, Buffer.concat([body, fuellung]));
+  }
+
   function createSurface(surfaceId: number, width: number, height: number): Buffer {
     const body = new BinaryWriter()
       .uint16le(surfaceId)
@@ -1124,6 +1137,42 @@ describe('Dynamische virtuelle Kanäle und Graphics Pipeline', () => {
     assert.equal(bestaetigung.readUInt16LE(0), RDPGFX_CMDID_FRAMEACKNOWLEDGE);
     // Auf dem Draht steht queueDepth vor frameId (MS-RDPEGFX 2.2.2.13).
     assert.equal(bestaetigung.readUInt32LE(EGFX_HEADER_SIZE + 4), frameId);
+  });
+
+  test('RESETGRAPHICS reicht die Monitoranordnung mit dem resize-Ereignis weiter', async () => {
+    const { server, client, sammler } = await grafikSitzung();
+    await sammler.warteAuf(1);
+    const monitore = [
+      { left: 0, top: 0, right: 1279, bottom: 799, flags: 1 },
+      { left: 1280, top: 0, right: 2303, bottom: 767, flags: 0 },
+    ];
+    const ereignis = once(client, 'resize');
+    server.sendDynamicChannelData(GRAPHICS_CHANNEL_NAME, resetGraphicsMonitore(2304, 800, monitore));
+    const [groesse] = await ereignis;
+    assert.equal(groesse.width, 2304);
+    assert.equal(groesse.height, 800);
+    assert.deepEqual(groesse.monitors, monitore);
+  });
+
+  test('Eine neue Aufteilung bei gleicher Gesamtgroesse ist trotzdem ein resize', async () => {
+    const { server, client, sammler } = await grafikSitzung();
+    await sammler.warteAuf(1);
+    const ereignisse: unknown[] = [];
+    client.on('resize', (e) => ereignisse.push(e));
+    const erst = [
+      { left: 0, top: 0, right: 999, bottom: 599, flags: 1 },
+      { left: 1000, top: 0, right: 1999, bottom: 599, flags: 0 },
+    ];
+    const dann = [
+      { left: 0, top: 0, right: 1199, bottom: 599, flags: 1 },
+      { left: 1200, top: 0, right: 1999, bottom: 599, flags: 0 },
+    ];
+    const zweites = new Promise<void>((resolve) => client.on('resize', () => ereignisse.length === 2 && resolve()));
+    server.sendDynamicChannelData(GRAPHICS_CHANNEL_NAME, resetGraphicsMonitore(2000, 600, erst));
+    server.sendDynamicChannelData(GRAPHICS_CHANNEL_NAME, resetGraphicsMonitore(2000, 600, erst));
+    server.sendDynamicChannelData(GRAPHICS_CHANNEL_NAME, resetGraphicsMonitore(2000, 600, dann));
+    await zweites;
+    assert.equal(ereignisse.length, 2, 'dieselbe Anordnung zweimal ergibt nur ein Ereignis');
   });
 });
 
@@ -1684,6 +1733,36 @@ describe('Display Control Channel (MS-RDPEDISP)', () => {
     assert.equal(client.requestResolution(1280, 800, { force: true }), true);
     await nochmal;
     assert.equal(gesendet, 2);
+  });
+
+  test('Zwei Monitore gehen nebeneinander in einem MONITOR_LAYOUT_PDU raus', async () => {
+    const { server, client } = await displaySitzung();
+    await sendeCaps(server, client);
+    const empfangen = naechstesEreignis<DvcData>(
+      server,
+      'dvcData',
+      (e) => e.name === DISPLAY_CONTROL_CHANNEL_NAME,
+    );
+    assert.equal(client.requestMonitorLayout([{ width: 1600, height: 900 }, { width: 1281, height: 1024 }]), true);
+    const monitore = edisp.parseMonitorLayoutPdu((await empfangen).data);
+    assert.equal(monitore.length, 2);
+    assert.deepEqual(
+      monitore.map((m) => [m.flags, m.left, m.top, m.width, m.height]),
+      [
+        [edisp.DISPLAYCONTROL_MONITOR_PRIMARY, 0, 0, 1600, 900],
+        [0, 1600, 0, 1280, 1024],
+      ],
+    );
+    // Dieselbe Anordnung noch einmal ist keine neue Bitte.
+    assert.equal(client.requestMonitorLayout([{ width: 1600, height: 900 }, { width: 1280, height: 1024 }]), false);
+  });
+
+  test('Mehr Monitore als der Server erlaubt werden nicht angefragt', async () => {
+    const { server, client } = await displaySitzung();
+    await sendeCaps(server, client, { maxNumMonitors: 1, maxMonitorAreaFactorA: 8192, maxMonitorAreaFactorB: 8192 });
+    assert.equal(client.requestMonitorLayout([{ width: 1280, height: 800 }, { width: 1280, height: 800 }]), false);
+    // Ein einzelner Monitor geht weiterhin.
+    assert.equal(client.requestMonitorLayout([{ width: 1280, height: 800 }]), true);
   });
 
   test('Eine Größe jenseits der Servergrenzen wird gar nicht erst geschickt', async () => {

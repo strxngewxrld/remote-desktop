@@ -94,8 +94,11 @@ export interface EgfxSessionOptions {
   send: (pdu: Buffer) => void;
   /** Fertige Kacheln fuer die Anzeige. */
   onBitmap: (tiles: DecodedBitmap[]) => void;
-  /** Der Server gibt eine neue Desktopgroesse vor. */
-  onResize: (size: { width: number; height: number }) => void;
+  /**
+   * Der Server gibt eine neue Desktopgroesse vor. `monitors` ist die
+   * Monitoranordnung aus RESETGRAPHICS, in Desktopkoordinaten.
+   */
+  onResize: (size: { width: number; height: number; monitors: egfx.EgfxMonitor[] }) => void;
   /**
    * Welche Capability-Sets angeboten werden. Ohne Angabe wird der
    * konservativste Satz benutzt, der noch etwas dekodierbares liefern kann.
@@ -317,7 +320,7 @@ export class EgfxSession {
 
       case egfx.RDPGFX_CMDID_RESETGRAPHICS:
         this.opts.log.info(`Graphics Pipeline: Desktop ${pdu.width}x${pdu.height}`);
-        this.opts.onResize({ width: pdu.width, height: pdu.height });
+        this.opts.onResize({ width: pdu.width, height: pdu.height, monitors: pdu.monitors });
         break;
 
       case egfx.RDPGFX_CMDID_CREATESURFACE:

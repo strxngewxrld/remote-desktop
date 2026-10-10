@@ -26,7 +26,7 @@ import * as dvc from './protocol/dvc.js';
 import * as edisp from './protocol/edisp.js';
 import { ZgfxDecompressor } from './codec/zgfx.js';
 import { EgfxSession, EgfxVideoFrame } from './protocol/egfxSession.js';
-import type { EgfxCapsSet } from './protocol/egfx.js';
+import type { EgfxCapsSet, EgfxMonitor } from './protocol/egfx.js';
 import {
   LEGACY_TLS_EXPLANATION,
   LEGACY_TLS_PROFILE,
@@ -307,7 +307,12 @@ export interface RdpClientEvents {
   /** Entpackte Nachricht der Graphics Pipeline (ZGFX bereits entfernt). */
   graphicsData: (data: Buffer) => void;
   pointerPosition: (pos: { x: number; y: number }) => void;
-  resize: (size: { width: number; height: number }) => void;
+  /**
+   * Neue Desktopgroesse. `monitors` nennt die Monitoranordnung, sofern der
+   * Server sie mitteilt (RESETGRAPHICS der Graphics Pipeline); auf dem
+   * klassischen Weg fehlt sie.
+   */
+  resize: (size: { width: number; height: number; monitors?: EgfxMonitor[] }) => void;
   /**
    * Der Server hat seine Grenzen fuer Aufloesungswechsel genannt
    * (DISPLAYCONTROL_CAPS_PDU). Ab hier nimmt `requestResolution` Anfragen an.
@@ -478,7 +483,10 @@ export class RdpClient extends EventEmitter {
    */
   private displayControlCaps?: edisp.DisplayControlCaps;
   /** Zuletzt angefragte Groesse - haelt Wiederholungen derselben Bitte zurueck. */
-  private letzteAufloesungsanfrage?: { width: number; height: number };
+  /** Zuletzt gesendete Anordnung als "BxH,BxH" - gegen doppelte Anfragen. */
+  private letzteAufloesungsanfrage?: string;
+  /** Zuletzt gemeldete Monitoranordnung der Graphics Pipeline. */
+  private letzteMonitore = '';
   private bitmapCount = 0;
   /** Entpackte Bytes, die ueber die Graphics Pipeline ankamen. */
   private graphicsBytes = 0;
@@ -697,6 +705,7 @@ export class RdpClient extends EventEmitter {
     this.egfx = undefined;
     this.displayControlCaps = undefined;
     this.letzteAufloesungsanfrage = undefined;
+    this.letzteMonitore = '';
     this.serverCapabilities = undefined;
     this.lastErrorInfo = undefined;
     this.lastErrorInfoCode = undefined;
@@ -1307,11 +1316,16 @@ export class RdpClient extends EventEmitter {
         this.bitmapCount += tiles.length;
         this.emit('bitmap', tiles);
       },
-      onResize: ({ width, height }) => {
-        if (width === this.opts.width && height === this.opts.height) return;
+      onResize: ({ width, height, monitors }) => {
+        // Bei mehreren Monitoren kann sich die Anordnung aendern, ohne dass
+        // die Gesamtgroesse es tut - etwa wenn einer schmaler, der andere
+        // breiter wird. Das ist trotzdem eine neue Aufteilung.
+        const monitore = monitors.map((m) => `${m.left},${m.top},${m.right},${m.bottom}`).join(';');
+        if (width === this.opts.width && height === this.opts.height && monitore === this.letzteMonitore) return;
         this.opts.width = width;
         this.opts.height = height;
-        this.emit('resize', { width, height });
+        this.letzteMonitore = monitore;
+        this.emit('resize', { width, height, monitors });
       },
     });
     // Die Capability-Aushandlung muss vom Client ausgehen.
@@ -1886,6 +1900,21 @@ export class RdpClient extends EventEmitter {
       force?: boolean;
     },
   ): boolean {
+    return this.requestMonitorLayout([{ width, height }], optionen);
+  }
+
+  /**
+   * Mehrere Monitore nebeneinander anfordern (MS-RDPEDISP 3.2.5.2).
+   *
+   * Der erste ist der primaere, jeder weitere sitzt rechts neben seinem
+   * Vorgaenger - siehe `edisp.anordnungNebeneinander`. Wie
+   * `requestResolution` wirft auch das nicht: ob der Server die Anordnung
+   * uebernimmt, zeigt erst das 'resize'-Ereignis mit seiner Monitorliste.
+   */
+  requestMonitorLayout(
+    groessen: ReadonlyArray<{ width: number; height: number }>,
+    optionen?: { desktopScaleFactor?: number; deviceScaleFactor?: number; force?: boolean },
+  ): boolean {
     const channelId = this.getDynamicChannelId(DISPLAY_CONTROL_CHANNEL_NAME);
     if (channelId === undefined) {
       this.log.debug(
@@ -1899,31 +1928,32 @@ export class RdpClient extends EventEmitter {
       return false;
     }
 
-    const monitor = edisp.primaerMonitor(width, height, optionen);
-    const grund = edisp.pruefeAnordnung([monitor], this.displayControlCaps);
+    const monitore = edisp.anordnungNebeneinander(groessen, optionen);
+    const gewuenscht = groessen.map((g) => `${g.width}x${g.height}`).join(' + ');
+    const grund = edisp.pruefeAnordnung(monitore, this.displayControlCaps);
     if (grund) {
-      this.log.warn(`Display Control: ${width}x${height} wird nicht angefragt - ${grund}`);
+      this.log.warn(`Display Control: ${gewuenscht} wird nicht angefragt - ${grund}`);
       return false;
     }
 
     // Nach dem Zurechtruecken kann aus 1367 eine 1366 geworden sein; verglichen
     // wird deshalb die tatsaechlich gesendete Groesse, nicht die gewuenschte.
-    const letzte = this.letzteAufloesungsanfrage;
-    if (!optionen?.force && letzte && letzte.width === monitor.width && letzte.height === monitor.height) {
-      this.log.debug(`Display Control: ${monitor.width}x${monitor.height} ist bereits angefragt`);
+    const schluessel = monitore.map((m) => `${m.width}x${m.height}`).join(' + ');
+    if (!optionen?.force && this.letzteAufloesungsanfrage === schluessel) {
+      this.log.debug(`Display Control: ${schluessel} ist bereits angefragt`);
       return false;
     }
 
     try {
-      this.sendDynamicChannel(channelId, edisp.buildMonitorLayoutPdu([monitor]));
+      this.sendDynamicChannel(channelId, edisp.buildMonitorLayoutPdu(monitore));
     } catch (err) {
       // sendDynamicChannel wirft, wenn drdynvc zwischen Pruefung und Senden
       // weggebrochen ist. Ein Aufloesungswunsch ist das nicht wert.
       this.log.warn(`Display Control: Anfrage konnte nicht gesendet werden - ${(err as Error).message}`);
       return false;
     }
-    this.letzteAufloesungsanfrage = { width: monitor.width, height: monitor.height };
-    this.log.info(`Display Control: ${monitor.width}x${monitor.height} angefragt`);
+    this.letzteAufloesungsanfrage = schluessel;
+    this.log.info(`Display Control: ${schluessel} angefragt`);
     return true;
   }
 

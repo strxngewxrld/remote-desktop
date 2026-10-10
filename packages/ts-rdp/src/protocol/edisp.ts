@@ -310,6 +310,30 @@ export function primaerMonitor(
 }
 
 /**
+ * Mehrere Monitore nebeneinander beschreiben, der erste ist der primaere.
+ *
+ * Alle sitzen oben buendig, jeder rechts neben seinem Vorgaenger. Das haelt
+ * alle Koordinaten nicht negativ: der primaere Monitor liegt bei (0, 0), und
+ * damit faellt der Desktopursprung mit seinem zusammen. Jede Groesse wird wie
+ * bei `primaerMonitor` auf die Grenzen der Spezifikation gebracht.
+ */
+export function anordnungNebeneinander(
+  groessen: ReadonlyArray<{ width: number; height: number }>,
+  skalierung?: { desktopScaleFactor?: number; deviceScaleFactor?: number },
+): MonitorLayout[] {
+  let links = 0;
+  return groessen.map((g, i) => {
+    const monitor = primaerMonitor(g.width, g.height, skalierung);
+    if (i > 0) {
+      monitor.flags = 0;
+      monitor.left = links;
+    }
+    links += monitor.width;
+    return monitor;
+  });
+}
+
+/**
  * Prueft eine Anordnung gegen die Grenzen des Servers (2.2.2.2 und 3.2.5.2).
  *
  * Rueckgabe ist der Grund, warum die Anordnung nicht geschickt werden darf,

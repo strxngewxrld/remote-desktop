@@ -153,6 +153,7 @@ export { ZgfxDecompressor, ZgfxError, zgfxWrapUncompressed } from './codec/zgfx.
 export * as egfx from './protocol/egfx.js';
 export { EgfxSession, DEFAULT_EGFX_CAPS, AVC420_EGFX_CAPS } from './protocol/egfxSession.js';
 export type { EgfxVideoFrame } from './protocol/egfxSession.js';
+export type { EgfxMonitor } from './protocol/egfx.js';
 export { parseAvc420, parseAvc444, parseAvc444V2 } from './codec/avcMeta.js';
 export { ClearCodecDecoder } from './codec/clear.js';
 export { ProgressiveDecoder } from './codec/progressive.js';
