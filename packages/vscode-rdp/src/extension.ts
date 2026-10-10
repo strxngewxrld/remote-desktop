@@ -30,6 +30,7 @@ import {
 import { BANDBREITEN_PROFILE, BandbreitenProfilName, PROFIL_NAMEN } from './bandbreite.js';
 import { FARBEN, FARB_NAMEN, FarbName } from './farben.js';
 import { berichtUeberRest, dekodiereRdpDatei, exportiereRdpDatei, importiereRdpDatei } from './rdpDatei.js';
+import { vergissFreigaben } from './arbeitsbereichZugriff.js';
 import { RdpSession } from './session.js';
 import { CertificateTrustStore } from './trust.js';
 import { KEYBOARD_LAYOUTS } from './keyboardLayouts.js';
@@ -352,6 +353,17 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('rdp.showLog', () => output.show()),
+
+    // Die Antwort auf die Freigabefrage wird gemerkt, auch ein Nein. Ohne
+    // einen Weg zurueck waere eine versehentlich verweigerte Freigabe
+    // endgueltig. Der Befehl braucht keine Sitzung - gebraucht wird er gerade
+    // dann, wenn noch keine offen ist, weil das Laufwerk beim Verbinden fehlte.
+    vscode.commands.registerCommand('rdp.forgetDriveApprovals', async () => {
+      await vergissFreigaben(context);
+      vscode.window.showInformationMessage(
+        'Die gemerkten Laufwerksfreigaben sind vergessen. Beim nächsten Verbinden wird wieder gefragt.',
+      );
+    }),
 
     vscode.commands.registerCommand('rdp.showEnvironment', () => {
       // Frisch ermitteln statt den Wert von der Aktivierung zu nehmen: das

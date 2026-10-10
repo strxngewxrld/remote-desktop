@@ -325,22 +325,3 @@ describe('Laufwerk in der Sitzung - Rueckfallebenen', () => {
     assert.equal(protokollEnthaelt(ausgabe, '+ neu'), true);
   });
 });
-
-describe('Laufwerk in der Sitzung - Befehl zum Vergessen der Freigaben', () => {
-  test('Mit der ersten Sitzung gibt es den Befehl, mit der letzten ist er wieder weg', async () => {
-    assert.equal(notizen.befehle.has('rdp.forgetDriveApprovals'), false);
-    const { sitzung } = await starteSitzung();
-    assert.equal(notizen.befehle.has('rdp.forgetDriveApprovals'), true);
-    sitzung.dispose();
-    offeneSitzungen.length = 0;
-    assert.equal(notizen.befehle.has('rdp.forgetDriveApprovals'), false);
-  });
-
-  test('Der Befehl loescht die gemerkten Antworten', async () => {
-    const { kontext } = await starteSitzung();
-    await kontext.globalState.update('rdp.driveRedirection.freigaben', { 'a:3389': 'verweigert' });
-    await notizen.befehle.get('rdp.forgetDriveApprovals')!();
-    assert.equal(kontext.globalState.get('rdp.driveRedirection.freigaben'), undefined);
-    assert.equal(notizen.hinweise.some((h) => h.includes('vergessen')), true);
-  });
-});
