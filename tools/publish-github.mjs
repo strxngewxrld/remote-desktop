@@ -111,6 +111,9 @@ writeFileSync(
       version,
       description: `${manifest.displayName} - VS-Code-Extension als VSIX (${vsixName})`,
       license: manifest.license,
+      author: manifest.author,
+      // Daran verknuepft GitHub Packages das Paket mit dem Repository.
+      repository: manifest.repository,
       files: [vsixName, 'README.md'],
       publishConfig: { registry: REGISTRY },
     },

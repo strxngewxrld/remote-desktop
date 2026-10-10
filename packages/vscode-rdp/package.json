@@ -4,6 +4,16 @@
   "description": "Vollwertige RDP-Sitzungen direkt in VS Code - mit eigener TypeScript-Implementierung des Protokolls, inklusive NLA.",
   "version": "0.1.0",
   "license": "MIT",
+  "author": "Tom Knüppel",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/strxngewxrld/remote-desktop.git",
+    "directory": "packages/vscode-rdp"
+  },
+  "bugs": {
+    "url": "https://github.com/strxngewxrld/remote-desktop/issues"
+  },
+  "homepage": "https://github.com/strxngewxrld/remote-desktop#readme",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"

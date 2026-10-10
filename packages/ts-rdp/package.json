@@ -3,6 +3,16 @@
   "version": "0.1.0",
   "description": "Remote Desktop Protocol (RDP) client implemented in pure TypeScript - TLS + NLA/CredSSP/NTLMv2, bitmap updates, input injection.",
   "license": "MIT",
+  "author": "Tom Knüppel",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/strxngewxrld/remote-desktop.git",
+    "directory": "packages/ts-rdp"
+  },
+  "bugs": {
+    "url": "https://github.com/strxngewxrld/remote-desktop/issues"
+  },
+  "homepage": "https://github.com/strxngewxrld/remote-desktop#readme",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
