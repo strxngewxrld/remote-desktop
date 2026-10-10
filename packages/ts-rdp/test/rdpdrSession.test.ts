@@ -182,7 +182,7 @@ interface Aufbau {
   protokoll: string[];
 }
 
-function baue(opts: { nurLesen?: boolean; speicher?: Speicher; schreibbar?: boolean } = {}): Aufbau {
+function baue(opts: { nurLesen?: boolean; speicher?: Speicher; schreibbar?: boolean; ioLog?: boolean } = {}): Aufbau {
   const gesendet: Buffer[] = [];
   const protokoll: string[] = [];
   const speicher =
@@ -198,6 +198,7 @@ function baue(opts: { nurLesen?: boolean; speicher?: Speicher; schreibbar?: bool
     computerName: 'VSCODE',
     nurLesen: opts.nurLesen,
     log: (n) => protokoll.push(n),
+    ioLog: opts.ioLog ? (n) => protokoll.push(n) : undefined,
     laufwerke: () => [
       {
         deviceId: DEVICE_ID,
@@ -397,8 +398,8 @@ async function oeffne(
 
 // -------------------------------------------------------------------- Tests
 
-test('I/O-Diagnose nennt Operation und Status, aber keine Dateipfade', async () => {
-  const a = baue();
+test('I/O-Protokoll nennt Operation und Status, aber keine Dateipfade', async () => {
+  const a = baue({ ioLog: true });
   await bisBereit(a);
   const result = await oeffne(a, 'repo/README.md');
   assert.equal(result.status, STATUS_SUCCESS);
@@ -409,23 +410,26 @@ test('I/O-Diagnose nennt Operation und Status, aber keine Dateipfade', async () 
   a.sitzung.dispose();
 });
 
-test('Schreibende Vorgaenge bleiben auch nach 100 Anfragen im Protokoll', async () => {
-  // Der Explorer stellt beim Blaettern hunderte Metadatenanfragen. Faellt der
-  // eine Schreibversuch danach aus der Zaehlung, ist der Dump wertlos.
-  const a = baue({ nurLesen: false });
+test('I/O-Protokoll markiert schreibende Vorgaenge und kennt keine Obergrenze', async () => {
+  const a = baue({ nurLesen: false, ioLog: true });
   await bisBereit(a);
   for (let i = 0; i < 120; i++) {
     await oeffne(a, 'repo/README.md', {}, 1000 + i);
   }
-  const vorher = a.protokoll.filter((z) => z.startsWith('RDPDR I/O')).length;
   await oeffne(a, 'repo/neu.txt', { access: GENERIC_WRITE, disposition: FILE_CREATE }, 2000);
-  const zeilen = a.protokoll.filter((z) => z.startsWith('RDPDR I/O')).slice(vorher);
+  const zeilen = a.protokoll.filter((z) => z.startsWith('RDPDR I/O'));
+  assert.ok(zeilen.some((z) => z.includes('Anfrage: create') && z.includes('Anfrage=1119')));
   assert.ok(zeilen.some((z) => z.includes('Anfrage: create') && z.includes('Anfrage=2000') && z.includes('[schreibend]')));
   assert.ok(zeilen.some((z) => z.startsWith('RDPDR I/O Antwort') && z.includes('Anfrage=2000')));
-  // Ein reines Lesen bleibt weiterhin gedeckelt.
-  const davor = a.protokoll.filter((z) => z.startsWith('RDPDR I/O')).length;
-  await oeffne(a, 'repo/README.md', {}, 2001);
-  assert.equal(a.protokoll.filter((z) => z.startsWith('RDPDR I/O')).length, davor);
+  a.sitzung.dispose();
+});
+
+test('Ohne ioLog bleibt das Protokoll frei von Zeilen je Anfrage', async () => {
+  const a = baue({ nurLesen: false });
+  await bisBereit(a);
+  await oeffne(a, 'repo/README.md');
+  await oeffne(a, 'repo/neu.txt', { access: GENERIC_WRITE, disposition: FILE_CREATE }, 2000);
+  assert.deepEqual(a.protokoll.filter((z) => z.startsWith('RDPDR I/O')), []);
   a.sitzung.dispose();
 });
 
