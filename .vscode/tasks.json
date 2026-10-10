@@ -46,7 +46,8 @@
     {
       "id": "githubOwner",
       "type": "promptString",
-      "description": "GitHub-Benutzer oder -Organisation, unter der das Paket liegt"
+      "description": "GitHub-Benutzer oder -Organisation, unter der das Paket liegt",
+      "default": "strxngewxrld"
     },
     {
       "id": "versionBump",

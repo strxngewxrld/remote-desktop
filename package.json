@@ -3,6 +3,15 @@
   "private": true,
   "version": "0.1.0",
   "description": "RDP in VS Code: eigene TypeScript-RDP-Library + VS Code Extension",
+  "author": "Tom Knüppel",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/strxngewxrld/remote-desktop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/strxngewxrld/remote-desktop/issues"
+  },
+  "homepage": "https://github.com/strxngewxrld/remote-desktop#readme",
   "workspaces": [
     "packages/ts-rdp",
     "packages/vscode-rdp"
