@@ -35,6 +35,14 @@
 
   let desktopWidth = canvas.width;
   let desktopHeight = canvas.height;
+  /**
+   * Wo dieser Ausschnitt im Desktop des Servers liegt. Bei einem Monitor ist
+   * das (0, 0); ein zweiter Monitor zeigt dagegen den Teil rechts daneben.
+   * Kacheln und Videobilder kommen in Desktopkoordinaten, Mausereignisse
+   * muessen in Desktopkoordinaten zurueck.
+   */
+  let ursprungX = 0;
+  let ursprungY = 0;
   let scaling = 'fit';
   let connected = false;
   let focused = false;
@@ -187,8 +195,8 @@
     const x = ((event.clientX - rect.left) / rect.width) * desktopWidth;
     const y = ((event.clientY - rect.top) / rect.height) * desktopHeight;
     return {
-      x: Math.max(0, Math.min(desktopWidth - 1, Math.round(x))),
-      y: Math.max(0, Math.min(desktopHeight - 1, Math.round(y))),
+      x: ursprungX + Math.max(0, Math.min(desktopWidth - 1, Math.round(x))),
+      y: ursprungY + Math.max(0, Math.min(desktopHeight - 1, Math.round(y))),
     };
   }
 
@@ -401,7 +409,11 @@
         continue;
       }
       try {
-        ctx.putImageData(new ImageData(new Uint8ClampedArray(slice), tile.w, tile.h), tile.x, tile.y);
+        ctx.putImageData(
+          new ImageData(new Uint8ClampedArray(slice), tile.w, tile.h),
+          tile.x - ursprungX,
+          tile.y - ursprungY,
+        );
         tilesDrawn++;
       } catch (err) {
         vscode.postMessage({ type: 'drawError', message: String(err) });
@@ -504,7 +516,7 @@
         for (const b of eintrag.bereiche) {
           // Quelle in Bildkoordinaten, Ziel in Bildschirmkoordinaten. Das
           // dekodierte Bild liegt am Surface-Ursprung, nicht am destRect.
-          ctx.drawImage(bild, b.sx, b.sy, b.breite, b.hoehe, b.zx, b.zy, b.breite, b.hoehe);
+          ctx.drawImage(bild, b.sx, b.sy, b.breite, b.hoehe, b.zx - ursprungX, b.zy - ursprungY, b.breite, b.hoehe);
         }
         if (eintrag.bereiche.length > 0) avcBilder++;
       }
@@ -833,6 +845,8 @@
       case 'init':
         desktopWidth = message.width;
         desktopHeight = message.height;
+        ursprungX = message.originX || 0;
+        ursprungY = message.originY || 0;
         // Eine Zuweisung an canvas.width loescht den Inhalt - auch bei
         // gleichem Wert. Deshalb nur anfassen, wenn sich die Groesse
         // tatsaechlich aendert, sonst wischt ein wiederholtes 'init' das

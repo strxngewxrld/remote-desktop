@@ -61,6 +61,7 @@ import {
   leseEinstellungen as leseLaufwerkEinstellungen,
 } from './arbeitsbereich.js';
 import { frageFreigabe, vscodeArbeitsbereichZugriff } from './arbeitsbereichZugriff.js';
+import { bereicheAusServer, schneidet, type Bereich } from './monitore.js';
 
 /** Ein Rastschritt des Mausrads, wie ihn Windows erwartet. */
 const WHEEL_STEP = 120;
@@ -344,6 +345,20 @@ export function diagnoseZeilen(
   return zeilen;
 }
 
+/** Ein weiterer Monitor: ein eigenes Panel, das einen Ausschnitt des Desktops zeigt. */
+interface ZusatzMonitor {
+  readonly panel: vscode.WebviewPanel;
+  /** Fortlaufend ab 2; der primaere Monitor ist das Panel der Sitzung. */
+  readonly nummer: number;
+  /** Die Groesse, die dieser Monitor haben soll - bekannt ab 'ready'. */
+  groesse?: { width: number; height: number };
+  /** Der Ausschnitt, den der Server ihm eingerichtet hat. */
+  bereich?: Bereich;
+  /** Hat dieses Panel seit der letzten Warteanzeige etwas gezeichnet? */
+  gezeichnet: boolean;
+  readonly disposables: vscode.Disposable[];
+}
+
 export class RdpSession {
   private client?: RdpClient;
   private disposed = false;
@@ -371,6 +386,17 @@ export class RdpSession {
   /** Horcher auf Aenderungen am Arbeitsbereich; nur waehrend der Sitzung. */
   private arbeitsbereichHorcher?: vscode.Disposable;
   private zwischenablageFeldSichtbar = false;
+
+  // --- Weitere Monitore. Das Panel der Sitzung ist immer der primaere; jeder
+  //     weitere bekommt ein eigenes Panel, das VS Code in ein eigenes Fenster
+  //     verschiebt. Ohne zusaetzliche Monitore bleibt alles beim Alten.
+  private readonly zusatzMonitore: ZusatzMonitor[] = [];
+  /** Die Groesse, die der primaere Monitor haben soll. */
+  private primaerGroesse?: { width: number; height: number };
+  /** Zuletzt angefragte Anordnung, der primaere Monitor zuerst. */
+  private angefragteAnordnung: Array<{ width: number; height: number }> = [];
+  /** Was der Server eingerichtet hat; Index 0 ist der primaere Monitor. */
+  private bereiche: Bereich[] = [];
 
   /**
    * Alle offenen Sitzungen. Der Diagnose-Befehl wirkt auf alle zugleich: sein
@@ -677,6 +703,7 @@ export class RdpSession {
 
     try {
       const size = this.resolveResolution(ready, config);
+      this.primaerGroesse = size;
       const zwischenablageEinstellungen = leseZwischenablageEinstellungen((schluessel, vorgabe) =>
         config.get(schluessel, vorgabe),
       );
@@ -876,7 +903,15 @@ export class RdpSession {
 
     const faktor = this.pixelFaktor(nachricht.devicePixelRatio, config);
     const groesse = RdpSession.aufloesungAusPanel(nachricht.width, nachricht.height, faktor);
+    // Mit weiteren Monitoren ist der Desktop breiter als dieses Panel. Dann
+    // geht die ganze Anordnung neu hinaus, nicht nur dieser eine Monitor.
+    if (this.zusatzMonitore.length > 0) {
+      this.primaerGroesse = groesse;
+      this.anordnungAnfragen();
+      return;
+    }
     if (groesse.width === client.width && groesse.height === client.height) return;
+    this.primaerGroesse = groesse;
 
     // Bei eingeschaltetem HiDPI weiss der Server ueber die Skalierungsfelder,
     // dass der Desktop dichter ist als er misst - sonst wird die Schrift winzig.
@@ -977,14 +1012,11 @@ export class RdpSession {
     client.on('connect', () => {
       this.verbindungSteht = true;
       this.verbundenSeit = Date.now();
-      this.post({
-        type: 'init',
-        width: client.width,
-        height: client.height,
-        scaling: config.get<string>('scaling', 'fit'),
-        smooth: config.get<boolean>('smoothScaling', false),
-        ...this.aufloesungsEinstellungen(config),
-      });
+      // Jede Verbindung beginnt mit einem Monitor - auch ein automatisches
+      // Wiederverbinden. Weitere werden gleich unten erneut angefragt.
+      this.bereiche = [{ x: 0, y: 0, width: client.width, height: client.height }];
+      for (const monitor of this.zusatzMonitore) monitor.bereich = undefined;
+      this.sendeInit(config);
       // Die Verbindung steht, aber gezeichnet ist noch nichts. Bis zur ersten
       // Kachel bleibt die Einblendung stehen - eine schwarze Flaeche waere
       // nicht von einem Fehler zu unterscheiden.
@@ -994,6 +1026,7 @@ export class RdpSession {
       this.starteZwischenablage(client);
       this.starteLaufwerk(client);
       this.startWatchdog(client);
+      if (this.zusatzMonitore.length > 0) this.anordnungAnfragen();
     });
 
     // Genau einmal je Verbindung anmelden, nicht bei jedem 'connect': nach
@@ -1017,10 +1050,10 @@ export class RdpSession {
 
     client.on('pointer', (pointer: PointerImage | null) => {
       if (!pointer) {
-        this.post({ type: 'pointerDefault' });
+        this.postAlle({ type: 'pointerDefault' });
         return;
       }
-      this.post({
+      this.postAlle({
         type: 'pointer',
         width: pointer.width,
         height: pointer.height,
@@ -1030,16 +1063,10 @@ export class RdpSession {
       });
     });
 
-    client.on('resize', ({ width, height }) => {
+    client.on('resize', ({ width, height, monitors }) => {
       this.log(`Sitzungsgröße geändert: ${width}×${height}`);
-      this.post({
-        type: 'init',
-        width,
-        height,
-        scaling: config.get<string>('scaling', 'fit'),
-        smooth: config.get<boolean>('smoothScaling', false),
-        ...this.aufloesungsEinstellungen(config),
-      });
+      this.verteileBereiche(width, height, monitors);
+      this.sendeInit(config);
       // Waehrend des Aufbaus ist das keine Aenderung, sondern die Antwort des
       // Servers auf unsere Anfrage - Windows gibt regelmaessig eine andere
       // Groesse vor. Wer hier unbesehen "Auflösung geändert" einblendet, zeigt
@@ -1049,11 +1076,12 @@ export class RdpSession {
       // Eine echte Groessenaenderung leert die Zeichenflaeche - also zurueck in
       // den Wartezustand, bis der Server das neue Bild geschickt hat.
       this.painted = false;
+      for (const monitor of this.zusatzMonitore) monitor.gezeichnet = false;
       this.setState('waiting', 'Auflösung geändert', 'Warte auf das neue Bild…');
       this.startWatchdog(client);
     });
 
-    client.on('pointerHidden', () => this.post({ type: 'pointerHidden' }));
+    client.on('pointerHidden', () => this.postAlle({ type: 'pointerHidden' }));
 
     client.on('error', (err: Error) => {
       this.log(`Sitzungsfehler: ${err.stack ?? err.message}`);
@@ -1397,6 +1425,24 @@ export class RdpSession {
 
   /** Fasst alle Kacheln eines Updates zu genau einer Nachricht zusammen. */
   private sendTiles(tiles: DecodedBitmap[]): void {
+    const ziele = this.zusatzMonitore.filter((m) => m.bereich);
+    if (ziele.length === 0) {
+      this.post(this.kachelNachricht(tiles, true));
+      return;
+    }
+    // Jedes Panel bekommt nur, was in seinen Ausschnitt faellt. Eine Kachel
+    // auf der Grenze geht an beide; die Zeichenflaeche schneidet den Rest ab.
+    const primaer = this.bereiche[0];
+    const eigene = primaer ? tiles.filter((t) => schneidet({ x: t.x, y: t.y, w: t.width, h: t.height }, primaer)) : tiles;
+    if (eigene.length > 0) this.post(this.kachelNachricht(eigene, true));
+    for (const monitor of ziele) {
+      const bereich = monitor.bereich!;
+      const teil = tiles.filter((t) => schneidet({ x: t.x, y: t.y, w: t.width, h: t.height }, bereich));
+      if (teil.length > 0) void monitor.panel.webview.postMessage(this.kachelNachricht(teil, false));
+    }
+  }
+
+  private kachelNachricht(tiles: DecodedBitmap[], zaehlen: boolean): unknown {
     const rects: Array<{ x: number; y: number; w: number; h: number; offset: number; length: number }> = [];
     const buffers: Buffer[] = [];
     let offset = 0;
@@ -1410,13 +1456,13 @@ export class RdpSession {
 
     // Der einzige Messpunkt im Zeichenpfad: zwei Additionen, und auch die nur,
     // wenn das Overlay wirklich zusieht.
-    if (this.diagnoseSichtbar) {
+    if (zaehlen && this.diagnoseSichtbar) {
       this.anWebviewBytes += offset;
       this.anWebviewKacheln += rects.length;
       this.letztesBild = Date.now();
     }
 
-    this.post({ type: 'bitmap', rects, data: this.encode(Buffer.concat(buffers, offset)) });
+    return { type: 'bitmap', rects, data: this.encode(Buffer.concat(buffers, offset)) };
   }
 
   /**
@@ -1460,7 +1506,9 @@ export class RdpSession {
       this.letztesBild = Date.now();
     }
 
-    this.post({
+    // An alle Panels und vollstaendig: jeder Decoder braucht jedes Teilbild,
+    // sonst fehlen spaeteren Bildern ihre Bezugsbilder.
+    this.postAlle({
       type: 'video',
       codecString: frame.analyse.codecString,
       schluesselbild: frame.analyse.schluesselbild,
@@ -1674,7 +1722,7 @@ export class RdpSession {
       0,
       Math.round(vscode.workspace.getConfiguration('rdp').get<number>('colorFrameWidth', RAHMEN_BREITE_PX)),
     );
-    this.post({
+    this.postAlle({
       type: 'farbe',
       hex: kennung?.hex,
       titel: kennung?.titel,
@@ -1685,7 +1733,7 @@ export class RdpSession {
 
   applyConfiguration(): void {
     const config = vscode.workspace.getConfiguration('rdp');
-    this.post({
+    this.postAlle({
       type: 'config',
       scaling: config.get<string>('scaling', 'fit'),
       smooth: config.get<boolean>('smoothScaling', false),
@@ -1713,12 +1761,241 @@ export class RdpSession {
     this.panel.reveal();
   }
 
+  /** Hat das Panel dieser Sitzung gerade den Fokus? */
+  get istAktiv(): boolean {
+    return this.panel.active;
+  }
+
   get title(): string {
     return this.connection.name || this.connection.host;
   }
 
   get isConnected(): boolean {
     return this.client?.isConnected === true;
+  }
+
+  // ------------------------------------------------------ Weitere Monitore
+
+  /**
+   * Einen weiteren Monitor hinzufuegen: ein eigenes Panel, das VS Code in ein
+   * eigenes Fenster verschiebt und das den Desktop rechts neben dem bisher
+   * letzten Monitor zeigt.
+   *
+   * Dafuer muss der Server die Monitoranordnung zur Laufzeit aendern lassen
+   * (MS-RDPEDISP). Ohne den Kanal oder mit zu wenigen erlaubten Monitoren
+   * gibt es eine Meldung und kein Panel - ein leeres Fenster waere schlechter.
+   */
+  async monitorHinzufuegen(): Promise<void> {
+    const client = this.client;
+    if (!client?.isConnected || !this.verbindungSteht) {
+      vscode.window.showInformationMessage('Ein weiterer Monitor geht erst, wenn die Sitzung verbunden ist.');
+      return;
+    }
+    if (!client.canChangeResolution) {
+      const aus = !vscode.workspace.getConfiguration('rdp').get<boolean>('dynamicResolution', true);
+      vscode.window.showWarningMessage(
+        aus
+          ? 'Weitere Monitore brauchen „rdp.dynamicResolution“. Die Einstellung ist ausgeschaltet; nach dem Einschalten neu verbinden.'
+          : 'Der Server lässt die Monitoranordnung nicht zur Laufzeit ändern (MS-RDPEDISP fehlt). Ein weiterer Monitor ist mit ihm nicht möglich.',
+      );
+      return;
+    }
+    const erlaubt = client.displayControlLimits?.maxNumMonitors ?? 1;
+    if (1 + this.zusatzMonitore.length >= erlaubt) {
+      vscode.window.showWarningMessage(
+        erlaubt <= 1
+          ? 'Der Server erlaubt nur einen Monitor.'
+          : `Der Server erlaubt höchstens ${erlaubt} Monitore.`,
+      );
+      return;
+    }
+
+    const nummer = Math.max(1, ...this.zusatzMonitore.map((m) => m.nummer)) + 1;
+    const panel = vscode.window.createWebviewPanel(
+      'rdpMonitor',
+      `${this.title} – Monitor ${nummer}`,
+      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'media')],
+      },
+    );
+    const monitor: ZusatzMonitor = { panel, nummer, gezeichnet: false, disposables: [] };
+    this.zusatzMonitore.push(monitor);
+    monitor.disposables.push(
+      panel.onDidDispose(() => this.monitorEntfernen(monitor)),
+      panel.onDidChangeViewState(() => {
+        if (panel.active) vscode.commands.executeCommand('setContext', 'rdp.sessionFocused', true);
+      }),
+      panel.webview.onDidReceiveMessage((message) =>
+        this.handleMonitorNachricht(monitor, message).catch((error) => {
+          this.log(`Monitor ${monitor.nummer}: Webview-Ereignis fehlgeschlagen: ${String(error)}`);
+        }),
+      ),
+    );
+    panel.webview.html = renderWebview(panel.webview, this.context.extensionUri, panel.title);
+    panel.iconPath = this.panel.iconPath;
+    this.log(`Monitor ${nummer} hinzugefügt`);
+
+    // Das neue Panel ist gerade aktiv - genau darauf wirkt der Befehl. Fehlt
+    // er (aeltere VS-Code-Fassung), bleibt der Monitor eine Registerkarte
+    // neben der Sitzung und laesst sich von Hand herausziehen.
+    try {
+      await vscode.commands.executeCommand('workbench.action.moveEditorToNewWindow');
+    } catch (error) {
+      this.log(`Monitor ${nummer}: eigenes Fenster nicht möglich (${String(error)}) – bleibt als Registerkarte`);
+    }
+  }
+
+  /** Anzahl der Monitore einschliesslich des primaeren - fuer Tests und Status. */
+  get monitorAnzahl(): number {
+    return 1 + this.zusatzMonitore.length;
+  }
+
+  private monitorEntfernen(monitor: ZusatzMonitor): void {
+    const index = this.zusatzMonitore.indexOf(monitor);
+    if (index < 0) return;
+    this.zusatzMonitore.splice(index, 1);
+    for (const d of monitor.disposables) d.dispose();
+    if (this.disposed) return;
+    this.log(`Monitor ${monitor.nummer} geschlossen`);
+    this.anordnungAnfragen();
+  }
+
+  private async handleMonitorNachricht(monitor: ZusatzMonitor, message: any): Promise<void> {
+    if (this.disposed) return;
+    switch (message?.type) {
+      case 'ready':
+      case 'resizeRequest': {
+        // 'ready' kommt auch spaeter noch einmal: beim Verschieben in ein
+        // eigenes Fenster laedt VS Code das Webview neu.
+        const config = vscode.workspace.getConfiguration('rdp');
+        const faktor = this.pixelFaktor(message.devicePixelRatio, config);
+        monitor.groesse = RdpSession.aufloesungAusPanel(message.width, message.height, faktor);
+        if (message.type === 'ready') {
+          this.sendeFarbe();
+          this.sendeInit(config);
+          if (this.client?.isConnected) {
+            monitor.gezeichnet = false;
+            void monitor.panel.webview.postMessage({
+              type: 'state',
+              state: 'waiting',
+              title: `Monitor ${monitor.nummer}`,
+              message: 'Warte auf den Bildschirminhalt des Servers…',
+            });
+            if (monitor.bereich) {
+              const b = monitor.bereich;
+              this.client.refresh({ left: b.x, top: b.y, right: b.x + b.width - 1, bottom: b.y + b.height - 1 });
+            }
+          }
+        }
+        this.anordnungAnfragen();
+        break;
+      }
+      case 'drawError':
+        this.log(`Monitor ${monitor.nummer}: Zeichenfehler im Webview: ${message.message}`);
+        break;
+      case 'painted':
+        // Die Einblendung dieses Monitors verschwindet mit seinem ersten Bild,
+        // unabhaengig davon, ob der primaere schon gezeichnet hat.
+        if (!monitor.gezeichnet && this.client?.isConnected) {
+          monitor.gezeichnet = true;
+          void monitor.panel.webview.postMessage({ type: 'state', state: 'connected' });
+        }
+        break;
+      case 'screenshot':
+      case 'diagnosePong':
+      case 'clipboardPanel':
+        // Gehoert zum Panel der Sitzung.
+        break;
+      default:
+        // Eingaben, Fokus, Zwischenablage und Erneut-Verbinden wirken auf die
+        // Sitzung - egal, auf welchem Monitor sie entstanden sind. Die
+        // Mauskoordinaten rechnet das Webview schon in Desktopkoordinaten.
+        await this.handleWebviewMessage(message);
+    }
+  }
+
+  /**
+   * Die ganze Anordnung beim Server anfragen: der primaere Monitor zuerst,
+   * dann jeder weitere, der seine Groesse schon kennt.
+   */
+  private anordnungAnfragen(): void {
+    const client = this.client;
+    if (!client || !this.verbindungSteht) return;
+    const config = vscode.workspace.getConfiguration('rdp');
+    const primaer = this.primaerGroesse ?? { width: client.width, height: client.height };
+    const anordnung = [primaer, ...this.zusatzMonitore.flatMap((m) => (m.groesse ? [m.groesse] : []))];
+    this.angefragteAnordnung = anordnung;
+    const faktor = this.pixelFaktor(this.lastReady?.devicePixelRatio ?? 1, config);
+    const gesendet = client.requestMonitorLayout(anordnung, {
+      desktopScaleFactor: Math.round(faktor * 100),
+      deviceScaleFactor: Math.round(faktor * 100),
+    });
+    if (gesendet) this.log(`Monitoranordnung angefragt: ${anordnung.map((g) => `${g.width}×${g.height}`).join(' + ')}`);
+  }
+
+  /** Die vom Server eingerichteten Bereiche auf die Panels verteilen. */
+  private verteileBereiche(
+    width: number,
+    height: number,
+    monitore: Array<{ left: number; top: number; right: number; bottom: number; flags: number }> | undefined,
+  ): void {
+    this.bereiche = bereicheAusServer(width, height, monitore, this.angefragteAnordnung);
+    let index = 1;
+    for (const monitor of this.zusatzMonitore) {
+      // Nur wer schon eine Groesse gemeldet hat, steht in der Anfrage.
+      monitor.bereich = monitor.groesse ? this.bereiche[index++] : undefined;
+    }
+    const ohne = this.zusatzMonitore.filter((m) => m.groesse && !m.bereich);
+    if (ohne.length > 0) {
+      this.log(
+        `Der Server hat ${this.bereiche.length} Monitor(e) eingerichtet, angefragt waren ${this.angefragteAnordnung.length}.`,
+      );
+      for (const monitor of ohne) {
+        void monitor.panel.webview.postMessage({
+          type: 'state',
+          state: 'error',
+          title: 'Monitor nicht eingerichtet',
+          message: 'Der Server hat diesen Monitor nicht übernommen.',
+        });
+      }
+    }
+  }
+
+  /** Jedem Panel seinen Ausschnitt mitteilen. */
+  private sendeInit(config: vscode.WorkspaceConfiguration): void {
+    const allgemein = {
+      scaling: config.get<string>('scaling', 'fit'),
+      smooth: config.get<boolean>('smoothScaling', false),
+      ...this.aufloesungsEinstellungen(config),
+    };
+    const primaer = this.bereiche[0];
+    if (primaer) {
+      this.post({
+        type: 'init',
+        width: primaer.width,
+        height: primaer.height,
+        ...(primaer.x || primaer.y ? { originX: primaer.x, originY: primaer.y } : {}),
+        ...allgemein,
+      });
+    }
+    for (const monitor of this.zusatzMonitore) {
+      const b = monitor.bereich;
+      if (!b) continue;
+      void monitor.panel.webview.postMessage({
+        type: 'init',
+        width: b.width,
+        height: b.height,
+        originX: b.x,
+        originY: b.y,
+        ...allgemein,
+        // Ein weiterer Monitor zieht auch dann mit, wenn die Verbindung eine
+        // feste Aufloesung hat: die gilt nur fuer den primaeren.
+        dynamicResolution: true,
+      });
+    }
   }
 
   // ----------------------------------------------------------------- Intern
@@ -1728,13 +2005,20 @@ export class RdpSession {
     void this.panel.webview.postMessage(message);
   }
 
+  /** An das Panel der Sitzung und an alle weiteren Monitore. */
+  private postAlle(message: unknown): void {
+    if (this.disposed) return;
+    void this.panel.webview.postMessage(message);
+    for (const monitor of this.zusatzMonitore) void monitor.panel.webview.postMessage(message);
+  }
+
   private setState(
     state: 'connecting' | 'waiting' | 'connected' | 'error' | 'closed',
     title?: string,
     message?: string,
     action?: string,
   ): void {
-    this.post({ type: 'state', state, title, message, action });
+    this.postAlle({ type: 'state', state, title, message, action });
   }
 
   private updateStatusBar(): void {
@@ -1781,6 +2065,10 @@ export class RdpSession {
     this.statusBar.hide();
     vscode.commands.executeCommand('setContext', 'rdp.sessionFocused', false);
     for (const d of this.disposables) d.dispose();
+    for (const monitor of this.zusatzMonitore.splice(0)) {
+      for (const d of monitor.disposables) d.dispose();
+      monitor.panel.dispose();
+    }
     this.panel.dispose();
     this.onDispose?.();
   }

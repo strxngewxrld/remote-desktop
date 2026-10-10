@@ -299,3 +299,32 @@ describe('Webview - Auflösung zieht mit', () => {
     assert.equal(anfragen(umgebung)[0].devicePixelRatio, 1);
   });
 });
+
+describe('Webview - Ausschnitt eines weiteren Monitors', () => {
+  test('Kacheln in Desktopkoordinaten landen relativ zum Ursprung', () => {
+    const w = starteWebview(skript);
+    w.sende({ type: 'init', width: 800, height: 600, originX: 1024, originY: 0, scaling: 'fit', smooth: false });
+    w.sende(bitmapNachricht([{ x: 1100, y: 10, w: 4, h: 4 }], 'uint8'));
+    assert.deepEqual(
+      w.gezeichnet.map((k) => [k.x, k.y]),
+      [[76, 10]],
+    );
+  });
+
+  test('Mauskoordinaten gehen in Desktopkoordinaten zurueck', () => {
+    const w = starteWebview(skript);
+    // Zeichenflaeche und Buehne gleich gross: ein CSS-Pixel ist ein Desktop-Pixel.
+    w.sende({ type: 'init', width: 1076, height: 536, originX: 1024, originY: 0, scaling: 'fit', smooth: false });
+    w.sende({ type: 'state', state: 'connected' });
+    w.loeseCanvasEreignisAus('mousemove', { clientX: 10, clientY: 20 });
+    const maus = w.gesendet.filter((m) => (m as { type?: string }).type === 'mouse') as { x: number; y: number }[];
+    assert.deepEqual([maus.at(-1)!.x, maus.at(-1)!.y], [1034, 20]);
+  });
+
+  test('Ohne Ursprung bleibt alles wie bei einem Monitor', () => {
+    const w = starteWebview(skript);
+    w.sende({ type: 'init', width: 800, height: 600, scaling: 'fit', smooth: false });
+    w.sende(bitmapNachricht([{ x: 10, y: 10, w: 4, h: 4 }], 'uint8'));
+    assert.deepEqual(w.gezeichnet.map((k) => [k.x, k.y]), [[10, 10]]);
+  });
+});
