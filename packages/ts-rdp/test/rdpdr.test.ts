@@ -490,15 +490,18 @@ describe('MS-FSCC - Informationsklassen, Feld fuer Feld gerechnet', () => {
     assert.deepEqual(b.subarray(68), name);
   });
 
-  test('FILE_BOTH_DIR_INFORMATION haengt ShortName an: 94 Byte Kopf (2.4.8)', () => {
+  test('FILE_BOTH_DIR_INFORMATION haengt ShortName an: 93 Byte Kopf ohne Reserved', () => {
+    // MS-FSCC 2.4.8 fuehrt zwischen ShortNameLength und ShortName ein
+    // Reserved-Byte auf. Auf dem Draht gehoert es nicht dazu: Windows
+    // erwartet den Namen bei Byte 93, sonst bricht die Verzeichnisaufzaehlung
+    // wortlos ab. Ebenso in FreeRDP und Guacamole.
     const b = buildVerzeichnisEintrag(eintrag, FileBothDirectoryInformation)!;
     const name = Buffer.from('datei.ts', 'ucs2');
-    assert.equal(b.length, 94 + name.length);
+    assert.equal(b.length, 93 + name.length);
     assert.equal(b.readUInt32LE(64), 0); // EaSize
     assert.equal(b.readUInt8(68), 0); // ShortNameLength - kein 8.3-Name
-    assert.equal(b.readUInt8(69), 0); // Reserved
-    assert.deepEqual(b.subarray(70, 94), Buffer.alloc(24)); // ShortName
-    assert.deepEqual(b.subarray(94), name);
+    assert.deepEqual(b.subarray(69, 93), Buffer.alloc(24)); // ShortName
+    assert.deepEqual(b.subarray(93), name);
   });
 
   test('FILE_NAMES_INFORMATION ist nur Offset, Index, Laenge und Name (2.4.26)', () => {

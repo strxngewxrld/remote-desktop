@@ -437,7 +437,7 @@ describe('Laufwerksumleitung über den Kanal rdpdr', () => {
       const antwort = serverSeite.antworten.get(id)!;
       if (antwort.status !== STATUS_SUCCESS) break;
       const puffer = antwort.rumpf.subarray(4);
-      namen.push(puffer.subarray(94, 94 + puffer.readUInt32LE(60)).toString('ucs2'));
+      namen.push(puffer.subarray(93, 93 + puffer.readUInt32LE(60)).toString('ucs2'));
     }
     assert.deepEqual(namen, ['.', '..', 'README.md', 'gross.txt', 'src']);
   });

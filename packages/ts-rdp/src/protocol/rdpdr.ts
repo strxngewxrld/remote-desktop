@@ -75,7 +75,8 @@
  * Die Informationsklassen stammen aus [MS-FSCC] 15.0 vom 23.04.2024:
  *  - 2.1.1   Zeitangaben: 64-Bit, 100-ns-Schritte seit dem 1.1.1601 UTC
  *  - 2.4.7   FileBasicInformation (0x04)
- *  - 2.4.8   FileBothDirectoryInformation (0x03)
+ *  - 2.4.8   FileBothDirectoryInformation (0x03) - ohne das Reserved-Byte,
+ *            siehe buildVerzeichnisEintrag()
  *  - 2.4.10  FileDirectoryInformation (0x01)
  *  - 2.4.11  FileDispositionInformation (0x0D)
  *  - 2.4.13  FileEndOfFileInformation (0x14)
@@ -253,6 +254,25 @@ export const GENERIC_ALL = 0x10000000;
 export const GENERIC_EXECUTE = 0x20000000;
 export const GENERIC_WRITE = 0x40000000;
 export const GENERIC_READ = 0x80000000;
+
+/**
+ * Ein Fehler, der schon weiss, welchen NTSTATUS er bedeutet.
+ *
+ * Das Dateisystem hinter einem Laufwerk kennt Faelle, die kein allgemeiner
+ * Fehlschlag sind, sondern eine bestimmte Absage - "in die Wurzel darf nichts
+ * angelegt werden" etwa ist ACCESS_DENIED und nicht UNSUCCESSFUL. Windows
+ * zeigt dann die passende Meldung, statt nur "Der Vorgang ist
+ * fehlgeschlagen". Alles andere bleibt STATUS_UNSUCCESSFUL.
+ */
+export class RdpdrStatusFehler extends Error {
+  constructor(
+    readonly status: number,
+    nachricht: string,
+  ) {
+    super(nachricht);
+    this.name = 'RdpdrStatusFehler';
+  }
+}
 
 /**
  * Alle Bits, die einen Schreibwunsch ausdruecken.
@@ -850,6 +870,31 @@ export function parseDeviceIoRequest(body: Buffer): RdpdrRequest {
   }
 }
 
+/**
+ * Aendert diese Anfrage etwas am Dateisystem - oder will sie es zumindest?
+ *
+ * Nur fuer die Diagnose gedacht, nicht fuer die Zugriffspruefung: die macht
+ * `bearbeiteCreate()` mit denselben Kriterien, aber mit Blick aufs
+ * Dateisystem. Hier reicht der Verdacht, denn ein zu viel protokollierter
+ * Vorgang kostet eine Zeile, ein fehlender einen ganzen Versuch.
+ */
+export function istSchreibanfrage(anfrage: RdpdrRequest): boolean {
+  switch (anfrage.art) {
+    case 'write':
+    case 'setInformation':
+    case 'setVolumeInformation':
+      return true;
+    case 'create':
+      return (
+        (anfrage.desiredAccess & SCHREIBZUGRIFF_BITS) !== 0 ||
+        anfrage.createDisposition !== FILE_OPEN ||
+        (anfrage.createOptions & FILE_DELETE_ON_CLOSE) !== 0
+      );
+    default:
+      return false;
+  }
+}
+
 // ------------------------------------------------ Device I/O Response (2.2.1.5)
 
 /** DR_DEVICE_IOCOMPLETION + beliebiger Rumpf. */
@@ -1091,10 +1136,20 @@ export function buildVerzeichnisEintrag(eintrag: DateiEintrag, klasse: number): 
     return w.bytes(name).toBuffer();
   }
 
-  // FileBothDirectoryInformation: ShortNameLength(1) Reserved(1) ShortName(24).
-  // Ein 8.3-Kurzname wird nicht gebildet - ShortNameLength 0 heisst "keiner",
-  // und alle Windows-Versionen seit langem kommen ohne aus.
-  return w.uint8(0).uint8(0).zeros(24).bytes(name).toBuffer();
+  // FileBothDirectoryInformation: ShortNameLength(1) ShortName(24), danach der
+  // Name. Ein 8.3-Kurzname wird nicht gebildet - ShortNameLength 0 heisst
+  // "keiner", und alle Windows-Versionen seit langem kommen ohne aus.
+  //
+  // Das in MS-FSCC 2.4.8 aufgefuehrte Reserved-Byte zwischen ShortNameLength
+  // und ShortName wird *nicht* gesendet. Es ist reines Struktur-Padding der
+  // C-Definition; auf dem Draht erwartet Windows den Kopf mit 93 statt 94
+  // Byte. Mit dem zusaetzlichen Byte liest der Server den Dateinamen um eins
+  // versetzt, bekommt Unsinn und bricht die Aufzaehlung wortlos ab - das
+  // Laufwerk erscheint dann zwar, bleibt aber leer. FreeRDP
+  // (channels/drive/client/drive_file.c, "Reserved(1), MUST NOT be added!")
+  // und Guacamole (rdpdr-fs-messages-dir-info.c, "the reserved byte here must
+  // be skipped") lassen es aus demselben Grund weg.
+  return w.uint8(0).zeros(24).bytes(name).toBuffer();
 }
 
 /** FILE_BASIC_INFORMATION (MS-FSCC 2.4.7) ohne das Reserved-Feld (MS-RDPEFS 2.2.3.3.8). */
@@ -1524,6 +1579,16 @@ export class RdpdrSession {
   private generation = 0;
   private diagnoseAnfragen = 0;
   private diagnoseAntworten = 0;
+  /**
+   * Offene Anfragen, deren Antwort auf jeden Fall ins Protokoll gehoert.
+   *
+   * Die Obergrenze von 100 Zeilen haelt das Protokoll lesbar, verdeckt aber
+   * ausgerechnet das, was man sucht: der Explorer stellt beim Blaettern
+   * hunderte Metadatenanfragen, und der eine Schreibversuch danach faellt aus
+   * der Zaehlung heraus. Schreibende Vorgaenge werden deshalb immer
+   * protokolliert - Anfrage und zugehoerige Antwort.
+   */
+  private readonly schreibAnfragen = new Set<string>();
   private serverVersionMinor = 0;
   private nebenversion = RDPDR_VERSION_MINOR;
   private clientId = 0;
@@ -1578,8 +1643,12 @@ export class RdpdrSession {
     if (this.beendet) return;
     if (daten.length >= 16 && daten.readUInt16LE(2) === PAKID_CORE_DEVICE_IOCOMPLETION) {
       const status = daten.readUInt32LE(12);
-      if (this.diagnoseAntworten++ < 100 || (status !== STATUS_SUCCESS && status !== STATUS_NO_MORE_FILES)) {
-        this.protokoll(`RDPDR I/O Antwort: Gerät=${daten.readUInt32LE(4)}, Anfrage=${daten.readUInt32LE(8)}, Status=0x${status.toString(16).padStart(8, '0')}, Bytes=${daten.length}`);
+      const deviceId = daten.readUInt32LE(4);
+      const completionId = daten.readUInt32LE(8);
+      const schreibend = this.schreibAnfragen.delete(`${deviceId}:${completionId}`);
+      const unterGrenze = this.diagnoseAntworten++ < 100;
+      if (schreibend || unterGrenze || (status !== STATUS_SUCCESS && status !== STATUS_NO_MORE_FILES)) {
+        this.protokoll(`RDPDR I/O Antwort: Gerät=${deviceId}, Anfrage=${completionId}, Status=0x${status.toString(16).padStart(8, '0')}, Bytes=${daten.length}`);
       }
     }
     this.opts.send(daten);
@@ -1596,6 +1665,7 @@ export class RdpdrSession {
     this.generation++;
     this.beendet = true;
     this.offeneDateien.clear();
+    this.schreibAnfragen.clear();
   }
 
   /**
@@ -1609,6 +1679,7 @@ export class RdpdrSession {
     this.generation++;
     this.diagnoseAnfragen = 0;
     this.diagnoseAntworten = 0;
+    this.schreibAnfragen.clear();
     this.serverVersionMinor = 0;
     this.nebenversion = RDPDR_VERSION_MINOR;
     this.clientId = 0;
@@ -1817,10 +1888,20 @@ export class RdpdrSession {
       return;
     }
 
-    if (this.diagnoseAnfragen++ < 100) {
+    const schreibend = istSchreibanfrage(anfrage);
+    const unterGrenze = this.diagnoseAnfragen++ < 100;
+    if (schreibend || unterGrenze) {
       const details = 'fsInformationClass' in anfrage ? `, Klasse=${anfrage.fsInformationClass}`
         : anfrage.art === 'create' ? `, Zugriff=0x${anfrage.desiredAccess.toString(16)}, Disposition=${anfrage.createDisposition}, Optionen=0x${anfrage.createOptions.toString(16)}, Pfadzeichen=${anfrage.path.length}` : '';
-      this.protokoll(`RDPDR I/O Anfrage: ${anfrage.art}, Gerät=${anfrage.deviceId}, Handle=${anfrage.fileId}, Anfrage=${anfrage.completionId}${details}`);
+      const merkmal = schreibend ? ' [schreibend]' : '';
+      this.protokoll(`RDPDR I/O Anfrage: ${anfrage.art}, Gerät=${anfrage.deviceId}, Handle=${anfrage.fileId}, Anfrage=${anfrage.completionId}${details}${merkmal}`);
+    }
+    if (schreibend) {
+      // Die Menge bleibt klein: sie enthaelt nur unbeantwortete Anfragen. Die
+      // Obergrenze ist trotzdem da, damit ein Server, der nie eine Antwort
+      // abholt, den Speicher nicht fuellt.
+      if (this.schreibAnfragen.size > 256) this.schreibAnfragen.clear();
+      this.schreibAnfragen.add(`${anfrage.deviceId}:${anfrage.completionId}`);
     }
     const laufwerk = this.laufwerke.get(anfrage.deviceId);
     if (!laufwerk) {
@@ -1832,8 +1913,9 @@ export class RdpdrSession {
     void this.bearbeite(laufwerk, anfrage).catch((err: Error) => {
       // Eine unerwartete Ausnahme darf keine offene Anfrage hinterlassen:
       // Windows blockiert den Explorer, bis die Antwort da ist.
+      const status = err instanceof RdpdrStatusFehler ? err.status : STATUS_UNSUCCESSFUL;
       this.protokoll(`RDPDR: ${anfrage.art} fehlgeschlagen - ${err.message}`);
-      this.sende(this.fehlerAntwort(anfrage, STATUS_UNSUCCESSFUL));
+      this.sende(this.fehlerAntwort(anfrage, status));
     });
   }
 
