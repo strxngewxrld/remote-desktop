@@ -1,8 +1,10 @@
 import { defineConfig } from '@vscode/test-cli';
+import { prepareGermanTestProfile } from '../../tools/prepare-vscode-language.mjs';
 
 // A parent VS Code terminal may export its own resolved English locale.
 // Let the isolated test window resolve the requested language itself.
 delete process.env.VSCODE_NLS_CONFIG;
+if (process.env.VSCODE_TEST_LANGUAGE === 'de') await prepareGermanTestProfile();
 
 /**
  * Startet ein echtes VS Code, laedt diese Extension hinein und fuehrt die
@@ -15,6 +17,9 @@ delete process.env.VSCODE_NLS_CONFIG;
  * hier auf.
  */
 export default defineConfig({
+  // test-cli can load this config in a worker: also clear it in the actual
+  // Electron child environment, not just in the config loader above.
+  env: { VSCODE_NLS_CONFIG: '' },
   label: 'Integration im echten VS Code',
   files: 'dist-integration/test/integration/**/*.test.js',
   // Standard ist 'stable'; ueber VSCODE_TESTVERSION laesst sich eine bestimmte
@@ -25,9 +30,12 @@ export default defineConfig({
     : {}),
   // Ohne dieses Verzeichnis sucht VS Code im Arbeitsverzeichnis des Aufrufers.
   workspaceFolder: './test/integration/arbeitsordner',
-  // A locale flag alone falls back to English without the language pack.
-  installExtensions: process.env.VSCODE_TEST_LANGUAGE === 'de' ? ['ms-ceintl.vscode-language-pack-de'] : [],
-  launchArgs: ['--disable-extensions', '--disable-gpu', ...(process.env.VSCODE_TEST_LANGUAGE ? [`--locale=${process.env.VSCODE_TEST_LANGUAGE}`] : [])],
+  // The German language pack must stay enabled in the isolated test profile.
+  launchArgs: [
+    ...(process.env.VSCODE_TEST_LANGUAGE === 'de' ? [] : ['--disable-extensions']),
+    '--disable-gpu',
+    ...(process.env.VSCODE_TEST_LANGUAGE ? [`--locale=${process.env.VSCODE_TEST_LANGUAGE}`] : []),
+  ],
   mocha: {
     ui: 'tdd',
     timeout: 60000,
