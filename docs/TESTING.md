@@ -16,8 +16,9 @@ Für lokale VS-Code-Tests kann `VSCODE_TEST_PATH` auf eine vorhandene
 VS-Code-Installation zeigen. Ohne diese Variable lädt der Runner die stabile
 Version. `VSCODE_TESTVERSION` wählt alternativ eine konkrete Downloadversion.
 
-CI führt diese Stufen unter Windows und Linux mit Node.js 24 aus. Die
-VS-Code-Tests unter Linux verwenden `xvfb-run`. VSIX-Dateien werden je
+CI führt diese Stufen unter Windows, Linux und macOS mit Node.js 24 aus. Die
+VS-Code-Tests unter Linux verwenden `xvfb-run`; unter Windows und macOS starten
+sie direkt, jeweils auf Englisch und Deutsch. VSIX-Dateien werden je
 Betriebssystem als Workflow-Artefakte bereitgestellt.
 
 ## Lokal geprüft am 22.10.2026
@@ -46,6 +47,15 @@ setzen (unter PowerShell `$env:VSCODE_TEST_LANGUAGE = 'de'`). CI prüft beide
 Sprachvarianten. Die Dokumentbefehle werden zusätzlich gegen `de`, `de-AT`,
 `en` und einen englischen Sprachrückfall getestet; der Paketcheck prüft beide
 Beschreibungstabellen und die generierten Lizenzhinweise in beiden Sprachen.
+
+Vor dem deutschen Test installiert die Testkonfiguration das offizielle deutsche
+Sprachpaket und registriert dessen Übersetzungsdateien im isolierten Testprofil.
+So ist Deutsch bereits beim ersten Fensterstart verfügbar. Der deutsche Lauf
+deaktiviert das Sprachpaket nicht mit `--disable-extensions`. Eine vom aufrufenden
+VS-Code-Fenster geerbte Sprachkonfiguration wird im Testprozess zurückgesetzt.
+Die Tests prüfen weiterhin ausdrücklich `vscode.env.language === 'de'`;
+ein englischer Rückfall gilt als Fehler. Build und beide Sprachläufe wurden
+zusätzlich in CI-Reihenfolge mit einem frischen Testprofil geprüft.
 
 ## Echte RDP-Server und AD
 

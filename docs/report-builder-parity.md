@@ -4,7 +4,7 @@ Verglichen wurden die lokalen Repositories am 22.10.2026. Report Builder bleibt 
 
 | Bereich | Report Builder | Remote Desktop nach Übernahme |
 | --- | --- | --- |
-| CI | Windows/Linux, Typprüfung, Unit- und VS-Code-Tests, VSIX-Artefakte | Gleiche Basis für beide Workspace-Pakete; Live-RDP/AD bleibt separater Labortest |
+| CI | Windows/Linux, Typprüfung, Unit- und VS-Code-Tests, VSIX-Artefakte | Windows/Linux/macOS für beide Workspace-Pakete, VS-Code-Tests auf Englisch und Deutsch; Live-RDP/AD bleibt separater Labortest |
 | Packaging | Frischer Build, festes Artefaktverzeichnis, Allowlist und ZIP-Prüfung | `npm run package`, exakt geprüfte Laufzeitdateien, Bundle-Importprüfung |
 | Dokumentation | Dokumentprüfung, Handbücher und Changelog im Paket | Englische/deutsche Übersicht, Changelog und Notices; deutsche Bedienung und Problemlösung offline |
 | Einstieg | Native Walkthroughs und Hilfebefehle | Vier Schritte mit Aktionen, Offline-Hilfe, Updates und Lizenzhinweisen |

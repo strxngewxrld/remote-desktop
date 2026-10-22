@@ -258,7 +258,7 @@ Der [Release-Leitfaden](docs/RELEASING.md) beschreibt CI, GitHub-Releaseentwürf
 optionales Marketplace-Publishing und den Umstieg von Entwicklungsinstallationen.
 `npm run package` baut frisch nach `artifacts/` und prüft den VSIX-Inhalt.
 `npm run typecheck`, `npm run check:docs` und `npm run check:package` sind auch
-einzeln ausführbar. CI führt die Tests unter Windows und Linux aus und stellt
+einzeln ausführbar. CI führt die Tests unter Windows, Linux und macOS aus und stellt
 geprüfte VSIX-Artefakte bereit.
 
 Zusätzlich kann die Extension von Hand in die **GitHub Package Registry** gestellt werden. In
