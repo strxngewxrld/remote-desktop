@@ -4,7 +4,7 @@
 
 | Befehl | Prüft | Voraussetzungen |
 | --- | --- | --- |
-| `npm run typecheck` | Beide TypeScript-Workspace-Pakete | npm-Abhängigkeiten installiert |
+| `npm run typecheck` | Beide TypeScript-Workspace-Pakete; baut vorher die von der Extension benötigten Library-Deklarationen | npm-Abhängigkeiten installiert; kein vorheriger Build nötig |
 | `npm test` | Protokoll, Codecs, Mock-RDP-Server und Extension gegen VS-Code-Attrappe | OpenSSL im PATH, lokale Testports verfügbar |
 | `npm run build` | Library und gebündelte Extension | Node.js und npm |
 | `npm run test:vscode` | Aktivierung, Manifestbefehle, Webview-Renderer und Seitenleiste | Desktop-Sitzung oder xvfb, VS Code lokal oder Downloadzugriff |
