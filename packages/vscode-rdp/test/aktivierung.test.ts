@@ -251,9 +251,11 @@ describe('Verbindung anlegen', () => {
   test('Ein unmoeglicher Port wird abgelehnt und nichts gespeichert', async () => {
     antworten.eingaben.push('server:99999', '', 'Kaputt');
 
-    await notizen.befehle.get('rdp.addConnection')!();
-
-    assert.equal(notizen.fehlermeldungen.length, 1, 'der Benutzer erfaehrt davon');
+    // Die Attrappe wirft, wenn validateInput eine Eingabe ablehnt - genau
+    // dort, wo VS Code die Bestaetigung verweigern wuerde.
+    await assert.rejects(async () => {
+      await notizen.befehle.get('rdp.addConnection')!();
+    }, /Ungültiger Port: 99999/);
     assert.deepEqual(gespeicherteVerbindungen(), []);
   });
 

@@ -287,9 +287,17 @@ body.vscode-high-contrast-light #diagnose {
   background: var(--vscode-button-secondaryHoverBackground, #45494e);
 }
 
+/*
+ * Einzeilig und ohne eigene Mindestbreite: ein umbrechender Statustext liess
+ * das Feld nach oben wachsen, und "Schließen" sprang unter dem Mauszeiger weg.
+ * Der volle Text steht im title (clipboard.js).
+ */
 #clipboard-status {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--vscode-descriptionForeground, inherit);
   font-size: 0.85em;
 }

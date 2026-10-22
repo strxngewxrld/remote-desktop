@@ -43,9 +43,14 @@
   function melde(text, dauerhaft) {
     if (!status) return;
     status.textContent = text;
+    // Die Zeile kuerzt mit Auslassungspunkten - der volle Text bleibt erreichbar.
+    status.title = text;
     if (dauerhaft) return;
     setTimeout(() => {
-      if (status.textContent === text) status.textContent = '';
+      if (status.textContent === text) {
+        status.textContent = '';
+        status.title = '';
+      }
     }, 4000);
   }
 

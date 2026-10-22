@@ -425,6 +425,12 @@ export class RdpSession {
   /** Laufende Nummer der Screenshot-Bitte; nur die neueste wird beantwortet. */
   private screenshotLauf = 0;
   private readonly basisDomain: string | undefined;
+  /**
+   * Ziel und Anmeldung, wie beim Oeffnen angegeben. Festgehalten, bevor
+   * resolveCredentials die Verbindung mit einem Profil ueberschreibt - sonst
+   * erkennte ein zweiter Klick auf denselben Eintrag die Sitzung nicht wieder.
+   */
+  readonly verbindungsSchluessel: string;
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
@@ -441,6 +447,7 @@ export class RdpSession {
     private readonly statusBar: vscode.StatusBarItem,
   ) {
     this.basisDomain = connection.domain;
+    this.verbindungsSchluessel = secretKey(connection);
   }
 
   static async open(
@@ -820,7 +827,7 @@ export class RdpSession {
       if (cancelled()) return;
       const err = error as Error;
       this.log(`Fehler: ${err.stack ?? err.message}`);
-      this.setState('error', 'Verbindung fehlgeschlagen', humanizeError(err), 'Erneut verbinden');
+      this.setState('error', 'Verbindung fehlgeschlagen', humanizeError(err, port), 'Erneut verbinden');
       // Ein falsches Passwort soll nicht dauerhaft gespeichert bleiben.
       if (/CredSSP|Anmelde|Zugangsdaten/i.test(err.message) && this.anmeldeSecretKey) {
         await this.context.secrets.delete(this.anmeldeSecretKey);
@@ -1093,7 +1100,7 @@ export class RdpSession {
 
     client.on('error', (err: Error) => {
       this.log(`Sitzungsfehler: ${err.stack ?? err.message}`);
-      this.setState('error', 'Verbindung unterbrochen', humanizeError(err), 'Erneut verbinden');
+      this.setState('error', 'Verbindung unterbrochen', humanizeError(err, this.connection.port ?? 3389), 'Erneut verbinden');
     });
 
     client.on('close', (reason?: string) => {
@@ -1782,6 +1789,11 @@ export class RdpSession {
     return this.client?.isConnected === true;
   }
 
+  /** Wurde das Panel schon geschlossen? */
+  get entsorgt(): boolean {
+    return this.disposed;
+  }
+
   // ------------------------------------------------------ Weitere Monitore
 
   /**
@@ -2104,7 +2116,7 @@ function formatFingerprint(value: string | undefined): string | undefined {
 }
 
 /** Uebersetzt technische Fehler in eine Erklaerung mit Handlungshinweis. */
-function humanizeError(err: Error): string {
+export function humanizeError(err: Error, port = 3389): string {
   const message = err.message;
   if (isTlsCompatibilityError(err)) {
     return (
@@ -2118,15 +2130,25 @@ function humanizeError(err: Error): string {
     );
   }
   if (/ECONNREFUSED/.test(message)) {
-    return 'Der Server nimmt keine Verbindung an. Läuft der Remotedesktopdienst und ist Port 3389 freigegeben?';
+    return `Der Server nimmt keine Verbindung an. Läuft der Remotedesktopdienst und ist Port ${port} freigegeben?`;
   }
   if (/ENOTFOUND|EAI_AGAIN/.test(message)) {
     return 'Der Hostname konnte nicht aufgelöst werden.';
   }
+  // Die TCP-Verbindung stand hier schon - der Hinweis auf Firewall und VPN
+  // fuehrte in die falsche Richtung. Bleibt Windows nach der Anmeldung stehen,
+  // gibt es meist eine alte Sitzung nicht frei.
+  if (/Warten auf die Serverantwort/.test(message)) {
+    return (
+      'Der Server hat die Verbindung angenommen, dann aber nicht mehr geantwortet. ' +
+      'Geschieht das nach der Anmeldung (siehe „RDP: Protokoll anzeigen“), hängt auf dem Server meist ' +
+      'noch eine alte Sitzung: später erneut versuchen oder sie auf dem Server abmelden.'
+    );
+  }
   if (/ETIMEDOUT|Zeitueberschreitung|Zeitüberschreitung/.test(message)) {
     return 'Zeitüberschreitung. Firewall, VPN oder Erreichbarkeit des Hosts prüfen.';
   }
-  if (/CredSSP|Kanalbindung/.test(message)) {
+  if (/CredSSP|Kanalbindung|Anmeldedaten abgelehnt/.test(message)) {
     return `${message}\n\nHäufigste Ursache: falscher Benutzername oder falsches Passwort.`;
   }
   if (/Lizenz/.test(message)) {

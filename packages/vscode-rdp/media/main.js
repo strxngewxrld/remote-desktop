@@ -672,6 +672,13 @@
   // -------------------------------------------------------------- Eingaben
 
   const BUTTON_MAP = { 0: 'left', 1: 'middle', 2: 'right', 3: 'back', 4: 'forward' };
+  /**
+   * Auf der Zeichenflaeche gedrueckte Maustasten. Losgelassen wird am Fenster,
+   * damit ein Ziehen ueber den Rand hinaus endet - aber nur, was hier auch
+   * gedrueckt wurde. Ein Klick ins Zwischenablagefeld schickte sonst ein
+   * Loslassen ohne Druecken an den Server.
+   */
+  const gedrueckteMaustasten = new Set();
 
   canvas.addEventListener('mousemove', (event) => {
     if (!connected) return;
@@ -683,12 +690,13 @@
     event.preventDefault();
     canvas.focus();
     if (!connected) return;
+    gedrueckteMaustasten.add(event.button);
     const p = remotePoint(event);
     vscode.postMessage({ type: 'mouse', kind: 'button', button: BUTTON_MAP[event.button], down: true, x: p.x, y: p.y });
   });
 
   window.addEventListener('mouseup', (event) => {
-    if (!connected) return;
+    if (!gedrueckteMaustasten.delete(event.button) || !connected) return;
     const p = remotePoint(event);
     vscode.postMessage({ type: 'mouse', kind: 'button', button: BUTTON_MAP[event.button], down: false, x: p.x, y: p.y });
   });
@@ -943,6 +951,11 @@
         break;
     }
   });
+
+  // Die Zeichenflaeche hat bis zum ersten 'init' ihre Vorgabegroesse aus dem
+  // HTML. Ohne Einpassen waere sie groesser als die Buehne, und waehrend des
+  // Aufbaus stuenden Bildlaufleisten unter der Einblendung.
+  layout();
 
   // Groesse melden, damit der Host die Sitzung passend aufloest.
   const rect = stage.getBoundingClientRect();

@@ -119,6 +119,78 @@ Lokale Belege (ignorierte Artefakte): `logs/windows-final-tests.log`,
 `logs/Windows Export Prüfung.rdp` und
 `packages/vscode-rdp/.vscode-test/windows-e2e.vsix`.
 
+## Zweite Klickprüfung (22.10.2026, Vormittag)
+
+Erneut über Windows MCP im Extension Development Host mit frischem Profil
+(`.vscode-test/e2e-click`), danach mit dem installierten VSIX
+(`packages/vscode-rdp/.vscode-test/windows-e2e-click.vsix`) im selben Profil
+ohne Development-Argumente. Gegenstellen: der echte Windows-Server
+(`win-udec6vtsf3u.rdp.test`, Kerberos) und der lokale TLS/NLA-Testserver.
+
+Ergebnis danach: 745 Protokolltests, 515 Extension-Tests (15 neu) und
+10 Tests im echten VS-Code-Host bestanden; Build und Typprüfung bestanden.
+
+### Gefundene und behobene Fehler
+
+1. **Doppelte Sitzungen:** Ein Klick auf einen Eintrag verbindet. Ein zweiter
+   Klick (oder ein Doppelklick) öffnete eine zweite Sitzung zum selben Server;
+   Windows trennt dabei die erste. Jetzt wird die offene Sitzung nach vorn
+   geholt. „Verbinden als …“ öffnet weiterhin bewusst eine weitere.
+2. **Einstellungen griffen erst nach Neuverbinden:** `rdp.colorFrameWidth`,
+   `rdp.macCommandKey` und `rdp.clipboard.*` wurden bei laufender Sitzung nicht
+   übernommen, obwohl `applyConfiguration()` dafür vorgesehen ist. Der
+   Konfigurations-Listener reagierte nur auf die Skalierung.
+3. **Tastaturlayout ging beim Bearbeiten verloren:** Die Auswahl stand immer
+   auf „Standard verwenden“. Wer mit Enter durchklickte, setzte z. B. `de-DE`
+   zurück. Der bisherige Wert steht jetzt vorn und ist als „(aktuell)“ markiert.
+4. **Ungültiger Port brach den Dialog ab:** Die Prüfung kam erst nach Enter,
+   alles musste neu eingegeben werden; `host:1.5` wurde angenommen. Jetzt wird
+   inline geprüft, nur ganze Zahlen 1–65535.
+5. **Feste Portangabe in der Fehlermeldung:** „ist Port 3389 freigegeben?“
+   auch bei anderem Port. Jetzt steht dort der verwendete Port.
+6. **Irreführender Hinweis nach Stillstand:** Antwortete der Server nach
+   angenommener Verbindung nicht mehr, hieß es „Firewall, VPN oder
+   Erreichbarkeit prüfen“. Jetzt wird auf eine hängende alte Sitzung verwiesen.
+   Abgelehnte Kerberos-Anmeldedaten erhalten wie NTLM den Passwort-Hinweis.
+7. **Layout-Sprung im Zwischenablage-Feld:** Ein umbrechender Statustext ließ
+   das Feld wachsen; „Schließen“ sprang unter dem Mauszeiger weg und der Klick
+   traf das Textfeld. Der Status ist jetzt einzeilig (voller Text im Tooltip).
+8. **Loslassen ohne Drücken:** Ein Klick ins Zwischenablage-Feld schickte ein
+   Maus-Loslassen an den Server (an den Rand geklemmt). Losgelassen wird jetzt
+   nur, was auf der Sitzung gedrückt wurde.
+9. **Bildlaufleisten während des Aufbaus:** Bis zum ersten Bild hatte die
+   Zeichenfläche ihre HTML-Vorgabegröße 1280×800 und war größer als das Panel.
+
+### Erneut geprüft und unauffällig
+
+Zertifikat ablehnen, „Nur dieses Mal“, „Vertrauen und merken“ (Fingerabdruck
+gegen das RDP-Zertifikat des Servers abgeglichen); falsches Passwort gegen den
+echten Server (Kerberos `UnknownCredentials`, nichts gespeichert); Abbruch der
+Passworteingabe; Passwort merken und Wiederverbinden ohne Abfrage; Maus mit
+Skalierung (676×507) und 1:1; Tastatur-Scancodes (A, Strg+A, F2, Pfeil, Ö, Win);
+Strg+Alt+Ende; Zwischenablage in beide Richtungen mit Umlauten, € und CRLF;
+Zwischenablage-Feld; Diagnose-Overlay; Screenshot in Pfad mit Umlaut und
+Leerzeichen; Monitor-Knopf ohne EDISP; serverseitiger Abbruch und abgewiesene
+Verbindung; Trennen über die Statusleiste; Ordner, Verschieben, Tags, Filter,
+Ordnerfarbe mit Vererbung, Bearbeiten, Löschen, `.rdp`-Export und -Import;
+Zugangsdatenprofil am Ordner; „Verbinden als …“ mit anderen Zugangsdaten.
+
+### Offen
+
+Der echte Server nahm ab 10:27 Uhr keine neuen Sitzungen mehr an: TLS und
+Kerberos liefen durch, danach blieb die Wiederverbindung zur alten Sitzung des
+Testkontos hängen (Ereignis 40, Ursache 5, kein Ereignis 25). `qwinsta` und
+`logoff` hingen ebenfalls, die Sitzungsverwaltung von Windows war blockiert.
+Abhilfe wäre ein Neustart des Remotedesktopdienstes oder des Rechners; beides
+hätte auch die Bediensitzung getrennt und wurde nicht ausgeführt. Dynamische
+Auflösung, weitere Monitore und Laufwerksumleitung wurden deshalb in dieser
+Runde nicht erneut gegen Windows geklickt; die vorherigen Nachweise stehen in
+[ad-kerberos.md](ad-kerberos.md).
+
+Auffällig dabei: Port 3389 dieses Domänencontrollers ist über die öffentliche
+Adresse erreichbar; während der Prüfung bestanden mehrere Verbindungen von
+fremden Adressen.
+
 ## Ursprünglich offene Abnahme gegen einen echten Server
 
 **Nachtrag:** Die anschließende Einrichtung von AD und Prüfung gegen diesen
