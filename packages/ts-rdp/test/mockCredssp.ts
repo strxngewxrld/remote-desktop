@@ -29,7 +29,7 @@ function magic(s: string): Buffer {
   return Buffer.from(s + '\0', 'ascii');
 }
 
-function bindingHash(label: string, nonce: Buffer, publicKey: Buffer): Buffer {
+export function bindingHash(label: string, nonce: Buffer, publicKey: Buffer): Buffer {
   return createHash('sha256').update(Buffer.from(label + '\0', 'ascii')).update(nonce).update(publicKey).digest();
 }
 
@@ -229,7 +229,7 @@ function incrementFirstByte(key: Buffer): Buffer {
 }
 
 /** TSCredentials -> TSPasswordCreds auspacken. */
-function parseTsCredentials(der: Buffer): { domain: string; user: string; password: string } {
+export function parseTsCredentials(der: Buffer): { domain: string; user: string; password: string } {
   const root = readElement(der);
   let credentialsBlob: Buffer | undefined;
   for (const el of children(root.content)) {

@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Kerberos on macOS/Linux through the built-in TypeScript provider; explicit AD realm/KDC settings and replay protection, retaining Windows SSPI and strict fallback rules.
+
 ## [1.0.0]
 
 - Remote Desktop sessions in VS Code with TLS, NLA (NTLMv2 and Windows Kerberos), connection folders and credential profiles.

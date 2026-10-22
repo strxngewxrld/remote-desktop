@@ -2,7 +2,8 @@
 
 Remote-Desktop-Protokoll-Client in reinem TypeScript. Keine Laufzeitabhängigkeiten,
 keine nativen Node-Module. Der Standardpfad verwendet `node:net`, `node:tls`
-und `node:crypto`; der optionale Windows-Kerberos-Pfad nutzt PowerShell 7/SSPI.
+und `node:crypto`. Windows-Kerberos nutzt PowerShell 7/SSPI; macOS und Linux
+verwenden eine integrierte TypeScript-Implementierung mit AES128/AES256.
 
 Standard ist `nlaMechanism: 'auto'`: Kerberos bevorzugen, bei fehlender lokaler
 Unterstützung oder einem eindeutig als unbekannt gemeldeten Kerberos-Ziel vor dem ersten
@@ -13,8 +14,11 @@ Verfahren (`kerberos` oder `ntlm`); das Verfahren wird auch protokolliert.
 `nlaMechanism: 'ntlm'` erzwingt NTLMv2.
 
 Für ausschließlich Kerberos `nlaMechanism: 'kerberos'` setzen und einen
-Server-FQDN sowie explizite Domänen-Zugangsdaten angeben. Ein Windows-Host mit
-PowerShell 7 und ein erreichbarer AD-KDC sind erforderlich. Dieser Modus fällt
+Server-FQDN sowie explizite Domänen-Zugangsdaten angeben. Windows benötigt
+PowerShell 7. Auf macOS/Linux kommt der Realm aus dem UPN-Benutzernamen, einer
+DNS-Domäne in `domain` oder explizit aus `kerberos.realm`. Der AD-KDC muss
+erreichbar sein; optional überschreibt `kerberos.kdc: [{ host, port: 88 }]` die
+DNS-SRV-Ermittlung. Dieser Modus fällt
 weder auf NTLM noch auf TLS ohne NLA zurück.
 
 ```ts

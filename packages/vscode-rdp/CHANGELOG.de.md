@@ -1,5 +1,9 @@
 # Änderungsprotokoll
 
+## [Unveröffentlicht]
+
+- Kerberos auf macOS/Linux über die integrierte TypeScript-Implementierung; explizite AD-Realm-/KDC-Einstellungen und Replay-Schutz bei unverändertem Windows-SSPI und strikten Rückfallregeln.
+
 ## [1.0.0]
 
 - Remote-Desktop-Sitzungen in VS Code mit TLS und NLA (NTLMv2 und Kerberos unter Windows), Verbindungsordnern und Zugangsdaten-Profilen.

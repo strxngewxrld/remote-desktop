@@ -950,9 +950,30 @@
           "enumDescriptions": [
             "Kerberos bevorzugen; wenn nicht verfügbar, NTLMv2 verwenden",
             "Nur NTLMv2",
-            "Nur Kerberos über Windows SSPI, ohne NTLM-Rückfall"
+            "Nur Kerberos, ohne NTLM-Rückfall"
           ],
-          "markdownDescription": "NLA-Authentifizierung. Automatisch bevorzugt Kerberos und verwendet NTLMv2, wenn Kerberos vor dem Tokenaustausch nicht verfügbar ist. Anmelde- und Sicherheitsfehler brechen ab. Kerberos benötigt einen Windows-Extension-Host mit PowerShell 7, eine erreichbare AD-Domäne und den DNS-Namen des Servers (FQDN statt IP-Adresse). Das verwendete Verfahren steht im RDP-Ausgabeprotokoll."
+          "markdownDescription": "NLA-Authentifizierung. Automatisch bevorzugt Kerberos und verwendet NTLMv2, wenn Kerberos vor dem Tokenaustausch nicht verfügbar ist. Anmelde- und Sicherheitsfehler brechen ab. Windows verwendet SSPI mit PowerShell 7; macOS und Linux verwenden die integrierte Kerberos-Implementierung. Benötigt werden ein erreichbarer AD-KDC und der DNS-Name des Servers. Auf macOS/Linux den Benutzer als benutzer@ad.example.de angeben oder rdp.kerberosRealm setzen. Das verwendete Verfahren steht im RDP-Ausgabeprotokoll."
+        },
+        "rdp.kerberosRealm": {
+          "scope": "application",
+          "type": "string",
+          "default": "",
+          "markdownDescription": "AD-DNS-Domäne für Kerberos auf macOS/Linux, z. B. AD.EXAMPLE.DE. Leer: aus dem UPN-Benutzernamen oder einer als DNS-Domäne angegebenen Anmeldung ableiten. Ein NetBIOS-Name wie FIRMA reicht nicht aus."
+        },
+        "rdp.kerberosKdc": {
+          "scope": "application",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": ["host", "port"],
+            "additionalProperties": false,
+            "properties": {
+              "host": { "type": "string", "minLength": 1 },
+              "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 88 }
+            }
+          },
+          "markdownDescription": "Optionale KDC-Adressen für Kerberos auf macOS/Linux, z. B. [{\"host\":\"dc.ad.example.de\",\"port\":88}]. Leer: AD-DNS-SRV-Ermittlung verwenden. Hilfreich bei Testtunneln oder fehlender AD-DNS-Auflösung."
         },
         "rdp.certificateTrust": {
           "scope": "application",
