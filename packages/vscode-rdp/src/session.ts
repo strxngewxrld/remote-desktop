@@ -478,7 +478,10 @@ export class RdpSession {
     // Listener müssen vor dem Laden stehen: das Webview kann sofort ready senden.
     panel.webview.html = renderWebview(panel.webview, context.extensionUri, connection.name || connection.host);
     const icon = await farbSymbolUri(context, connection.color);
-    if (!session.disposed) panel.iconPath = icon ?? vscode.Uri.joinPath(context.extensionUri, 'media', 'rdp-icon.svg');
+    if (!session.disposed) panel.iconPath = icon ?? {
+      light: vscode.Uri.joinPath(context.extensionUri, 'media', 'rdp-icon-light.svg'),
+      dark: vscode.Uri.joinPath(context.extensionUri, 'media', 'rdp-icon-dark.svg'),
+    };
     return session;
   }
 

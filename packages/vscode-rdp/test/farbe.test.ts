@@ -329,9 +329,11 @@ describe('Kennfarbe - Sitzung', () => {
     assert.equal(notizen.panels[0]!.iconPath?.toString(), 'file:///erweiterung/media/tab-icons/rdp-red.svg');
   });
 
-  test('Ohne Farbe bleibt es beim gewoehnlichen Symbol', async () => {
+    test('Ohne Kennfarbe verwendet das Panel zum Theme passende Monitor-Icons', async () => {
     await oeffne({ name: 'Frei', host: '10.0.0.1' });
-    assert.equal(notizen.panels[0]!.iconPath?.toString(), 'file:///erweiterung/media/rdp-icon.svg');
+      const icon = notizen.panels[0]!.iconPath as { light: { toString(): string }; dark: { toString(): string } };
+      assert.equal(icon.light.toString(), 'file:///erweiterung/media/rdp-icon-light.svg');
+      assert.equal(icon.dark.toString(), 'file:///erweiterung/media/rdp-icon-dark.svg');
   });
 
   test('Rahmenfarbe und -breite gehen ans Webview', async () => {

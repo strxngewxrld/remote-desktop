@@ -56,7 +56,7 @@ export async function checkPackage(path) {
   const required = ['package.nls.json', 'package.nls.de.json', 'readme.md', 'README.de.md', 'changelog.md', 'CHANGELOG.de.md', 'LICENSE.txt',
     'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.de.md', 'docs/ANWENDERHANDBUCH.md', 'docs/TROUBLESHOOTING.md',
     'docs/walkthrough/connect.md', 'docs/walkthrough/security.md', 'docs/walkthrough/help.md', 'docs/walkthrough/updates.md',
-    'out/extension.js', 'media/icon.png', 'media/rdp-icon.svg', 'media/main.js',
+    'out/extension.js', 'media/icon.png', 'media/rdp-icon.svg', 'media/rdp-icon-light.svg', 'media/rdp-icon-dark.svg', 'media/main.js',
     'media/clipboard.js', 'media/main.css', ...['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'].map(n => `media/tab-icons/rdp-${n}.svg`)];
   // Exactly these runtime assets: catches accidentally shipped logs, credentials or tests.
   const names = [...files.keys()].filter(n => n.startsWith('extension/')).map(n => n.slice(10));

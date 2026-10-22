@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const documents = ['README.md', 'docs/RELEASING.md', 'docs/TESTING.md', 'docs/report-builder-parity.md',
+const documents = ['README.md', 'docs/RELEASING.md', 'docs/TESTING.md', 'docs/report-builder-parity.md', 'docs/icons.md',
   ...['README.md', 'README.de.md', 'CHANGELOG.md', 'CHANGELOG.de.md', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.de.md',
     'docs/ANWENDERHANDBUCH.md', 'docs/TROUBLESHOOTING.md',
     'docs/walkthrough/connect.md', 'docs/walkthrough/security.md', 'docs/walkthrough/help.md', 'docs/walkthrough/updates.md']
