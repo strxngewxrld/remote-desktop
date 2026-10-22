@@ -19,6 +19,7 @@ Benutzereinstellungen bleiben bestehen.
 
 Der [Vergleich mit Report Builder](docs/report-builder-parity.md) beschreibt
 die übernommenen Abläufe und verbleibenden Unterschiede.
+Die [Icon-Dokumentation](docs/icons.md) beschreibt die Varianten und den reproduzierbaren Export.
 
 ## Warum eine eigene Library?
 

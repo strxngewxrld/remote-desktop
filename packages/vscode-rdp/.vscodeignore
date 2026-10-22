@@ -12,6 +12,8 @@
 !out/extension.js
 !media/icon.png
 !media/rdp-icon.svg
+!media/rdp-icon-light.svg
+!media/rdp-icon-dark.svg
 !media/main.js
 !media/clipboard.js
 !media/main.css
