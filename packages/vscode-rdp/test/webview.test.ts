@@ -6,6 +6,24 @@ import { starteWebview } from './dom.js';
 
 const skript = readFileSync(join(__dirname, '..', '..', 'media', 'main.js'), 'utf8');
 
+describe('Webview - Windows-Hostkuerzel', () => {
+  for (const [code, key] of [['KeyV', 'v'], ['End', 'End']]) {
+    test(`Strg+Alt+${key} wird nicht zusaetzlich an den Server gesendet`, () => {
+      const w = starteWebview(skript);
+      w.sende({ type: 'state', state: 'connected' });
+      w.loeseCanvasEreignisAus('focus', {});
+      const event = {
+        code, key, ctrlKey: true, altKey: true, shiftKey: false, metaKey: false,
+        preventDefault: () => assert.fail('Hostkuerzel muss VS Code erreichen'),
+        stopPropagation: () => assert.fail('Hostkuerzel muss VS Code erreichen'),
+      };
+      w.loeseFensterEreignisAus('keydown', event);
+      w.loeseFensterEreignisAus('keyup', event);
+      assert.equal(w.gesendet.some((m: any) => m.type === 'key'), false);
+    });
+  }
+});
+
 /** Eine Bitmap-Nachricht, wie session.ts sie zusammenstellt. */
 function bitmapNachricht(
   kacheln: { x: number; y: number; w: number; h: number }[],

@@ -39,6 +39,7 @@ import { KEYBOARD_LAYOUTS } from './keyboardLayouts.js';
 const sessions = new Set<RdpSession>();
 
 export function activate(context: vscode.ExtensionContext): void {
+  RdpSession.registerCommands(context);
   const output = vscode.window.createOutputChannel('Remote Desktop (RDP)');
   const trustStore = new CertificateTrustStore(context);
   const tree = new ConnectionTreeProvider();

@@ -165,6 +165,23 @@ describe('Vollstaendige Verbindungssequenz gegen einen Mock-Server', () => {
 
   after(() => server.close());
 
+  test('Kerberos lehnt TLS ohne NLA auch bei erlaubtem TLS-Rueckfall ab', async () => {
+    const client = neuerClient({ host: '127.0.0.1', port, username: 'tester', password: 'test-only',
+      nlaMechanism: 'kerberos', allowTlsOnly: true, connectTimeout: 5000 });
+    client.on('error', () => {});
+    await assert.rejects(client.connect(), { code: 'RDP_NLA_REJECTED' });
+    assert.equal(client.isConnected, false);
+    client.disconnect();
+  });
+
+  test('Kerberos kann nicht mit abgeschalteter NLA gestartet werden', async () => {
+    const client = neuerClient({ host: '127.0.0.1', port, username: 'tester', password: 'test-only',
+      nlaMechanism: 'kerberos', useNla: false, connectTimeout: 5000 });
+    client.on('error', () => {});
+    await assert.rejects(client.connect(), { code: 'RDP_NLA_REQUIRED' });
+    client.disconnect();
+  });
+
   test('Client durchlaeuft Handshake und empfaengt Bildschirminhalt', async () => {
     const client = neuerClient({
       host: '127.0.0.1',
@@ -359,6 +376,8 @@ describe('NLA (CredSSP/NTLMv2) gegen einen Mock-Server', () => {
     });
     assert.equal(outcome.micVerified, true, 'MIC der AUTHENTICATE-Nachricht muss stimmen');
     assert.equal(client.isConnected, true);
+
+    assert.equal(client.authenticationMechanism, 'ntlm');
 
     client.disconnect();
   });

@@ -270,11 +270,31 @@ Server. `Developer: Show Running Extensions` zeigt den Ort unabhängig davon an.
   `doku/geheim`) lässt sich nicht umbenennen, sonst würde der ausgeschlossene
   Eintrag unter neuem Pfad sichtbar. Gelöschtes geht in den Papierkorb.
 
+## Kerberos auf Windows
+
+Standard ist `"rdp.nlaMechanism": "auto"`: Die Extension bevorzugt Kerberos
+und verwendet NTLMv2, wenn Kerberos vor dem ersten Tokenaustausch nicht verfügbar
+ist, etwa bei IP-Zielen, lokalen Serverkonten, fehlendem PowerShell 7 oder
+einem eindeutig als unbekannt gemeldeten Kerberos-Ziel. Falsche Passwörter, abgelaufene Zugangsdaten,
+unbekannte Fehler sowie Fehler während des Tokenaustauschs brechen ab.
+Das verwendete Verfahren steht im RDP-Ausgabeprotokoll.
+
+Mit `"rdp.nlaMechanism": "kerberos"` wird ausschließlich Kerberos über Windows
+SSPI verwendet, ohne NTLM-Rückfall; `"ntlm"` erzwingt NTLMv2.
+Für Kerberos muss der Extension-Host unter
+Windows laufen und PowerShell 7 unter `Program Files/PowerShell/7` verfügbar sein.
+Als Server den vollständigen DNS-Namen (FQDN) verwenden; IP-Adressen werden
+abgelehnt. AD-DNS und der KDC müssen erreichbar sein. Benutzer und Passwort
+werden wie bisher eingegeben und auf Wunsch im SecretStorage gespeichert.
+
+Der Kerberos-Hilfsprozess erhält Zugangsdaten nur über stdin. Die Extension
+prüft Zertifikat und CredSSP-Kanalbindung weiterhin vor der Delegation.
+
 ## Bekannte Grenzen
 
 Kein Audio. Weitere Monitore nur rechts nebeneinander. Kein RemoteApp/RAIL –
 es wird immer der ganze Desktop übertragen. H.264 nur als AVC420 und nur mit WebCodecs
-im Webview, kein AVC444. Anmeldung per NLA nur über NTLM; Kerberos ist geplant,
-Domänen ohne NTLM werden bis dahin nicht unterstützt. Kein RD Gateway. Server,
+im Webview, kein AVC444. Kerberos benötigt einen Windows-Extension-Host mit
+PowerShell 7; auf Linux/macOS steht bisher NTLMv2 zur Verfügung. Kein RD Gateway. Server,
 die eine Terminalserver-Lizenz (Per-Device-CAL) verlangen, werden nicht
 unterstützt.

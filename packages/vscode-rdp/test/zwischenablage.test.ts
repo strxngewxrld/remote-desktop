@@ -601,12 +601,14 @@ describe('Zwischenablage - Befehl fürs Rückfallfeld', () => {
     kontext.entsorgeAlles();
   });
 
-  test('Mit der ersten Sitzung gibt es den Befehl, mit der letzten ist er wieder weg', async () => {
+  test('Der Befehl bleibt nach Sitzungsende bis zur Deaktivierung registriert', async () => {
     assert.equal(notizen.befehle.has(ZWISCHENABLAGE_BEFEHL), false);
     const sitzung = await oeffne();
     assert.equal(notizen.befehle.has(ZWISCHENABLAGE_BEFEHL), true);
     sitzung.dispose();
     offen.length = 0;
+    assert.equal(notizen.befehle.has(ZWISCHENABLAGE_BEFEHL), true);
+    kontext.entsorgeAlles();
     assert.equal(notizen.befehle.has(ZWISCHENABLAGE_BEFEHL), false);
   });
 

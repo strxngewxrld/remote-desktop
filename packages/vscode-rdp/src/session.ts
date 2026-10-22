@@ -487,26 +487,39 @@ export class RdpSession {
   }
 
   /**
-   * Traegt die Sitzung ein und haelt den Diagnose-Befehl am Leben.
+   * Traegt die Sitzung ein und stellt die gemeinsamen Befehle bereit.
    *
    * Der Befehl gehoert der Klasse, nicht der einzelnen Sitzung: VS Code laesst
    * denselben Befehlsnamen kein zweites Mal registrieren, eine zweite Sitzung
    * wuerde sonst beim Oeffnen scheitern.
    */
   private static merkeSitzung(session: RdpSession): void {
-    if (RdpSession.offeneSitzungen.size === 0 && !RdpSession.diagnoseBefehl) {
+    RdpSession.registerCommands(session.context);
+    RdpSession.offeneSitzungen.add(session);
+  }
+
+  /** Manifest-Befehle muessen schon vor der ersten Sitzung registriert sein. */
+  static registerCommands(context: vscode.ExtensionContext): void {
+    if (!RdpSession.diagnoseBefehl) {
       RdpSession.diagnoseBefehl = vscode.commands.registerCommand(DIAGNOSE_BEFEHL, () =>
-        RdpSession.schalteDiagnoseUm(session.context),
+        RdpSession.schalteDiagnoseUm(context),
       );
+      context.subscriptions.push({ dispose: () => {
+        RdpSession.diagnoseBefehl?.dispose();
+        RdpSession.diagnoseBefehl = undefined;
+      } });
     }
-    if (RdpSession.offeneSitzungen.size === 0 && !RdpSession.zwischenablageBefehl) {
+    if (!RdpSession.zwischenablageBefehl) {
       // Anders als das Diagnose-Overlay wirkt dieser Befehl nur auf die
       // sichtbare Sitzung: das Feld gehoert zu genau einer Verbindung.
       RdpSession.zwischenablageBefehl = vscode.commands.registerCommand(ZWISCHENABLAGE_BEFEHL, () =>
         RdpSession.gemeinteSitzung()?.schalteZwischenablagefeldUm(),
       );
+      context.subscriptions.push({ dispose: () => {
+        RdpSession.zwischenablageBefehl?.dispose();
+        RdpSession.zwischenablageBefehl = undefined;
+      } });
     }
-    RdpSession.offeneSitzungen.add(session);
   }
 
   /**
@@ -523,12 +536,6 @@ export class RdpSession {
 
   private static vergissSitzung(session: RdpSession): void {
     RdpSession.offeneSitzungen.delete(session);
-    if (RdpSession.offeneSitzungen.size === 0) {
-      RdpSession.diagnoseBefehl?.dispose();
-      RdpSession.diagnoseBefehl = undefined;
-      RdpSession.zwischenablageBefehl?.dispose();
-      RdpSession.zwischenablageBefehl = undefined;
-    }
   }
 
   /** Schaltet das Overlay in allen offenen Sitzungen um und merkt sich das. */
@@ -760,6 +767,7 @@ export class RdpSession {
         domain: this.connection.domain ?? '',
         username: credentials.username,
         password: credentials.password,
+        nlaMechanism: config.get<'auto' | 'ntlm' | 'kerberos'>('nlaMechanism', 'auto'),
         width: size.width,
         height: size.height,
         colorDepth: this.connection.colorDepth ?? config.get<number>('defaultColorDepth', 32),
