@@ -20,7 +20,7 @@ for offline help, or **RDP: Hilfe bei Verbindungsproblemen** for troubleshooting
 
 ## Features
 
-- TLS and NLA with NTLMv2; automatic Windows Kerberos selection when available.
+- TLS and NLA with NTLMv2; automatic Kerberos selection on Windows, macOS and Linux when available.
 - Saved connections, nested folders, inherited settings, tags, colors and credential profiles.
 - Dynamic resolution, additional monitors, screenshots and automatic reconnect.
 - Clipboard text in both directions; files pasted from the local machine to the remote session.
@@ -38,7 +38,9 @@ to check the actual connection origin.
 
 A desktop VS Code client and a reachable RDP server with TLS/NLA are required.
 Windows Kerberos additionally needs a Windows extension host, PowerShell 7, a server
-FQDN and AD connectivity. Linux/macOS hosts use NTLMv2.
+FQDN and AD connectivity. macOS/Linux use the built-in TypeScript Kerberos
+provider: use a UPN (`user@ad.example.com`) or set `rdp.kerberosRealm`. Optional
+`rdp.kerberosKdc` entries (`host` and `port`) override AD DNS discovery.
 
 Audio, RD Gateway, RemoteApp, AVC444 and Per-Device RDS CAL issuance are not supported.
 Additional monitors are placed to the right. H.264 AVC420 depends on WebCodecs.

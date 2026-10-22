@@ -778,6 +778,10 @@ export class RdpSession {
         username: credentials.username,
         password: credentials.password,
         nlaMechanism: config.get<'auto' | 'ntlm' | 'kerberos'>('nlaMechanism', 'auto'),
+        kerberos: {
+          realm: config.get<string>('kerberosRealm') || undefined,
+          kdc: config.get<Array<{ host: string; port: number }>>('kerberosKdc', []),
+        },
         width: size.width,
         height: size.height,
         colorDepth: this.connection.colorDepth ?? config.get<number>('defaultColorDepth', 32),

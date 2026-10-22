@@ -14,6 +14,7 @@ import { backoffWartezeit, BackoffOptions, STANDARD_BACKOFF } from './core/backo
 import { createLogger, Logger, LogLevel, LogSink, nullLogger } from './core/log.js';
 import { ERROR_INFO_CODES, RdpError, RdpProtocolError } from './core/errors.js';
 import { prepareNla, type NlaMechanism } from './crypto/authSelection.js';
+import type { KerberosOptions } from './crypto/portableKerberos.js';
 import { parseFrame, RdpFrame, RdpTransport, tpkt, tpktRaw } from './protocol/transport.js';
 import {
   buildChannelChunks,
@@ -140,8 +141,10 @@ export interface RdpClientOptions {
   clientName?: string;
   /** NLA (CredSSP) verwenden. Ohne Zugangsdaten nicht moeglich. */
   useNla?: boolean;
-  /** Default auto: prefer Windows Kerberos, use NTLMv2 when unavailable. Explicit kerberos forbids fallback. */
+  /** Default auto: prefer Kerberos, use NTLMv2 when unavailable. Explicit kerberos forbids fallback. */
   nlaMechanism?: NlaMechanism;
+  /** Portable Kerberos: explicit AD DNS realm and KDCs instead of DNS discovery. */
+  kerberos?: KerberosOptions;
   /** Nur TLS ohne NLA zulassen (aeltere Server, xrdp mit Standardkonfiguration). */
   allowTlsOnly?: boolean;
   /**
@@ -780,6 +783,8 @@ export class RdpClient extends EventEmitter {
     const publicKey = serverPublicKeyDer(socket);
     const credentials = {
         host: this.opts.host,
+        kerberos: this.opts.kerberos,
+        connectTimeout: this.opts.connectTimeout,
         domain: this.opts.domain ?? '',
         user: this.opts.username ?? '',
         password: this.opts.password ?? '',
@@ -801,7 +806,9 @@ export class RdpClient extends EventEmitter {
       prepared.dispose();
     }
     this.selectedNlaMechanism = prepared.mechanism;
-    this.log.info(`NLA/CredSSP erfolgreich abgeschlossen (${prepared.mechanism === 'kerberos' ? 'Kerberos/SSPI' : 'NTLMv2'})`);
+    const label = prepared.mechanism === 'ntlm' ? 'NTLMv2'
+      : process.platform === 'win32' ? 'Kerberos/SSPI' : 'Kerberos';
+    this.log.info(`NLA/CredSSP erfolgreich abgeschlossen (${label})`);
   }
 
   private async mcsConnect(): Promise<void> {

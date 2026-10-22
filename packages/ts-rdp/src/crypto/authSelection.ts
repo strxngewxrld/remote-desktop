@@ -1,5 +1,5 @@
 import { CredSspClient, SecurityCredSspClient } from './credssp.js';
-import type { NtlmOptions } from './ntlm.js';
+import { PortableKerberosContext, type KerberosCredentials } from './portableKerberos.js';
 import type { SecurityContext } from './securityContext.js';
 import { KerberosUnavailableError, WindowsKerberosContext } from './windowsKerberos.js';
 
@@ -11,10 +11,11 @@ export type NlaMechanism = 'auto' | 'ntlm' | 'kerberos';
  */
 export async function prepareNla(
   mechanism: NlaMechanism,
-  credentials: NtlmOptions & { host: string },
+  credentials: KerberosCredentials,
   publicKey: Buffer,
   fallback: () => void,
-  createKerberos: (options: typeof credentials) => SecurityContext = options => new WindowsKerberosContext(options),
+  createKerberos: (options: typeof credentials) => SecurityContext = options => process.platform === 'win32'
+    ? new WindowsKerberosContext(options) : new PortableKerberosContext(options),
 ) {
   let security: SecurityContext | undefined;
   if (mechanism !== 'ntlm') {

@@ -15,8 +15,10 @@ Den Zertifikatsfingerabdruck beim Serverbetreiber überprüfen. Ein geänderter
 Fingerabdruck muss geklärt werden; die Zertifikatsprüfung nicht zur Fehlersuche abschalten.
 Über **Verbinden als …** die verwendeten Zugangsdaten prüfen.
 
-Kerberos benötigt einen Windows-Extension-Host, PowerShell 7, einen Server-FQDN
-und Zugriff auf AD-DNS und den KDC. `rdp.nlaMechanism: "auto"` kann bei fehlender
+Kerberos benötigt einen Server-FQDN und Zugriff auf den KDC. Windows nutzt
+PowerShell 7/SSPI; auf macOS/Linux den Benutzer als UPN angeben oder
+`rdp.kerberosRealm` setzen. Bei fehlender AD-DNS-Auflösung kann
+`rdp.kerberosKdc` den KDC vorgeben. `rdp.nlaMechanism: "auto"` kann bei fehlender
 Kerberos-Verfügbarkeit vor dem Tokenaustausch NTLMv2 verwenden, aber nicht nach
 einem Anmelde- oder Sicherheitsfehler. Mehr dazu im [Handbuch](ANWENDERHANDBUCH.md).
 

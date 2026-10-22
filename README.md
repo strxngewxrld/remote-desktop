@@ -226,12 +226,14 @@ Ehrlich benannt, statt später zu überraschen:
   vom bisher letzten, oben bündig. Er braucht Display Control (MS-RDPEDISP)
   und einen Server, der mehrere Monitore zulässt.
 - **Automatische NLA-Auswahl.** Standard `rdp.nlaMechanism: "auto"` bevorzugt
-  Kerberos auf Windows mit PowerShell 7 und verwendet NTLMv2, wenn Kerberos
+  Kerberos (Windows: PowerShell 7/SSPI; macOS/Linux: TypeScript) und verwendet
+  NTLMv2, wenn Kerberos
   vor dem ersten Tokenaustausch nicht verfügbar ist. Explizite Anmelde- oder
   Sicherheitsfehler erlauben keinen automatischen Rückfall.
-  `rdp.nlaMechanism: "kerberos"` verwendet Windows SSPI ohne NTLM-Rückfall und
-  benötigt den Server-FQDN sowie einen erreichbaren AD-KDC. Auf Linux/macOS
-  steht dieser Kerberos-Pfad noch nicht zur Verfügung.
+  `rdp.nlaMechanism: "kerberos"` verlangt Kerberos ohne NTLM-Rückfall und
+  benötigt den Server-FQDN sowie einen erreichbaren AD-KDC. Auf macOS/Linux
+  den Benutzer als UPN angeben oder `rdp.kerberosRealm` setzen;
+  `rdp.kerberosKdc` kann die DNS-Ermittlung überschreiben.
 - **Kein RD Gateway** (MS-TSGU).
 - **Kein RemoteApp/RAIL.** Es wird immer der ganze Desktop übertragen.
 - **Keine Zeigerform über den Pipeline-Kanal.** `Microsoft::Windows::RDS::MouseCursor`
@@ -249,7 +251,6 @@ Ehrlich benannt, statt später zu überraschen:
 
 ## Offene Punkte
 
-- **Kerberos auf Linux und macOS** ergänzen; Windows wird über SSPI unterstützt.
 - **Monitoranordnung wählbar machen** (links, oben, unten statt immer rechts)
   und Screenshots über alle Monitore.
 
