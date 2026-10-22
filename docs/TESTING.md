@@ -21,6 +21,12 @@ VS-Code-Tests unter Linux verwenden `xvfb-run`; unter Windows und macOS starten
 sie direkt, jeweils auf Englisch und Deutsch. VSIX-Dateien werden je
 Betriebssystem als Workflow-Artefakte bereitgestellt.
 
+Unter macOS liegt das isolierte VS-Code-Benutzerprofil in einem kurzen,
+temporären Verzeichnis unter `/tmp/rdp-vsc-*`. Der vollständige Checkout-Pfad
+auf GitHub-Runnern überschreitet sonst die Längengrenze für Unix-Sockets und
+VS Code bricht bereits vor dem ersten Test mit `listen EINVAL` ab.
+Sprachpaketinstallation und Testfenster verwenden ausdrücklich dasselbe Profil.
+
 ## Lokal geprüft am 22.10.2026
 
 Windows, Node.js 26.8.1, installierter VS-Code-Desktop und OpenSSL aus Git for Windows:

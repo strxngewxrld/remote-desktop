@@ -1,10 +1,21 @@
 import { defineConfig } from '@vscode/test-cli';
 import { prepareGermanTestProfile } from '../../tools/prepare-vscode-language.mjs';
+import { mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const cache = fileURLToPath(new URL('./.vscode-test/', import.meta.url));
+// macOS Unix-domain socket paths must fit within 103 bytes. The checkout
+// path on GitHub runners already exceeds this before VS Code adds its socket.
+const userData = process.platform === 'darwin'
+  ? join(mkdtempSync('/tmp/rdp-vsc-'), 'user')
+  : join(cache, 'user-data');
+const extensions = join(cache, 'extensions');
 
 // A parent VS Code terminal may export its own resolved English locale.
 // Let the isolated test window resolve the requested language itself.
 delete process.env.VSCODE_NLS_CONFIG;
-if (process.env.VSCODE_TEST_LANGUAGE === 'de') await prepareGermanTestProfile();
+if (process.env.VSCODE_TEST_LANGUAGE === 'de') await prepareGermanTestProfile({ userData, extensions });
 
 /**
  * Startet ein echtes VS Code, laedt diese Extension hinein und fuehrt die
@@ -32,6 +43,8 @@ export default defineConfig({
   workspaceFolder: './test/integration/arbeitsordner',
   // The German language pack must stay enabled in the isolated test profile.
   launchArgs: [
+    `--user-data-dir=${userData}`,
+    `--extensions-dir=${extensions}`,
     ...(process.env.VSCODE_TEST_LANGUAGE === 'de' ? [] : ['--disable-extensions']),
     '--disable-gpu',
     ...(process.env.VSCODE_TEST_LANGUAGE ? [`--locale=${process.env.VSCODE_TEST_LANGUAGE}`] : []),
