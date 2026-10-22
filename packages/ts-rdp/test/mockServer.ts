@@ -180,9 +180,9 @@ export class MockRdpServer extends EventEmitter {
     this.server = net.createServer((socket) => this.handleConnection(socket));
   }
 
-  listen(): Promise<number> {
+  listen(port = 0): Promise<number> {
     return new Promise((resolve) => {
-      this.server.listen(0, '127.0.0.1', () => {
+      this.server.listen(port, '127.0.0.1', () => {
         resolve((this.server.address() as net.AddressInfo).port);
       });
     });

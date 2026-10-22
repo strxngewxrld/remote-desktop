@@ -7,6 +7,8 @@ dist-test/
 dist-integration/
 out/
 *.tsbuildinfo
+/packages/vscode-rdp/test/ts-rdp-quelle/
+/.npm-cache/
 
 # Verpackte Extension und die npm-Huelle fuer GitHub Packages
 *.vsix

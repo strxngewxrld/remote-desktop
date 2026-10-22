@@ -6,6 +6,7 @@ node_modules/**
 tsconfig.json
 tsconfig.test.json
 esbuild.mjs
+prepare-tests.mjs
 .gitignore
 **/*.map
 dist-integration/**

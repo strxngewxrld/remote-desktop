@@ -32,20 +32,6 @@ const manifest = JSON.parse(
 /** Die Befehle, die das Manifest der Oberflaeche verspricht. */
 const versprocheneBefehle = manifest.contributes.commands.map((c) => c.command).sort();
 
-/**
- * Befehle, die nicht zur Aktivierung gehoeren, sondern zur Sitzung: sie
- * entstehen mit der ersten offenen Sitzung und vergehen mit der letzten.
- * Geprueft werden sie dort, wo sie leben - in `diagnose.test.ts`,
- * und `zwischenablage.test.ts`.
- */
-const SITZUNGSBEFEHLE = new Set([
-  'rdp.toggleDiagnostics',
-  'rdp.toggleClipboardPanel',
-]);
-
-/** Was `activate` selbst registrieren muss. */
-const beimAktivierenErwartet = versprocheneBefehle.filter((b) => !SITZUNGSBEFEHLE.has(b));
-
 let kontext: ExtensionContext;
 
 beforeEach(() => {
@@ -70,7 +56,7 @@ describe('Aktivierung', () => {
     // Beide Richtungen pruefen: ein Befehl im Manifest ohne Registrierung
     // scheitert beim Benutzer stumm ("command not found"), eine Registrierung
     // ohne Manifest ist in der Oberflaeche nicht erreichbar.
-    assert.deepEqual(registriert, beimAktivierenErwartet);
+    assert.deepEqual(registriert, versprocheneBefehle);
   });
 
   test('Menues und Tastenkuerzel verweisen nur auf deklarierte Befehle', () => {

@@ -208,8 +208,13 @@ Ehrlich benannt, statt später zu überraschen:
 - **Weitere Monitore nur nebeneinander.** Jeder weitere Monitor sitzt rechts
   vom bisher letzten, oben bündig. Er braucht Display Control (MS-RDPEDISP)
   und einen Server, der mehrere Monitore zulässt.
-- **Nur NTLM, kein Kerberos.** NLA rechnet NTLMv2. In Domänen, die NTLM
-  abschalten, scheitert die Anmeldung.
+- **Automatische NLA-Auswahl.** Standard `rdp.nlaMechanism: "auto"` bevorzugt
+  Kerberos auf Windows mit PowerShell 7 und verwendet NTLMv2, wenn Kerberos
+  vor dem ersten Tokenaustausch nicht verfügbar ist. Explizite Anmelde- oder
+  Sicherheitsfehler erlauben keinen automatischen Rückfall.
+  `rdp.nlaMechanism: "kerberos"` verwendet Windows SSPI ohne NTLM-Rückfall und
+  benötigt den Server-FQDN sowie einen erreichbaren AD-KDC. Auf Linux/macOS
+  steht dieser Kerberos-Pfad noch nicht zur Verfügung.
 - **Kein RD Gateway** (MS-TSGU).
 - **Kein RemoteApp/RAIL.** Es wird immer der ganze Desktop übertragen.
 - **Keine Zeigerform über den Pipeline-Kanal.** `Microsoft::Windows::RDS::MouseCursor`
@@ -227,8 +232,7 @@ Ehrlich benannt, statt später zu überraschen:
 
 ## Offene Punkte
 
-- **Kerberos für NLA** (SPNEGO über CredSSP), damit Domänen ohne NTLM
-  funktionieren.
+- **Kerberos auf Linux und macOS** ergänzen; Windows wird über SSPI unterstützt.
 - **Monitoranordnung wählbar machen** (links, oben, unten statt immer rechts)
   und Screenshots über alle Monitore.
 

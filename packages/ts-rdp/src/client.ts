@@ -13,7 +13,7 @@ import { BinaryReader } from './core/binary.js';
 import { backoffWartezeit, BackoffOptions, STANDARD_BACKOFF } from './core/backoff.js';
 import { createLogger, Logger, LogLevel, LogSink, nullLogger } from './core/log.js';
 import { ERROR_INFO_CODES, RdpError, RdpProtocolError } from './core/errors.js';
-import { CredSspClient } from './crypto/credssp.js';
+import { prepareNla, type NlaMechanism } from './crypto/authSelection.js';
 import { parseFrame, RdpFrame, RdpTransport, tpkt, tpktRaw } from './protocol/transport.js';
 import {
   buildChannelChunks,
@@ -140,6 +140,8 @@ export interface RdpClientOptions {
   clientName?: string;
   /** NLA (CredSSP) verwenden. Ohne Zugangsdaten nicht moeglich. */
   useNla?: boolean;
+  /** Default auto: prefer Windows Kerberos, use NTLMv2 when unavailable. Explicit kerberos forbids fallback. */
+  nlaMechanism?: NlaMechanism;
   /** Nur TLS ohne NLA zulassen (aeltere Server, xrdp mit Standardkonfiguration). */
   allowTlsOnly?: boolean;
   /**
@@ -447,6 +449,7 @@ export class RdpClient extends EventEmitter {
    */
   private ioChannelId = MCS_GLOBAL_CHANNEL;
   private selectedProtocol = PROTOCOL_RDP;
+  private selectedNlaMechanism?: 'ntlm' | 'kerberos';
   private palette?: Buffer;
   private serverCapabilities?: ServerCapabilities;
   /** Zaehlt empfangene Fastpath-Update-Arten - hilft bei der Fehlersuche. */
@@ -598,6 +601,11 @@ export class RdpClient extends EventEmitter {
     return this.phase === 'active';
   }
 
+  /** Successfully negotiated NLA mechanism; undefined before NLA succeeds or for TLS-only sessions. */
+  get authenticationMechanism(): 'ntlm' | 'kerberos' | undefined {
+    return this.selectedNlaMechanism;
+  }
+
   /** Laeuft gerade ein automatischer Wiederverbindungsaufbau? */
   get isReconnecting(): boolean {
     return this.phase === 'reconnecting' || (this.arcVersuch > 0 && this.phase === 'connecting');
@@ -676,6 +684,7 @@ export class RdpClient extends EventEmitter {
     this.channelOptionen.clear();
     this.statischeZusammensetzer.clear();
     this.selectedProtocol = PROTOCOL_RDP;
+    this.selectedNlaMechanism = undefined;
     this.palette = undefined;
     this.pointerCache.clear();
     this.queuedFrames = [];
@@ -731,6 +740,8 @@ export class RdpClient extends EventEmitter {
 
   private async negotiateSecurity(): Promise<void> {
     const wantNla = this.opts.useNla !== false && !!this.opts.username && !!this.opts.password;
+    if (this.opts.nlaMechanism === 'kerberos' && !wantNla)
+      throw new RdpError('Kerberos benötigt NLA und explizite Zugangsdaten.', 'RDP_NLA_REQUIRED');
     let requested = PROTOCOL_SSL;
     if (wantNla) requested |= PROTOCOL_HYBRID;
 
@@ -760,32 +771,37 @@ export class RdpClient extends EventEmitter {
 
     if (result.selectedProtocol & PROTOCOL_HYBRID) {
       await this.runCredSsp(socket);
-    } else if (wantNla && this.opts.allowTlsOnly === false) {
+    } else if (wantNla && (this.opts.allowTlsOnly === false || this.opts.nlaMechanism === 'kerberos')) {
       throw new RdpError('Der Server hat NLA abgelehnt, obwohl es verlangt wurde.', 'RDP_NLA_REJECTED');
     }
   }
 
   private async runCredSsp(socket: tls.TLSSocket): Promise<void> {
     const publicKey = serverPublicKeyDer(socket);
-    const credssp = new CredSspClient(
-      {
+    const credentials = {
+        host: this.opts.host,
         domain: this.opts.domain ?? '',
         user: this.opts.username ?? '',
         password: this.opts.password ?? '',
         workstation: this.opts.clientName,
         servicePrincipalName: `TERMSRV/${this.opts.host}`,
-      },
-      publicKey,
-    );
-
-    this.transport.write(credssp.start());
-    for (;;) {
-      const response = await this.transport.nextFrame('der');
-      const result = credssp.step(response);
-      if (result.send) this.transport.write(result.send);
-      if (result.done) break;
+      };
+    const prepared = await prepareNla(this.opts.nlaMechanism ?? 'auto', credentials, publicKey,
+      () => this.log.info('Kerberos ist für dieses Konto, Ziel oder System nicht verfügbar; verwende NLA mit NTLMv2.'));
+    const credssp = prepared.client;
+    try {
+      this.transport.write(prepared.initial);
+      for (;;) {
+        const response = await this.transport.nextFrame('der');
+        const result = await credssp.step(response);
+        if (result.send) this.transport.write(result.send);
+        if (result.done) break;
+      }
+    } finally {
+      prepared.dispose();
     }
-    this.log.info('NLA/CredSSP erfolgreich abgeschlossen');
+    this.selectedNlaMechanism = prepared.mechanism;
+    this.log.info(`NLA/CredSSP erfolgreich abgeschlossen (${prepared.mechanism === 'kerberos' ? 'Kerberos/SSPI' : 'NTLMv2'})`);
   }
 
   private async mcsConnect(): Promise<void> {

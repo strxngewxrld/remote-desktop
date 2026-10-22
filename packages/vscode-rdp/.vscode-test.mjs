@@ -16,6 +16,9 @@ export default defineConfig({
   // Standard ist 'stable'; ueber VSCODE_TESTVERSION laesst sich eine bestimmte
   // Fassung pruefen - Abstuerze sind manchmal versionsgebunden.
   version: process.env.VSCODE_TESTVERSION ?? 'stable',
+  ...(process.env.VSCODE_TEST_PATH
+    ? { useInstallation: { fromPath: process.env.VSCODE_TEST_PATH } }
+    : {}),
   // Ohne dieses Verzeichnis sucht VS Code im Arbeitsverzeichnis des Aufrufers.
   workspaceFolder: './test/integration/arbeitsordner',
   launchArgs: ['--disable-extensions', '--disable-gpu'],

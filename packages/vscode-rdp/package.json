@@ -892,6 +892,14 @@
           "default": false,
           "description": "Diagnose-Overlay beim Start einer Sitzung einblenden. Der zuletzt über „RDP: Diagnose-Overlay ein-/ausblenden“ gewählte Zustand hat Vorrang."
         },
+        "rdp.nlaMechanism": {
+          "scope": "application",
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "ntlm", "kerberos"],
+          "enumDescriptions": ["Kerberos bevorzugen; wenn nicht verfügbar, NTLMv2 verwenden", "Nur NTLMv2", "Nur Kerberos über Windows SSPI, ohne NTLM-Rückfall"],
+          "markdownDescription": "NLA-Authentifizierung. Automatisch bevorzugt Kerberos und verwendet NTLMv2, wenn Kerberos vor dem Tokenaustausch nicht verfügbar ist. Anmelde- und Sicherheitsfehler brechen ab. Kerberos benötigt einen Windows-Extension-Host mit PowerShell 7, eine erreichbare AD-Domäne und den DNS-Namen des Servers (FQDN statt IP-Adresse). Das verwendete Verfahren steht im RDP-Ausgabeprotokoll."
+        },
         "rdp.certificateTrust": {
           "scope": "application",
           "type": "string",
@@ -1100,6 +1108,7 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "package": "npx @vscode/vsce package --no-dependencies",
+    "pretest": "node prepare-tests.mjs",
     "test": "tsc -p tsconfig.test.json && node --test --test-timeout=30000 dist-test/test/*.test.js",
     "test:vscode": "tsc -p tsconfig.integration.json && vscode-test"
   },

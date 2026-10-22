@@ -751,6 +751,10 @@
     // Strg+Umschalt+P und F1 bleiben der Befehlspalette vorbehalten.
     if (event.key === 'F1') return true;
     if (event.ctrlKey && event.shiftKey && event.code === 'KeyP') return true;
+    // Diese Windows-Kuerzel fuehren Host-Befehle aus. Die ausloesende Taste
+    // darf nicht zusaetzlich in der RDP-Sitzung ankommen.
+    if (event.ctrlKey && event.altKey && !event.shiftKey &&
+        (event.code === 'KeyV' || event.code === 'End')) return true;
     if (!event.metaKey) return false;
     // Die Befehlspalette auf macOS.
     if (event.shiftKey && event.code === 'KeyP') return true;

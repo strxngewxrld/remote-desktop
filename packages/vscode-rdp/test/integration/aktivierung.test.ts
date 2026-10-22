@@ -68,10 +68,9 @@ suite('Webview im echten Renderer', () => {
     const eingegangen: any[] = [];
     const wartende: { typ: string; loesen: (v: any) => void }[] = [];
     panel.webview.onDidReceiveMessage((m) => {
-      eingegangen.push(m);
-      for (let i = wartende.length - 1; i >= 0; i--) {
-        if (wartende[i].typ === m?.type) wartende.splice(i, 1)[0].loesen(m);
-      }
+      const index = wartende.findIndex((w) => w.typ === m?.type);
+      if (index >= 0) wartende.splice(index, 1)[0].loesen(m);
+      else eingegangen.push(m);
     });
 
     // Das HTML wird hier schlank nachgebaut, aber mit *den ausgelieferten*
@@ -92,19 +91,21 @@ suite('Webview im echten Renderer', () => {
 
     const warteAuf = (typ: string, ms = 20000) =>
       new Promise<any>((loesen, ablehnen) => {
-        const treffer = eingegangen.find((m) => m?.type === typ);
-        if (treffer) return loesen(treffer);
+        const index = eingegangen.findIndex((m) => m?.type === typ);
+        if (index >= 0) return loesen(eingegangen.splice(index, 1)[0]);
+        const wartend = {
+          typ,
+          loesen: (v: any) => { clearTimeout(zeit); loesen(v); },
+        };
         const zeit = setTimeout(
-          () => ablehnen(new Error(`keine Nachricht "${typ}" innerhalb von ${ms} ms`)),
+          () => {
+            const index = wartende.indexOf(wartend);
+            if (index >= 0) wartende.splice(index, 1);
+            ablehnen(new Error(`keine Nachricht "${typ}" innerhalb von ${ms} ms`));
+          },
           ms,
         );
-        wartende.push({
-          typ,
-          loesen: (v) => {
-            clearTimeout(zeit);
-            loesen(v);
-          },
-        });
+        wartende.push(wartend);
       });
 
     return { panel, warteAuf };
@@ -176,13 +177,38 @@ suite('Webview im echten Renderer', () => {
     try {
       await warteAuf('ready');
       panel.webview.postMessage({ type: 'init', width: 1076, height: 536, scaling: 'fit', smooth: false });
-      for (let i = 0; i < 20; i++) panel.webview.postMessage(bitmap(1076, 536));
-      await warteAuf('painted');
+      for (let i = 0; i < 20; i++) {
+        await panel.webview.postMessage(bitmap(1076, 536));
+        const gemalt = await warteAuf('painted');
+        assert.ok(gemalt.tiles >= 1, `Vollbild ${i + 1} wurde gezeichnet`);
+      }
       // Nach der Last muss das Skript weiterhin antworten.
       panel.webview.postMessage({ type: 'state', state: 'connected' });
       panel.webview.postMessage(bitmap(64, 64));
       const nachher = await warteAuf('painted', 20000);
       assert.ok(nachher.tiles >= 1, 'das Skript lebt nach der Last noch');
+      await panel.webview.postMessage({ type: 'diagnosePing', seq: 21 });
+      assert.equal((await warteAuf('diagnosePong')).seq, 21, 'neue Antwort nach allen Bildern');
+    } finally {
+      panel.dispose();
+    }
+  });
+
+  test('auch ein Burst aus zwanzig Vollbildern laesst den Renderer weiter antworten', async () => {
+    const { panel, warteAuf } = await baueWebview();
+    try {
+      await warteAuf('ready');
+      await panel.webview.postMessage({ type: 'init', width: 1076, height: 536, scaling: 'fit', smooth: false });
+      await Promise.all(Array.from({ length: 20 }, () => panel.webview.postMessage(bitmap(1076, 536))));
+      await warteAuf('painted');
+      await panel.webview.postMessage({ type: 'diagnosePing', seq: 42 });
+      assert.equal((await warteAuf('diagnosePong')).seq, 42);
+      await panel.webview.postMessage({ type: 'screenshotAnfrage', id: 'nach-burst' });
+      const bild = await warteAuf('screenshot');
+      assert.equal(bild.id, 'nach-burst');
+      assert.equal(bild.width, 1076);
+      assert.equal(bild.height, 536);
+      assert.match(bild.dataUrl, /^data:image\/png;base64,/);
     } finally {
       panel.dispose();
     }
