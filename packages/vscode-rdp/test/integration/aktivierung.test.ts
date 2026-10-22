@@ -12,9 +12,32 @@ import * as vscode from 'vscode';
  * ihm schicken.
  */
 
-const ERWEITERUNG = 'local.vscode-rdp';
+const ERWEITERUNG = 'Tom-Knueppel.vscode-rdp';
 
 suite('Aktivierung im echten Extension-Host', () => {
+  test('die Beschreibung ist lokalisiert und beide Dokumentfassungen sind vorhanden', () => {
+    if (process.env.VSCODE_TEST_LANGUAGE) assert.equal(vscode.env.language, process.env.VSCODE_TEST_LANGUAGE, 'Requested VS Code language is active');
+    const ext = vscode.extensions.getExtension(ERWEITERUNG);
+    assert.ok(ext);
+    assert.match(ext.packageJSON.description, vscode.env.language.toLowerCase().startsWith('de')
+      ? /Remote-Desktop-Sitzungen/ : /Remote Desktop sessions/);
+    for (const name of ['README', 'CHANGELOG', 'THIRD_PARTY_NOTICES']) {
+      for (const suffix of ['', '.de']) assert.ok(readFileSync(join(ext.extensionPath, `${name}${suffix}.md`), 'utf8').length);
+    }
+  });
+
+  test('der VSIX-Installer ist im echten Host erreichbar und Walkthrough-Medien sind mitgeliefert', async () => {
+    const ext = vscode.extensions.getExtension(ERWEITERUNG);
+    assert.ok(ext);
+    await ext.activate();
+    assert.ok((await vscode.commands.getCommands(true)).includes('workbench.extensions.installExtension'));
+    for (const walkthrough of ext.packageJSON.contributes.walkthroughs) {
+      for (const step of walkthrough.steps) {
+        assert.ok(readFileSync(join(ext.extensionPath, step.media.markdown), 'utf8').length > 0);
+      }
+    }
+  });
+
   test('die Erweiterung ist installiert und laesst sich aktivieren', async () => {
     const ext = vscode.extensions.getExtension(ERWEITERUNG);
     assert.ok(ext, `Erweiterung ${ERWEITERUNG} nicht gefunden`);

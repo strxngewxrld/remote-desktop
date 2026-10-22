@@ -4,22 +4,32 @@
     {
       "type": "npm",
       "script": "build",
-      "group": { "kind": "build", "isDefault": true },
-      "problemMatcher": ["$tsc"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$tsc"
+      ],
       "label": "npm: build"
     },
     {
       "type": "npm",
       "script": "test",
-      "group": { "kind": "test", "isDefault": true },
-      "problemMatcher": ["$tsc"],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$tsc"
+      ],
       "label": "npm: test"
     },
     {
       "label": "RDP: VSIX bauen",
-      "detail": "Baut und packt die Extension lokal nach packages/vscode-rdp/*.vsix",
+      "detail": "Baut und prüft die Extension unter artifacts/*.vsix",
       "type": "shell",
-      "command": "npm run build && npm run package",
+      "command": "npm run package",
       "problemMatcher": []
     },
     {
@@ -27,19 +37,42 @@
       "detail": "Version anheben, bauen, testen, VSIX packen und als @<owner>/vscode-rdp hochladen",
       "type": "shell",
       "command": "node",
-      "args": ["tools/publish-github.mjs", "--owner", "${input:githubOwner}", "--bump", "${input:versionBump}"],
-      "options": { "env": { "NODE_AUTH_TOKEN": "${input:githubToken}" } },
+      "args": [
+        "tools/publish-github.mjs",
+        "--owner",
+        "${input:githubOwner}",
+        "--bump",
+        "${input:versionBump}"
+      ],
+      "options": {
+        "env": {
+          "NODE_AUTH_TOKEN": "${input:githubToken}"
+        }
+      },
       "problemMatcher": [],
-      "presentation": { "panel": "dedicated", "focus": true }
+      "presentation": {
+        "panel": "dedicated",
+        "focus": true
+      }
     },
     {
       "label": "RDP: Veröffentlichen – Probelauf",
       "detail": "Wie Veröffentlichen, aber ohne Versionssprung und ohne Upload",
       "type": "shell",
       "command": "node",
-      "args": ["tools/publish-github.mjs", "--owner", "${input:githubOwner}", "--bump", "none", "--dry-run"],
+      "args": [
+        "tools/publish-github.mjs",
+        "--owner",
+        "${input:githubOwner}",
+        "--bump",
+        "none",
+        "--dry-run"
+      ],
       "problemMatcher": [],
-      "presentation": { "panel": "dedicated", "focus": true }
+      "presentation": {
+        "panel": "dedicated",
+        "focus": true
+      }
     }
   ],
   "inputs": [
@@ -53,7 +86,12 @@
       "id": "versionBump",
       "type": "pickString",
       "description": "Versionssprung",
-      "options": ["patch", "minor", "major", "none"],
+      "options": [
+        "patch",
+        "minor",
+        "major",
+        "none"
+      ],
       "default": "patch"
     },
     {

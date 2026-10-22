@@ -1,7 +1,7 @@
 {
   "name": "vscode-rdp",
   "displayName": "Remote Desktop (RDP)",
-  "description": "Vollwertige RDP-Sitzungen direkt in VS Code - mit eigener TypeScript-Implementierung des Protokolls, inklusive NLA.",
+  "description": "%extension.description%",
   "version": "1.0.0",
   "license": "MIT",
   "author": "Tom Knüppel",
@@ -14,7 +14,7 @@
     "url": "https://github.com/strxngewxrld/remote-desktop/issues"
   },
   "homepage": "https://github.com/strxngewxrld/remote-desktop#readme",
-  "publisher": "local",
+  "publisher": "Tom-Knueppel",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -55,7 +55,7 @@
     "viewsWelcome": [
       {
         "view": "rdpConnections",
-        "contents": "Noch keine Verbindung gespeichert.\n[Verbindung hinzufügen](command:rdp.addConnection)\n[.rdp-Datei importieren](command:rdp.importRdpFile)\n[Einmalig verbinden](command:rdp.connect)"
+        "contents": "Noch keine Verbindung gespeichert.\n[Verbindung hinzufügen](command:rdp.addConnection)\n[.rdp-Datei importieren](command:rdp.importRdpFile)\n[Einmalig verbinden](command:rdp.connect)\n[Erste Schritte und Hilfe](command:rdp.gettingStarted)"
       }
     ],
     "commands": [
@@ -246,6 +246,42 @@
         "command": "rdp.forgetDriveApprovals",
         "category": "RDP",
         "title": "Laufwerksfreigaben vergessen"
+      },
+      {
+        "icon": "$(book)",
+        "title": "Erste Schritte",
+        "command": "rdp.gettingStarted",
+        "category": "RDP"
+      },
+      {
+        "title": "Anwenderhandbuch öffnen",
+        "command": "rdp.openUserGuide",
+        "category": "RDP"
+      },
+      {
+        "title": "Hilfe bei Verbindungsproblemen",
+        "command": "rdp.openTroubleshooting",
+        "category": "RDP"
+      },
+      {
+        "command": "rdp.checkForUpdates",
+        "title": "Nach Updates suchen",
+        "category": "RDP"
+      },
+      {
+        "command": "rdp.openThirdPartyNotices",
+        "title": "Lizenzhinweise öffnen",
+        "category": "RDP"
+      },
+      {
+        "command": "rdp.openOverview",
+        "title": "Übersicht öffnen",
+        "category": "RDP"
+      },
+      {
+        "command": "rdp.openChangelog",
+        "title": "Änderungsprotokoll öffnen",
+        "category": "RDP"
       }
     ],
     "menus": {
@@ -284,6 +320,16 @@
           "command": "rdp.importRdpFile",
           "when": "view == rdpConnections",
           "group": "navigation@6"
+        },
+        {
+          "group": "9_help",
+          "when": "view == rdpConnections",
+          "command": "rdp.gettingStarted"
+        },
+        {
+          "command": "rdp.checkForUpdates",
+          "when": "view == rdpConnections",
+          "group": "9_help@2"
         }
       ],
       "view/item/context": [
@@ -896,8 +942,16 @@
           "scope": "application",
           "type": "string",
           "default": "auto",
-          "enum": ["auto", "ntlm", "kerberos"],
-          "enumDescriptions": ["Kerberos bevorzugen; wenn nicht verfügbar, NTLMv2 verwenden", "Nur NTLMv2", "Nur Kerberos über Windows SSPI, ohne NTLM-Rückfall"],
+          "enum": [
+            "auto",
+            "ntlm",
+            "kerberos"
+          ],
+          "enumDescriptions": [
+            "Kerberos bevorzugen; wenn nicht verfügbar, NTLMv2 verwenden",
+            "Nur NTLMv2",
+            "Nur Kerberos über Windows SSPI, ohne NTLM-Rückfall"
+          ],
           "markdownDescription": "NLA-Authentifizierung. Automatisch bevorzugt Kerberos und verwendet NTLMv2, wenn Kerberos vor dem Tokenaustausch nicht verfügbar ist. Anmelde- und Sicherheitsfehler brechen ab. Kerberos benötigt einen Windows-Extension-Host mit PowerShell 7, eine erreichbare AD-Domäne und den DNS-Namen des Servers (FQDN statt IP-Adresse). Das verwendete Verfahren steht im RDP-Ausgabeprotokoll."
         },
         "rdp.certificateTrust": {
@@ -1099,15 +1153,76 @@
           "minimum": 1,
           "maximum": 2048,
           "markdownDescription": "Obergrenze je Datei in **MiB**. `vscode.workspace.fs` kennt keine Teilabfrage – jede Datei geht vollständig durch den Speicher des Extension-Hosts. Größeres wird nicht übertragen und nur protokolliert."
+        },
+        "rdp.checkForUpdates": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "Beim Aktivieren nach stabilen GitHub-Releases suchen. Installation nur nach Auswahl. Für manuelle Prüfung: RDP: Nach Updates suchen."
         }
       }
-    }
+    },
+    "walkthroughs": [
+      {
+        "description": "Verbinden, Zugriff einrichten und Hilfe finden.",
+        "id": "rdp.gettingStarted",
+        "steps": [
+          {
+            "description": "Eine Verbindung speichern oder eine vorhandene .rdp-Datei übernehmen. [Verbindung hinzufügen](command:rdp.addConnection) [Importieren](command:rdp.importRdpFile)",
+            "id": "connect",
+            "media": {
+              "markdown": "docs/walkthrough/connect.md"
+            },
+            "completionEvents": [
+              "onCommand:rdp.addConnection",
+              "onCommand:rdp.importRdpFile",
+              "onCommand:rdp.connect"
+            ],
+            "title": "Erste Verbindung öffnen"
+          },
+          {
+            "description": "Zertifikate, Zugangsdaten und freigegebene Ordner prüfen. [Handbuch öffnen](command:rdp.openUserGuide)",
+            "id": "security",
+            "media": {
+              "markdown": "docs/walkthrough/security.md"
+            },
+            "completionEvents": [
+              "onCommand:rdp.openUserGuide"
+            ],
+            "title": "Zugriff bewusst einrichten"
+          },
+          {
+            "description": "Den Verbindungsort prüfen und das Protokoll öffnen. [Laufzeitumgebung anzeigen](command:rdp.showEnvironment) [Problemlösung öffnen](command:rdp.openTroubleshooting)",
+            "id": "help",
+            "media": {
+              "markdown": "docs/walkthrough/help.md"
+            },
+            "completionEvents": [
+              "onCommand:rdp.openTroubleshooting"
+            ],
+            "title": "Verbindungsprobleme eingrenzen"
+          },
+          {
+            "id": "updates",
+            "title": "Updates und Lizenzhinweise",
+            "description": "Neue Versionen prüfen und enthaltene Lizenzen ansehen. [Nach Updates suchen](command:rdp.checkForUpdates) [Lizenzhinweise öffnen](command:rdp.openThirdPartyNotices) [Änderungsprotokoll öffnen](command:rdp.openChangelog)",
+            "media": {
+              "markdown": "docs/walkthrough/updates.md"
+            },
+            "completionEvents": [
+              "onCommand:rdp.checkForUpdates"
+            ]
+          }
+        ],
+        "title": "Remote Desktop: Erste Schritte"
+      }
+    ]
   },
   "scripts": {
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "package": "npx @vscode/vsce package --no-dependencies",
+    "package": "node ../../tools/package.mjs",
     "pretest": "node prepare-tests.mjs",
     "test": "tsc -p tsconfig.test.json && node --test --test-timeout=30000 dist-test/test/*.test.js",
     "test:vscode": "tsc -p tsconfig.integration.json && vscode-test"
@@ -1121,8 +1236,10 @@
     "@types/vscode": "^1.85.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "4.0.0",
     "esbuild": "^0.28.2",
     "mocha": "^12.0.1",
     "typescript": "^5.6.3"
-  }
+  },
+  "icon": "media/icon.png"
 }

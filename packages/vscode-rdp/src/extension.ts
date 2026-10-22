@@ -2,6 +2,7 @@
  * Einstiegspunkt der Extension: Befehle, Seitenleiste und Sitzungsverwaltung.
  */
 import * as vscode from 'vscode';
+import { registerUpdates } from './updates.js';
 import { verwalteCredentials, waehleAnmeldung } from './credentials.js';
 import {
   BaumKnoten,
@@ -38,7 +39,13 @@ import { KEYBOARD_LAYOUTS } from './keyboardLayouts.js';
 /** Alle offenen Sitzungen, damit Befehle die aktive Sitzung finden. */
 const sessions = new Set<RdpSession>();
 
+/** Use the interface language, including regional German variants such as de-AT. */
+function deutschesDokument(english: string, german: string): string {
+  return vscode.env.language.toLowerCase().startsWith('de') ? german : english;
+}
+
 export function activate(context: vscode.ExtensionContext): void {
+  registerUpdates(context);
   RdpSession.registerCommands(context);
   const output = vscode.window.createOutputChannel('Remote Desktop (RDP)');
   const trustStore = new CertificateTrustStore(context);
@@ -58,6 +65,18 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('rdp.gettingStarted', () =>
+      vscode.commands.executeCommand('workbench.action.openWalkthrough', `${EXTENSION_ID}#rdp.gettingStarted`, false)),
+    vscode.commands.registerCommand('rdp.openUserGuide', () =>
+      vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.joinPath(context.extensionUri, 'docs', 'ANWENDERHANDBUCH.md'))),
+    vscode.commands.registerCommand('rdp.openTroubleshooting', () =>
+      vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.joinPath(context.extensionUri, 'docs', 'TROUBLESHOOTING.md'))),
+    vscode.commands.registerCommand('rdp.openThirdPartyNotices', () =>
+      vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.joinPath(context.extensionUri, deutschesDokument('THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.de.md')))),
+    vscode.commands.registerCommand('rdp.openOverview', () =>
+      vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.joinPath(context.extensionUri, deutschesDokument('README.md', 'README.de.md')))),
+    vscode.commands.registerCommand('rdp.openChangelog', () =>
+      vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.joinPath(context.extensionUri, deutschesDokument('CHANGELOG.md', 'CHANGELOG.de.md')))),
     output,
     vscode.window.createTreeView('rdpConnections', { treeDataProvider: tree, dragAndDropController: tree }),
 
@@ -835,7 +854,7 @@ export { saveConnections };
 // entfernten Rechners.
 
 /** Bezeichner der Extension, aus `publisher` und `name` des Manifests. */
-export const EXTENSION_ID = 'local.vscode-rdp';
+export const EXTENSION_ID = 'Tom-Knueppel.vscode-rdp';
 
 /** Wo die Extension laeuft und was daraus folgt. */
 export interface Laufzeitumgebung {

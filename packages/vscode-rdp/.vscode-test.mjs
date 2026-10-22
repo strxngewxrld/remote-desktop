@@ -1,5 +1,9 @@
 import { defineConfig } from '@vscode/test-cli';
 
+// A parent VS Code terminal may export its own resolved English locale.
+// Let the isolated test window resolve the requested language itself.
+delete process.env.VSCODE_NLS_CONFIG;
+
 /**
  * Startet ein echtes VS Code, laedt diese Extension hinein und fuehrt die
  * Tests im Extension-Host aus.
@@ -21,7 +25,9 @@ export default defineConfig({
     : {}),
   // Ohne dieses Verzeichnis sucht VS Code im Arbeitsverzeichnis des Aufrufers.
   workspaceFolder: './test/integration/arbeitsordner',
-  launchArgs: ['--disable-extensions', '--disable-gpu'],
+  // A locale flag alone falls back to English without the language pack.
+  installExtensions: process.env.VSCODE_TEST_LANGUAGE === 'de' ? ['ms-ceintl.vscode-language-pack-de'] : [],
+  launchArgs: ['--disable-extensions', '--disable-gpu', ...(process.env.VSCODE_TEST_LANGUAGE ? [`--locale=${process.env.VSCODE_TEST_LANGUAGE}`] : [])],
   mocha: {
     ui: 'tdd',
     timeout: 60000,

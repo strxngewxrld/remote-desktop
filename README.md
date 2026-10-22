@@ -4,6 +4,22 @@ Eine VS Code Extension, die Remote-Desktop-Sitzungen direkt in einem Editor-Pane
 öffnet – zusammen mit **`ts-rdp`**, einer von Grund auf neu geschriebenen
 RDP-Implementierung in TypeScript.
 
+## Installation und Hilfe
+
+Ein bereitgestelltes VSIX in VS Code über **Extensions: Install from VSIX…**
+installieren. In der Remote-Desktop-Seitenleiste eine Verbindung hinzufügen oder
+**RDP: Erste Schritte** aufrufen. Das [Anwenderhandbuch](packages/vscode-rdp/docs/ANWENDERHANDBUCH.md)
+und die [Problemlösung](packages/vscode-rdp/docs/TROUBLESHOOTING.md) werden im VSIX
+mitgeliefert und sind über die Befehlspalette erreichbar.
+
+Die Publisher-ID entspricht Report Builder: `Tom-Knueppel.vscode-rdp`.
+Alte `local.vscode-rdp`-Testinstallationen vorher entfernen; Passwörter erneut
+speichern und Laufwerksfreigaben erneut prüfen. Verbindungen in den
+Benutzereinstellungen bleiben bestehen.
+
+Der [Vergleich mit Report Builder](docs/report-builder-parity.md) beschreibt
+die übernommenen Abläufe und verbleibenden Unterschiede.
+
 ## Warum eine eigene Library?
 
 Die vorhandenen npm-Pakete taugen für dieses Vorhaben nicht:
@@ -78,7 +94,7 @@ VS Code Webview  ──Eingaben──▶  Extension-Host  ──TCP/TLS──▶
 ## Loslegen
 
 ```bash
-npm install
+npm ci
 npm run build
 npm test
 ```
@@ -105,7 +121,7 @@ verhält.
 
 ## Tests
 
-359 Tests, `npm test` – 313 in `ts-rdp`, 46 in `vscode-rdp`:
+`npm test` prüft die Protokolllibrary und die Extension:
 
 - **Krypto gegen offizielle Testvektoren**: MD4 (RFC 1320), RC4,
   NTLMv2 inklusive Session Base Key aus MS-NLMP 4.2.4
@@ -133,7 +149,7 @@ verhält.
   gegen eine unabhängige Umsetzung derselben Spezifikation geprüft.
 
 Die Integrationstests gegen eine echte VS-Code-Instanz liegen getrennt unter
-`npm run test:vscode` und sind in den 359 nicht enthalten.
+`npm run test:vscode` und sind im Unit-Testlauf nicht enthalten.
 
 ## TLS mit Windows-Zertifikaten
 
@@ -238,7 +254,14 @@ Ehrlich benannt, statt später zu überraschen:
 
 ## Veröffentlichen
 
-Die Extension wird von Hand in die **GitHub Package Registry** gestellt. In
+Der [Release-Leitfaden](docs/RELEASING.md) beschreibt CI, GitHub-Releaseentwürfe,
+optionales Marketplace-Publishing und den Umstieg von Entwicklungsinstallationen.
+`npm run package` baut frisch nach `artifacts/` und prüft den VSIX-Inhalt.
+`npm run typecheck`, `npm run check:docs` und `npm run check:package` sind auch
+einzeln ausführbar. CI führt die Tests unter Windows und Linux aus und stellt
+geprüfte VSIX-Artefakte bereit.
+
+Zusätzlich kann die Extension von Hand in die **GitHub Package Registry** gestellt werden. In
 VS Code **Terminal → Task ausführen…** und dann:
 
 - **RDP: Veröffentlichen – Probelauf**: baut, testet und packt alles, ohne die
@@ -247,7 +270,7 @@ VS Code **Terminal → Task ausführen…** und dann:
   Versionssprung und einem Personal Access Token mit `write:packages`, hebt
   die Version an, baut, testet, packt das VSIX und lädt es als npm-Paket
   `@<owner>/vscode-rdp` hoch.
-- **RDP: VSIX bauen**: nur das VSIX, lokal unter `packages/vscode-rdp/`.
+- **RDP: VSIX bauen**: frisch gebautes und geprüftes VSIX, lokal unter `artifacts/`.
 
 GitHub Packages kennt kein VSIX-Format. Das npm-Paket ist deshalb nur eine
 Hülle um die VSIX-Datei; das Manifest der Extension bleibt unverändert. Das
