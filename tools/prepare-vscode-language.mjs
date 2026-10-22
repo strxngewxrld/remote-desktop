@@ -4,11 +4,8 @@ import { runVSCodeCommand } from '@vscode/test-electron';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-export async function prepareGermanTestProfile() {
-  const cache = fileURLToPath(new URL('../packages/vscode-rdp/.vscode-test/', import.meta.url));
-  const extensions = join(cache, 'extensions'), userData = join(cache, 'user-data');
+export async function prepareGermanTestProfile({ userData, extensions }) {
   await runVSCodeCommand([
     '--install-extension', 'ms-ceintl.vscode-language-pack-de',
     `--extensions-dir=${extensions}`, `--user-data-dir=${userData}`,
