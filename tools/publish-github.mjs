@@ -18,7 +18,7 @@
  * bleibt stehen und wird beim naechsten Versuch mit `--bump none` genommen.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -47,7 +47,8 @@ function npmBefehl(name) {
 }
 
 function fuehreAus(befehl, args, opts = {}) {
-  execFileSync(befehl, args, { stdio: 'inherit', cwd: wurzel, shell: process.platform === 'win32', ...opts });
+  // Only .cmd shims need cmd.exe; direct node.exe paths may contain spaces.
+  execFileSync(befehl, args, { stdio: 'inherit', cwd: wurzel, shell: process.platform === 'win32' && /\.cmd$/i.test(befehl), ...opts });
 }
 
 function ausgabe(befehl, args) {
@@ -89,7 +90,7 @@ const version = manifest.version;
 const vsixName = `vscode-rdp-${version}.vsix`;
 
 schritt('Bauen');
-fuehreAus(npmBefehl('npm'), ['run', 'build']);
+fuehreAus(npmBefehl('npm'), ['run', 'typecheck']);
 
 schritt('Testen');
 fuehreAus(npmBefehl('npm'), ['test']);
@@ -97,9 +98,8 @@ fuehreAus(npmBefehl('npm'), ['test']);
 schritt(`VSIX packen (${vsixName})`);
 rmSync(huelle, { recursive: true, force: true });
 mkdirSync(huelle, { recursive: true });
-fuehreAus(npmBefehl('npx'), ['--yes', '@vscode/vsce', 'package', '--no-dependencies', '-o', join(huelle, vsixName)], {
-  cwd: extensionOrdner,
-});
+fuehreAus(process.execPath, [join(wurzel, 'tools', 'package.mjs')]);
+copyFileSync(join(wurzel, 'artifacts', vsixName), join(huelle, vsixName));
 
 schritt('npm-Hülle schreiben');
 const paketname = `@${owner}/vscode-rdp`;

@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: OpenSSL for local TLS test servers (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"C:\Program Files\Git\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:tooling
+      - run: npm run build
+      - name: VS Code integration (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:vscode
+      - name: VS Code integration (Windows)
+        if: runner.os == 'Windows'
+        run: npm run test:vscode
+      - name: German VS Code integration (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:vscode
+        env:
+          VSCODE_TEST_LANGUAGE: de
+      - name: German VS Code integration (Windows)
+        if: runner.os == 'Windows'
+        run: npm run test:vscode
+        env:
+          VSCODE_TEST_LANGUAGE: de
+      - name: Build and verify VSIX
+        run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscode-rdp-${{ runner.os }}
+          path: artifacts/*.vsix
+          if-no-files-found: error

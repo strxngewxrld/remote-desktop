@@ -4,6 +4,7 @@ import {
   ExtensionContext,
   antworten,
   einstellungen,
+  env,
   notizen,
   workspace,
   zuruecksetzen,
@@ -45,6 +46,38 @@ afterEach(() => {
 });
 
 describe('Aktivierung', () => {
+  test('Erste Schritte oeffnen den Walkthrough der installierten Publisher-ID', async () => {
+    activate(kontext);
+    await notizen.befehle.get('rdp.gettingStarted')!();
+    const aufruf = notizen.ausgefuehrt.find(a => a.befehl === 'workbench.action.openWalkthrough');
+    assert.ok(aufruf);
+    assert.deepEqual(aufruf.argumente, ['Tom-Knueppel.vscode-rdp#rdp.gettingStarted', false]);
+  });
+
+  test('Hilfebefehle oeffnen mitgelieferte Dokumente aus dem Extension-Verzeichnis', async () => {
+    activate(kontext);
+    for (const [command, file] of [['rdp.openUserGuide', 'docs/ANWENDERHANDBUCH.md'], ['rdp.openTroubleshooting', 'docs/TROUBLESHOOTING.md'], ['rdp.openThirdPartyNotices', 'THIRD_PARTY_NOTICES.de.md']]) {
+      await notizen.befehle.get(command!)!();
+      const aufruf = notizen.ausgefuehrt.at(-1)!;
+      assert.equal(aufruf.befehl, 'markdown.showPreview');
+      assert.equal((aufruf.argumente[0] as { fsPath: string }).fsPath.replace(/\\/g, '/'), `${kontext.extensionPath}/${file}`);
+    }
+  });
+
+  test('Uebersicht, Aenderungsprotokoll und Lizenzhinweise folgen der VS-Code-Sprache', async () => {
+    activate(kontext);
+    try {
+      for (const language of ['de', 'de-AT', 'en', 'fr']) {
+        env.language = language;
+        for (const [command, name] of [['rdp.openOverview', 'README'], ['rdp.openChangelog', 'CHANGELOG'], ['rdp.openThirdPartyNotices', 'THIRD_PARTY_NOTICES']]) {
+          await notizen.befehle.get(command!)!();
+          const path = (notizen.ausgefuehrt.at(-1)!.argumente[0] as { fsPath: string }).fsPath.replace(/\\/g, '/');
+          assert.equal(path, `${kontext.extensionPath}/${name}${language.startsWith('de') ? '.de' : ''}.md`);
+        }
+      }
+    } finally { env.language = 'de'; }
+  });
+
   test('activate laeuft ohne Ausnahme durch', () => {
     assert.doesNotThrow(() => activate(kontext));
   });

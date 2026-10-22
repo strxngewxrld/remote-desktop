@@ -20,7 +20,12 @@
     "build": "npm run build -w ts-rdp && npm run build -w vscode-rdp",
     "test": "npm run test -w ts-rdp && npm run test -w vscode-rdp",
     "package": "npm run package -w vscode-rdp",
-    "test:vscode": "npm run test:vscode -w vscode-rdp"
+    "test:vscode": "npm run test:vscode -w vscode-rdp",
+    "typecheck": "npm run typecheck --workspaces",
+    "check:docs": "node tools/check-docs.mjs",
+    "check:package": "node tools/check-package.mjs",
+    "publish:github": "node tools/publish-github.mjs",
+    "test:tooling": "node --test tools/test/*.test.mjs"
   },
   "devDependencies": {
     "typescript": "^5.6.3"

@@ -386,6 +386,11 @@ export const extensions = {
 };
 
 export const env = {
+  language: 'de',
+  openExternal(uri: Uri): Thenable<boolean> {
+    notizen.ausgefuehrt.push({ befehl: 'openExternal', argumente: [uri] });
+    return Promise.resolve(true);
+  },
   get remoteName(): string | undefined {
     return umgebung.fernart;
   },
@@ -635,7 +640,12 @@ export class Memento {
   setKeysForSync(): void {}
 }
 
+export enum ExtensionMode { Production = 1, Development = 2, Test = 3 }
+export enum ProgressLocation { Notification = 15 }
+
 export class ExtensionContext {
+  extensionMode = ExtensionMode.Test;
+  extension = { id: 'Tom-Knueppel.vscode-rdp', packageJSON: { version: '1.0.0', repository: { url: 'https://github.com/strxngewxrld/remote-desktop' } } };
   readonly subscriptions: { dispose(): unknown }[] = [];
   readonly secrets = new SecretStorage();
   readonly globalState = new Memento();
@@ -919,6 +929,7 @@ function nurTexte(rest: Array<string | MessageOptions>): string[] {
 }
 
 export const window = {
+  withProgress<R>(_options: unknown, task: () => Thenable<R>): Thenable<R> { return task(); },
   createOutputChannel(name: string): OutputChannel {
     const kanal = new OutputChannel(name);
     notizen.ausgabekanaele.push(kanal);
