@@ -24,6 +24,36 @@ describe('Webview - Windows-Hostkuerzel', () => {
   }
 });
 
+describe('Webview - Maustasten', () => {
+  function maus(w: ReturnType<typeof starteWebview>) {
+    return w.gesendet.filter((m: any) => m.type === 'mouse' && m.kind === 'button');
+  }
+  const ereignis = (button: number) => ({ button, clientX: 10, clientY: 20, preventDefault: () => {} });
+
+  test('Loslassen ohne Druecken auf der Sitzung geht nicht an den Server', () => {
+    // Etwa ein Klick ins Zwischenablagefeld: mousedown dort, mouseup am Fenster.
+    const w = starteWebview(skript);
+    w.sende({ type: 'init', width: 1076, height: 536, scaling: 'fit', smooth: false });
+    w.sende({ type: 'state', state: 'connected' });
+    w.loeseFensterEreignisAus('mouseup', ereignis(0));
+    assert.deepEqual(maus(w), []);
+  });
+
+  test('Auf der Sitzung gedrueckt, am Fenster losgelassen: beides kommt an', () => {
+    const w = starteWebview(skript);
+    w.sende({ type: 'init', width: 1076, height: 536, scaling: 'fit', smooth: false });
+    w.sende({ type: 'state', state: 'connected' });
+    w.loeseCanvasEreignisAus('mousedown', ereignis(2));
+    w.loeseFensterEreignisAus('mouseup', ereignis(2));
+    w.loeseFensterEreignisAus('mouseup', ereignis(2));
+    assert.deepEqual(
+      maus(w).map((m: any) => [m.button, m.down]),
+      [['right', true], ['right', false]],
+      'genau ein Loslassen je Druecken',
+    );
+  });
+});
+
 /** Eine Bitmap-Nachricht, wie session.ts sie zusammenstellt. */
 function bitmapNachricht(
   kacheln: { x: number; y: number; w: number; h: number }[],

@@ -75,7 +75,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // Immer die aufgeloeste Fassung verbinden: erst darin stecken die
       // Werte, die der Eintrag von seinen Ordnern erbt.
       const connection = node?.aufgeloest ?? (await pickConnectionNode('Verbindung auswählen'))?.aufgeloest;
-      if (connection) await openSession(context, connection, output, trustStore);
+      if (connection) await openSession(context, connection, output, trustStore, true);
     }),
 
     vscode.commands.registerCommand('rdp.connectAs', async (node?: ConnectionNode) => {
@@ -97,7 +97,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (open) {
         const folder = zielOrdnerPfad(node);
         const saved = alleVerbindungen().filter(e => e.pfad.slice(0, -1).join('.') === folder.join('.')).at(-1);
-        if (saved) await openSession(context, loeseVerbindungAuf(saved), output, trustStore);
+        if (saved) await openSession(context, loeseVerbindungAuf(saved), output, trustStore, true);
       }
     }),
 
@@ -222,7 +222,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand('rdp.searchConnections', async () => {
       const target = await pickConnectionNode('Verbindung suchen (Name, Host, Tag)');
-      if (target) await openSession(context, target.aufgeloest, output, trustStore);
+      if (target) await openSession(context, target.aufgeloest, output, trustStore, true);
     }),
 
     vscode.commands.registerCommand('rdp.filterConnections', async () => {
@@ -388,7 +388,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('rdp.connections') || event.affectsConfiguration('rdp.authentication')) tree.refresh();
-      if (event.affectsConfiguration('rdp.scaling') || event.affectsConfiguration('rdp.smoothScaling')) {
+      // Alles, was applyConfiguration ohne Neuverbinden nachziehen kann.
+      const sofortWirksam = ['rdp.scaling', 'rdp.smoothScaling', 'rdp.colorFrameWidth', 'rdp.macCommandKey', 'rdp.clipboard'];
+      if (sofortWirksam.some((schluessel) => event.affectsConfiguration(schluessel))) {
         for (const session of sessions) session.applyConfiguration();
       }
     }),
@@ -400,20 +402,48 @@ export function deactivate(): void {
   sessions.clear();
 }
 
+/**
+ * Oeffnet eine Sitzung.
+ *
+ * `vorhandeneZeigen` gilt fuer gespeicherte Verbindungen: ein Klick in der
+ * Baumansicht verbindet, und ein zweiter Klick soll nicht eine zweite Sitzung
+ * zum selben Server oeffnen - Windows wuerde damit die erste trennen. Wer
+ * bewusst anders anmelden will, nimmt "Verbinden als …".
+ */
 async function openSession(
   context: vscode.ExtensionContext,
   connection: RdpConnection,
   output: vscode.OutputChannel,
   trustStore: CertificateTrustStore,
+  vorhandeneZeigen = false,
 ): Promise<void> {
+  const schluessel = secretKey(connection);
+  if (vorhandeneZeigen) {
+    // Ein Doppelklick ruft den Befehl zweimal auf, bevor die erste Sitzung
+    // eingetragen ist - auch das darf keine zweite Sitzung ergeben.
+    if (oeffnend.has(schluessel)) return;
+    const offen = [...sessions].find((s) => s.verbindungsSchluessel === schluessel);
+    if (offen) {
+      offen.reveal();
+      return;
+    }
+  }
   const umgebung = ermittleLaufzeit();
   output.appendLine(sitzungsHerkunftszeile(umgebung, connection.host, connection.port ?? 3389));
   const warnung = laufzeitWarnung(umgebung);
   if (warnung) output.appendLine(`WARNUNG: ${warnung}`);
-  const session = await RdpSession.open(context, connection, output, trustStore);
-  session.onDispose = () => sessions.delete(session);
-  sessions.add(session);
+  oeffnend.add(schluessel);
+  try {
+    const session = await RdpSession.open(context, connection, output, trustStore);
+    session.onDispose = () => sessions.delete(session);
+    if (!session.entsorgt) sessions.add(session);
+  } finally {
+    oeffnend.delete(schluessel);
+  }
 }
+
+/** Sitzungen, deren Panel gerade entsteht - siehe openSession. */
+const oeffnend = new Set<string>();
 
 async function pickSession(): Promise<RdpSession | undefined> {
   if (sessions.size === 0) {
@@ -680,13 +710,19 @@ async function promptForConnection(withName = false, existing?: RdpConnection): 
     placeHolder: 'server.example.com:3389',
     value: existing ? `${existing.host}${existing.port && existing.port !== 3389 ? ':' + existing.port : ''}` : '',
     ignoreFocusOut: true,
-    validateInput: (value) => (value.trim().length === 0 ? 'Bitte einen Hostnamen angeben.' : undefined),
+    // Schon beim Tippen pruefen: ein Fehler erst nach Enter brach frueher den
+    // ganzen Dialog ab, und alles musste neu eingegeben werden.
+    validateInput: (value) => {
+      if (value.trim().length === 0) return 'Bitte einen Hostnamen angeben.';
+      const [, text] = splitHostPort(value.trim());
+      return text !== undefined && gueltigerPort(text) === undefined ? `Ungültiger Port: ${text}` : undefined;
+    },
   });
   if (!target) return undefined;
 
   const [host, portText] = splitHostPort(target.trim());
-  const port = portText ? Number(portText) : 3389;
-  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+  const port = portText ? gueltigerPort(portText) : 3389;
+  if (port === undefined) {
     vscode.window.showErrorMessage(`Ungültiger Port: ${portText}`);
     return undefined;
   }
@@ -721,12 +757,21 @@ async function promptForConnection(withName = false, existing?: RdpConnection): 
     name = input.trim() || host;
   }
 
+  // Der erste Eintrag ist vorausgewaehlt. Beim Bearbeiten muss das der
+  // bisherige Wert sein, sonst setzt ein Durchklicken mit Enter ein
+  // eingestelltes Layout stillschweigend auf den Standard zurueck.
+  const bisher = existing?.keyboardLayout;
+  const standard = {
+    label: 'Standard verwenden',
+    description: existing && !bisher ? '(aktuell)' : undefined,
+    value: undefined as string | undefined,
+  };
+  const layouts = Object.keys(KEYBOARD_LAYOUTS)
+    .filter((k) => k !== bisher)
+    .map((k) => ({ label: k, description: undefined as string | undefined, value: k as string | undefined }));
   const layout = withName
     ? await vscode.window.showQuickPick(
-        [
-          { label: 'Standard verwenden', value: undefined as string | undefined },
-          ...Object.keys(KEYBOARD_LAYOUTS).map((k) => ({ label: k, value: k })),
-        ],
+        bisher ? [{ label: bisher, description: '(aktuell)', value: bisher }, standard, ...layouts] : [standard, ...layouts],
         { title: 'Tastaturlayout', ignoreFocusOut: true },
       )
     : undefined;
@@ -740,6 +785,14 @@ async function promptForConnection(withName = false, existing?: RdpConnection): 
     domain: domain || undefined,
     keyboardLayout: layout ? layout.value : existing?.keyboardLayout,
   };
+}
+
+/** Ganzzahliger TCP-Port 1-65535, sonst undefined. Leer zaehlt als "kein Port" (3389). */
+function gueltigerPort(text: string): number | undefined {
+  if (text === '') return 3389;
+  if (!/^\d+$/.test(text)) return undefined;
+  const port = Number(text);
+  return port >= 1 && port <= 65535 ? port : undefined;
 }
 
 /** Trennt "host:port", beruecksichtigt dabei IPv6-Adressen in Klammern. */
