@@ -1221,6 +1221,7 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
+    "pretypecheck": "npm run build --workspace ts-rdp",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "package": "node ../../tools/package.mjs",
     "pretest": "node prepare-tests.mjs",
