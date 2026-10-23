@@ -5,6 +5,7 @@
  * zurueck.
  */
 import * as vscode from 'vscode';
+import { macFileClipboard } from './macFileClipboard.js';
 import {
   DecodedBitmap,
   KBDFLAGS_EXTENDED,
@@ -1278,6 +1279,21 @@ export class RdpSession {
           this.log(`Zwischenablage: Senden fehlgeschlagen – ${(err as Error).message}`);
         }
       },
+      dateien: process.platform === 'darwin' && !vscode.env.remoteName ? {
+        maxBytes: Math.min(256, Math.max(1, config.get<number>('clipboard.maxFileSizeMb', 64))) * 1024 * 1024,
+        empfangen: async (load, signal) => {
+          if (!this.panel.active) return;
+          const progress = vscode.window.setStatusBarMessage('RDP: Dateien und Ordner werden vom Server empfangen …');
+          try {
+            await macFileClipboard.receive(load, signal);
+            this.log('Dateien und Ordner vom Server empfangen – im Finder mit Cmd+V einfügen.');
+            vscode.window.setStatusBarMessage('RDP: Dateien bereit – im Finder mit Cmd+V einfügen', 5000);
+          } catch (error) {
+            if (!signal.aborted) void vscode.window.showWarningMessage(`RDP-Dateien konnten nicht übernommen werden: ${(error as Error).message}`);
+            throw error;
+          } finally { progress.dispose(); }
+        },
+      } : undefined,
       speicher: vsCodeZwischenablage,
       anWebview: (nachricht) => this.post(nachricht),
       log: (nachricht, s) => protokoll[s ?? 'info'](nachricht),

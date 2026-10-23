@@ -929,6 +929,9 @@ function nurTexte(rest: Array<string | MessageOptions>): string[] {
 }
 
 export const window = {
+  setStatusBarMessage(message: string, _timeout?: number): Disposable {
+    notizen.hinweise.push(message); return new Disposable(() => {});
+  },
   withProgress<R>(_options: unknown, task: () => Thenable<R>): Thenable<R> { return task(); },
   createOutputChannel(name: string): OutputChannel {
     const kanal = new OutputChannel(name);

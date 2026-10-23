@@ -11,7 +11,8 @@
  * CLIPRDR_MONITOR_READY, optional CLIPRDR_TEMP_DIRECTORY), die Ankuendigung
  * von Formaten (CLIPRDR_FORMAT_LIST samt Antwort) und der eigentliche
  * Datenaustausch (CLIPRDR_FORMAT_DATA_REQUEST/_RESPONSE). Dateien werden vom
- * Client zum Server als FileGroupDescriptorW und CB_FILECONTENTS_* übertragen.
+ * Client zum Server und zurück als FileGroupDescriptorW und CB_FILECONTENTS_*
+ * übertragen; der Empfang erhält relative Ordnerstrukturen.
  *
  * Quellen (alle Abschnittsnummern aus [MS-RDPECLIP] 16.0 vom 23.04.2024):
  *  - 2.1     Transport: statischer Kanal, Name "CLIPRDR"
@@ -36,6 +37,7 @@
  * CF_TEXT (1) und CF_UNICODETEXT (13) enden jede Zeile mit CR-LF, und ein
  * Nullzeichen beendet die Daten.
  */
+import { ClipboardDownload, type DownloadedClipboardEntry } from './clipboardDownload.js';
 import { BinaryReader, writer } from '../core/binary.js';
 import { RdpProtocolError } from '../core/errors.js';
 import {
@@ -580,6 +582,8 @@ export interface CliprdrSessionOptions {
   maxBytes?: number;
   /** Neuer Text vom Server (bereits mit lokalen Zeilenenden). */
   onServerText?(text: string): void;
+  /** FileGroupDescriptorW availability changed; data is fetched only on request. */
+  onServerFiles?(available: boolean): void;
   /**
    * Liefert den Text, den der Server bekommen soll, wenn er danach fragt.
    * `undefined` heisst "nichts da" und fuehrt zu CB_RESPONSE_FAIL.
@@ -641,7 +645,9 @@ export class CliprdrSession {
   /** Faehigkeiten, die wir selbst ankuendigen. */
   private readonly eigeneFlags = CB_USE_LONG_FORMAT_NAMES | CB_STREAM_FILECLIP_ENABLED | CB_FILECLIP_NO_FILE_PATHS;
   private dateien: ClipboardFile[] = [];
-  private offeneAnfragen: { format: number; revision: number }[] = [];
+  private offeneAnfragen: { format: number; revision: number; download?: ClipboardDownload }[] = [];
+  private download?: ClipboardDownload;
+  private streamId = 0;
   private lokaleRevision = 0;
   private serverFlags = 0;
   private serverCapsGesehen = false;
@@ -787,6 +793,11 @@ export class CliprdrSession {
         case CB_FORMAT_DATA_RESPONSE:
           this.behandleFormatDataResponse(pdu);
           break;
+        case CB_FILECONTENTS_RESPONSE: {
+          if (pdu.body.length < 4) { this.download?.cancel(new RdpProtocolError('Unvollständige Clipboard-Dateiantwort.')); break; }
+          this.download?.receive(pdu.body.subarray(4), (pdu.msgFlags & CB_RESPONSE_OK) !== 0 && (pdu.msgFlags & CB_RESPONSE_FAIL) === 0, pdu.dataLen - 4, pdu.body.readUInt32LE(0));
+          break;
+        }
         case CB_FILECONTENTS_REQUEST:
           this.behandleDateianfrage(pdu.body);
           break;
@@ -842,6 +853,7 @@ export class CliprdrSession {
   }
 
   private behandleFormatList(pdu: CliprdrPdu): void {
+    this.download?.cancel();
     this.serverFormate = parseFormatList(pdu.body, {
       longFormatNames: this.langeFormatnamen,
       asciiNames: (pdu.msgFlags & CB_ASCII_NAMES) !== 0,
@@ -859,6 +871,9 @@ export class CliprdrSession {
         `${this.serverFormate.map((f) => f.name || f.formatId).join(', ') || 'leer'}`,
       'debug',
     );
+    const files = (this.serverFlags & CB_STREAM_FILECLIP_ENABLED) !== 0 && this.serverFormate.some(f => f.name === 'FileGroupDescriptorW');
+    this.opts.onServerFiles?.(files);
+    if (files && this.opts.onServerFiles) return;
     const format = waehleTextformat(this.serverFormate);
     if (format === undefined) {
       this.protokoll(
@@ -908,6 +923,10 @@ export class CliprdrSession {
 
   private behandleFormatDataResponse(pdu: CliprdrPdu): void {
     const anfrage = this.offeneAnfragen.shift();
+    if (anfrage?.download) {
+      anfrage.download.receive(pdu.body, (pdu.msgFlags & CB_RESPONSE_OK) !== 0 && (pdu.msgFlags & CB_RESPONSE_FAIL) === 0, pdu.dataLen);
+      return;
+    }
     const format = anfrage?.format;
     if ((pdu.msgFlags & CB_RESPONSE_OK) === 0) {
       this.protokoll('CLIPRDR: der Server konnte die angefragten Daten nicht liefern');
@@ -941,6 +960,20 @@ export class CliprdrSession {
    * wird nicht erneut gemeldet: sonst schaukeln sich beide Seiten hoch, weil
    * jede uebernommene Aenderung sofort wieder als eigene gilt.
    */
+  async downloadServerFiles(maxBytes = 64 * 1024 * 1024, signal?: AbortSignal): Promise<DownloadedClipboardEntry[]> {
+    const format = this.serverFormate.find(f => f.name === 'FileGroupDescriptorW');
+    if (!this.bereit || !this.darfLesen || !format || !(this.serverFlags & CB_STREAM_FILECLIP_ENABLED)) throw new Error('Keine Remote-Dateien in der Zwischenablage verfügbar.');
+    if (this.download || this.offeneAnfragen.length >= 256) throw new Error('Eine Clipboard-Anfrage läuft bereits.');
+    const download = new ClipboardDownload(body => this.sende(buildCliprdrPdu(CB_FILECONTENTS_REQUEST, 0, body)), () => this.streamId = (this.streamId + 1) >>> 0, maxBytes, signal);
+    this.download = download;
+    try {
+      return await download.run(() => {
+        this.offeneAnfragen.push({ format: format.formatId, revision: this.lokaleRevision, download });
+        this.sende(buildFormatDataRequest(format.formatId));
+      });
+    } finally { if (this.download === download) this.download = undefined; }
+  }
+
   melde(text: string): boolean {
     if (!this.bereit || !this.darfSchreiben) return false;
     if (text === this.zuletztGemeldet && this.dateien.length === 0) return false;
@@ -953,6 +986,7 @@ export class CliprdrSession {
     }
     this.zuletztGemeldet = text;
     this.dateien = [];
+    this.download?.cancel();
     this.lokaleRevision++;
     this.sendeFormatliste(text);
     return true;
@@ -987,6 +1021,7 @@ export class CliprdrSession {
     buildFileList(files); // Namen prüfen, bevor wir den Clipboard-Zustand wechseln.
     if (new Set(files.map(f => f.name.toLowerCase())).size !== files.length) return false;
     this.dateien = files.map(f => ({ name: f.name, data: Buffer.from(f.data) }));
+    this.download?.cancel();
     this.lokaleRevision++;
     this.formatlisteUnbestaetigt = true;
     this.ausstehendeFormatlisten++;
@@ -1040,6 +1075,8 @@ export class CliprdrSession {
    * faengt mit einem neuen Handshake an.
    */
   zuruecksetzen(): void {
+    this.download?.cancel(new Error('RDP-Verbindung beendet.'));
+    this.download = undefined;
     this.bereit = false;
     this.serverCapsGesehen = false;
     this.serverFlags = 0;

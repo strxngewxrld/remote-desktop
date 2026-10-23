@@ -22,6 +22,7 @@ import {
   STANDARD_MAX_BYTES,
   type CliprdrLogStufe,
   type ZwischenablageRichtung,
+  type DownloadedClipboardEntry,
 } from 'ts-rdp';
 
 /** Schluessel der Einstellungen unterhalb von `rdp.`. */
@@ -147,6 +148,10 @@ export interface BrueckeOptions {
    * Nur fuer die Tests da; ohne Angabe gilt `STILLE_WARNZEIT_MS`.
    */
   warnzeitMs?: number;
+  dateien?: {
+    maxBytes: number;
+    empfangen(load: () => Promise<DownloadedClipboardEntry[]>, signal: AbortSignal): Promise<void>;
+  };
 }
 
 /**
@@ -189,6 +194,8 @@ export class Zwischenablagebruecke {
    */
   private kette: Promise<unknown> = Promise.resolve();
   private beendet = false;
+  private dateiEmpfang?: AbortController;
+  private dateiKette: Promise<void> = Promise.resolve();
   /** Laeuft, solange eine gesendete Formatliste unbeantwortet ist. */
   private stilleUhr: ReturnType<typeof setTimeout> | undefined;
 
@@ -208,7 +215,27 @@ export class Zwischenablagebruecke {
       // nie nach Daten. Das Ergebnis wird mit `melde()` nachgereicht.
       onBereit: () => void this.pruefeLokal(),
       onServerText: (text) => void this.uebernimmVomServer(text),
+      onServerFiles: opts.dateien ? available => this.serverDateienGeaendert(available) : undefined,
       log: (n, stufe) => this.opts.log(n, stufe),
+    });
+  }
+
+  private serverDateienGeaendert(available: boolean): void {
+    this.dateiEmpfang?.abort();
+    this.dateiEmpfang = undefined;
+    if (!available || this.beendet || !this.opts.dateien) return;
+    const controller = new AbortController();
+    this.dateiEmpfang = controller;
+    this.dateiKette = this.dateiKette.catch(() => {}).then(async () => {
+      try {
+        controller.signal.throwIfAborted();
+        await this.opts.dateien!.empfangen(
+          () => this.sitzung.downloadServerFiles(this.opts.dateien!.maxBytes, controller.signal), controller.signal);
+        // The pasteboard now holds files. Do not announce its empty text representation.
+        if (!controller.signal.aborted && !this.beendet) this.lokalerText = await this.opts.speicher.lesen();
+      } catch (error) {
+        if (!controller.signal.aborted && !this.beendet) this.opts.log(`Dateien vom Server nicht übernommen: ${(error as Error).message}`, 'warn');
+      } finally { if (this.dateiEmpfang === controller) this.dateiEmpfang = undefined; }
     });
   }
 
@@ -318,7 +345,7 @@ export class Zwischenablagebruecke {
   }
 
   async ausDateien(files: cliprdr.ClipboardFile[], maxBytes: number): Promise<boolean> {
-    if (this.beendet || !this.sitzung.darfSchreiben || this.dateiAntwort) return false;
+    if (this.beendet || !this.sitzung.darfSchreiben || this.dateiAntwort || this.dateiEmpfang) return false;
     // Nicht mit einer noch offenen Textankündigung oder Lesung überlappen.
     await this.pruefeLokal();
     if (this.dateiAntwort || this.beendet) return false;
@@ -356,10 +383,10 @@ export class Zwischenablagebruecke {
 
   /** Eine einzelne Lesung samt Meldung; Fehler bleiben hier. */
   private async leseUndMelde(): Promise<boolean> {
-    if (this.beendet || !this.sitzung.darfSchreiben || this.dateiAntwort) return false;
+    if (this.beendet || !this.sitzung.darfSchreiben || this.dateiAntwort || this.dateiEmpfang) return false;
     try {
       const text = await this.opts.speicher.lesen();
-      if (typeof text !== 'string' || text === this.lokalerText) return false;
+      if (this.beendet || this.dateiEmpfang || typeof text !== 'string' || text === this.lokalerText) return false;
       this.lokalerText = text;
       this.opts.log(
         `Zwischenablage: die lokale Zwischenablage hat sich geaendert (${text.length} Zeichen)`,
@@ -448,6 +475,8 @@ export class Zwischenablagebruecke {
 
   /** Nach einem Verbindungsverlust: Handshake vergessen, Abfrage anhalten. */
   zuruecksetzen(): void {
+    this.dateiEmpfang?.abort();
+    this.dateiEmpfang = undefined;
     this.dateiAntwort?.(false);
     for (const done of this.antwortWartende) done(false);
     this.sitzung.zuruecksetzen();
@@ -457,6 +486,8 @@ export class Zwischenablagebruecke {
   }
 
   dispose(): void {
+    this.dateiEmpfang?.abort();
+    this.sitzung.zuruecksetzen();
     this.dateiAntwort?.(false);
     for (const done of this.antwortWartende) done(false);
     this.beendet = true;
