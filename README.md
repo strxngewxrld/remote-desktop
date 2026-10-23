@@ -86,7 +86,7 @@ VS Code Webview  ──Eingaben──▶  Extension-Host  ──TCP/TLS──▶
   Monitor als eigenes VS-Code-Fenster, rechts neben dem bisherigen
 - **H.264 (AVC420)** über WebCodecs im Webview, mit Rückfall auf die übrigen Codecs
 - **Zwischenablage** (MS-RDPECLIP): Text in beide Richtungen, Dateien vom
-  Arbeitsplatz zum Server
+  Arbeitsplatz zum Server sowie Dateien und Ordner vom Server in den macOS-Finder
 - **Laufwerksumleitung** (MS-RDPEFS): die Ordner des Arbeitsbereichs als
   Laufwerk `\\tsclient\VS_Code`, standardmäßig nur lesbar
 - Automatisches Wiederverbinden (Auto-Reconnect-Cookie), `.rdp`-Import und

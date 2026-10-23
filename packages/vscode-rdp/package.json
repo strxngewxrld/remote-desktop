@@ -606,7 +606,7 @@
           "default": 64,
           "minimum": 1,
           "maximum": 256,
-          "description": "Maximale Gesamtgröße eingefügter Dateien in MiB. Dateien im Sitzungsfenster einfügen, anschließend im Zielordner auf dem Server einfügen."
+          "description": "Maximale Gesamtgröße der Dateien pro Kopiervorgang in MiB. Zum Server: Dateien im Sitzungsfenster einfügen. Vom Server auf macOS: im Remote-Explorer kopieren, Empfang abwarten und im Finder mit Cmd+V einfügen. Ordnerstrukturen bleiben erhalten."
         },
         "rdp.connections": {
           "scope": "application",

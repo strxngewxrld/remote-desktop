@@ -44,7 +44,11 @@ provider: use a UPN (`user@ad.example.com`) or set `rdp.kerberosRealm`. Optional
 
 Audio, RD Gateway, RemoteApp, AVC444 and Per-Device RDS CAL issuance are not supported.
 Additional monitors are placed to the right. H.264 AVC420 depends on WebCodecs.
-Folder paste and remote-to-local file clipboard transfer are not supported.
+On a local macOS extension host, copy files or folders in the remote Explorer,
+wait for “files ready” in the status bar, then paste into Finder with Cmd+V.
+Nested and empty folders are preserved. The total transfer limit is controlled
+by `rdp.clipboard.maxFileSizeMb` (64 MiB by default). Local-to-remote folder
+paste is not supported.
 
 ## Upgrading development builds
 

@@ -203,3 +203,6 @@ export { NtlmClient, ntowfv1, ntowfv2, tlsChannelBindings, computeNtlmV2Response
 export { CredSspClient, encodeTsRequest, decodeTsRequest, encodeTsCredentials } from './crypto/credssp.js';
 export { md4 } from './crypto/md4.js';
 export { Rc4, rc4 } from './crypto/rc4.js';
+
+export { parseRemoteFileList } from './protocol/clipboardDownload.js';
+export type { RemoteClipboardEntry, DownloadedClipboardEntry } from './protocol/clipboardDownload.js';

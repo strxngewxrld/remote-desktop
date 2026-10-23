@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- macOS: copy files and folders in the remote Explorer and paste them into Finder with Cmd+V; preserves nested and empty folders, with bounded transfers and cancellation.
+
 - Kerberos on macOS/Linux through the built-in TypeScript provider; explicit AD realm/KDC settings and replay protection, retaining Windows SSPI and strict fallback rules.
 
 ## [1.0.0]
