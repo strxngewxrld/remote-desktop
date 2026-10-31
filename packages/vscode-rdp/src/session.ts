@@ -698,7 +698,7 @@ export class RdpSession {
       case 'focus':
         vscode.commands.executeCommand('setContext', 'rdp.sessionFocused', !!message.focused);
         // Beim Fokusverlust weiss niemand mehr, was noch gedrueckt ist.
-        if (!message.focused) this.macAbbildung.zuruecksetzen();
+        if (!message.focused) this.loeseTasten();
         break;
       case 'plattform':
         // Die Plattform des Nutzers, gemeldet vom Webview. Nur die zaehlt:
@@ -769,6 +769,7 @@ export class RdpSession {
     // Sitzung, und ihre Horcher speisen weiter Kacheln und Fehler in
     // dieses Webview. Bei jedem Klick auf "Erneut verbinden" kaeme eine
     // weitere solche Geistersitzung dazu.
+    this.loeseTasten();
     this.client?.disconnect();
     this.client = undefined;
     await this.start(this.lastReady ?? { type: 'ready', width: 1280, height: 800, devicePixelRatio: 1 });
@@ -958,7 +959,8 @@ export class RdpSession {
     } catch (error) {
       if (cancelled()) return;
       const err = error as Error;
-      this.log(`Fehler: ${err.stack ?? err.message}`);
+      // Eine abgelehnte Anmeldung ist ein erwarteter Fehler; ihr Stack hilft niemandem.
+      this.log(`Fehler: ${err instanceof RdpAuthError ? `${err.name}: ${err.message}` : err.stack ?? err.message}`);
       const abgelehnt = err instanceof RdpAuthError || /CredSSP|Anmelde|Zugangsdaten/i.test(err.message);
       if (!abgelehnt) {
         this.vorherVerbindungsfehler = true;
@@ -1282,6 +1284,8 @@ export class RdpSession {
     const config = vscode.workspace.getConfiguration('rdp');
 
     client.on('connect', () => {
+      this.gedrueckteScancodes.clear();
+      this.macAbbildung.zuruecksetzen();
       this.verbindungSteht = true;
       this.letztesZiel = undefined;
       this.verbundenSeit = Date.now();
@@ -1779,7 +1783,7 @@ export class RdpSession {
       this.letztesBild = Date.now();
     }
 
-    return { type: 'bitmap', rects, data: this.encode(Buffer.concat(buffers, offset)) };
+    return { type: 'bitmap', rects, data: this.encode(buffers.length === 1 ? buffers[0]! : Buffer.concat(buffers, offset)) };
   }
 
   /**
@@ -1837,7 +1841,12 @@ export class RdpSession {
   }
 
   private encode(buffer: Buffer): Uint8Array | string {
-    return this.useBase64 ? buffer.toString('base64') : new Uint8Array(buffer);
+    if (this.useBase64) return buffer.toString('base64');
+    // VS Code kann den ganzen zugrunde liegenden ArrayBuffer serialisieren.
+    // Views auf groessere Pakete oder den Node-Pool deshalb passend kopieren.
+    return buffer.byteLength === buffer.buffer.byteLength
+      ? new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+      : new Uint8Array(buffer);
   }
 
   // -------------------------------------------------------------- Eingaben
@@ -1916,6 +1925,27 @@ export class RdpSession {
     );
   }
 
+  /** Auch dann freigeben koennen, wenn ein Webview beim Schliessen kein keyup mehr zustellt. */
+  private readonly gedrueckteScancodes = new Map<string, { code: number; extended: boolean }>();
+
+  private sendeTaste(code: number, down: boolean, extended = false): void {
+    const id = `${extended ? 1 : 0}:${code}`;
+    if (down) this.gedrueckteScancodes.set(id, { code, extended });
+    else this.gedrueckteScancodes.delete(id);
+    this.client?.sendKeyScancode(code, down, extended);
+  }
+
+  private loeseTasten(): void {
+    if (this.client?.isConnected) {
+      for (const taste of this.gedrueckteScancodes.values()) {
+        try { this.client.sendKeyScancode(taste.code, false, taste.extended); }
+        catch { /* Eine gleichzeitig getrennte Verbindung braucht keine Tastenfreigabe mehr. */ }
+      }
+    }
+    this.gedrueckteScancodes.clear();
+    this.macAbbildung.zuruecksetzen();
+  }
+
   private handleKey(message: any): void {
     const client = this.client;
     if (!client?.isConnected) return;
@@ -1932,13 +1962,13 @@ export class RdpSession {
 
     if (this.cmdAufStrg) {
       const ergebnis = this.macAbbildung.taste(String(message.code ?? ''), !!message.down);
-      for (const t of ergebnis.ereignisse) client.sendKeyScancode(t.scancode, t.down, t.extended);
+      for (const t of ergebnis.ereignisse) this.sendeTaste(t.scancode, t.down, t.extended);
       if (!ergebnis.normalWeiter) return;
     }
 
     const mapping = lookupScancode(message.code);
     if (mapping) {
-      client.sendKeyScancode(mapping.code, message.down, mapping.extended === true);
+      this.sendeTaste(mapping.code, message.down, mapping.extended === true);
       return;
     }
 
@@ -2178,6 +2208,7 @@ export class RdpSession {
   private monitorEntfernen(monitor: ZusatzMonitor): void {
     const index = this.zusatzMonitore.indexOf(monitor);
     if (index < 0) return;
+    this.loeseTasten();
     this.zusatzMonitore.splice(index, 1);
     for (const d of monitor.disposables) d.dispose();
     if (this.disposed) return;
@@ -2448,6 +2479,7 @@ export class RdpSession {
     this.laufwerk = undefined;
     this.arbeitsbereichHorcher?.dispose();
     this.arbeitsbereichHorcher = undefined;
+    this.loeseTasten();
     this.client?.disconnect();
     this.client = undefined;
     this.statusBar.hide();

@@ -99,3 +99,29 @@ test('Clipboard replacement cancels the old manifest; disabled receiving never r
   disabled.verarbeite(clip.buildMonitorReady()); disabled.verarbeite(formats);
   await assert.rejects(disabled.downloadServerFiles(), /Keine Remote-Dateien/);
 });
+test('Parallel range reads time out on inactivity, not on queueing behind earlier ranges', async () => {
+  const size = 4 * 1024 * 1024;
+  const queue: Buffer[] = [];
+  let busy = false;
+  let id = 0;
+  // Serieller Server: beantwortet eine Anfrage alle 40 ms, die Frist ist 60 ms.
+  const r: ClipboardDownload = new ClipboardDownload(body => {
+    queue.push(body);
+    const next = () => {
+      const request = queue.shift();
+      if (!request) { busy = false; return; }
+      busy = true;
+      setTimeout(() => {
+        const data = Buffer.alloc(request.readUInt32LE(20), 7);
+        r.receive(data, true, data.length, request.readUInt32LE());
+        next();
+      }, 40);
+    };
+    if (!busy) next();
+  }, () => ++id, size, undefined, 60);
+  const result = await r.run(() => queueMicrotask(() => { const data = manifest([{ name: 'big', size }]); r.receive(data, true, data.length); }));
+  assert.equal(result[0].data.length, size);
+
+  const silent = new ClipboardDownload(() => {}, () => ++id, size, undefined, 30);
+  await assert.rejects(silent.run(() => queueMicrotask(() => { const data = manifest([{ name: 'big', size }]); silent.receive(data, true, data.length); })), /Zeitüberschreitung/);
+});

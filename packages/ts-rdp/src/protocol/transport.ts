@@ -50,6 +50,7 @@ interface PendingRead {
 export class RdpTransport extends EventEmitter {
   private socket?: net.Socket | tls.TLSSocket;
   private buffer: Buffer = Buffer.alloc(0);
+  private bufferStorage?: Buffer;
   private pending?: PendingRead;
   private flowing = false;
   private closed = false;
@@ -191,7 +192,27 @@ export class RdpTransport extends EventEmitter {
     this.empfangenUm = this.now();
     try {
       if (this.buffer.length + chunk.length > this.maxBufferedBytes) throw new RdpError('Transportpuffer überschreitet 16 MiB', 'RDP_PROTOCOL');
-      this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
+      if (this.buffer.length === 0) {
+        this.buffer = chunk;
+        this.bufferStorage = undefined;
+      } else {
+        // Reservierter Platz verhindert erneutes Kopieren des gesamten Frames
+        // bei jedem TCP-Fragment. Bereits ausgegebene Views nie ueberschreiben.
+        const length = this.buffer.length + chunk.length;
+        const storage = this.bufferStorage;
+        const start = storage ? this.buffer.byteOffset - storage.byteOffset : 0;
+        if (storage && start + length <= storage.length) {
+          chunk.copy(storage, start + this.buffer.length);
+          this.buffer = storage.subarray(start, start + length);
+        } else {
+          const capacity = Math.min(this.maxBufferedBytes, Math.max(4096, length, this.buffer.length * 2));
+          const next = Buffer.allocUnsafe(capacity);
+          this.buffer.copy(next);
+          chunk.copy(next, this.buffer.length);
+          this.bufferStorage = next;
+          this.buffer = next.subarray(0, length);
+        }
+      }
       this.drain();
     } catch (err) {
       this.onError(err as Error);
@@ -222,6 +243,7 @@ export class RdpTransport extends EventEmitter {
     this.closed = true;
     this.rejectPending(new RdpError('Verbindung vom Server geschlossen', 'RDP_CLOSED'));
     this.buffer = Buffer.alloc(0);
+    this.bufferStorage = undefined;
     this.emit('close');
   };
 
@@ -330,6 +352,14 @@ export class RdpTransport extends EventEmitter {
     this.socket.write(data);
   }
 
+  /** Zusammengehoerende Kanalfragmente in groesseren TCP-/TLS-Schreibvorgaengen senden. */
+  batchWrites(send: () => void): void {
+    const socket = this.socket;
+    socket?.cork();
+    try { send(); }
+    finally { socket?.uncork(); }
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
@@ -337,6 +367,7 @@ export class RdpTransport extends EventEmitter {
     this.cancelHandshake?.(error);
     this.rejectPending(error);
     this.buffer = Buffer.alloc(0);
+    this.bufferStorage = undefined;
     this.socket?.destroy();
     this.emit('close');
   }

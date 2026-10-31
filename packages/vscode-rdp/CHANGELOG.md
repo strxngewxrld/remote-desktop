@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Transfers: file downloads read up to four 1-MiB ranges concurrently, preserving output order and bounded read-ahead. Channel fragments share TCP/TLS writes; fragmented incoming frames use reserved buffer capacity. Bitmap rendering and webview delivery avoid additional pixel copies. The 15 s transfer timeout counts from the last response, so queued parallel ranges no longer abort slow links. A rejected sign-in is logged without a stack trace.
+
+- macOS keyboard: synthetic input modifier flags work without separate modifier key events. The extension host releases held keys on focus loss and monitor-window closure if the webview no longer delivers key-up events.
+
 - Window size: the desktop resolution now follows the panel at start-up, on resize, when the tab is moved into its own window and when the window moves to a monitor with a different pixel density; sizes that arrive before Display Control is open are applied afterwards. New command `RDP: Fit Resolution to Window` (`rdp.fitResolution`, also a title-bar button) applies the window size once, even with `rdp.dynamicResolution` off or a fixed resolution; without Display Control it offers to reconnect.
 
 - Connection watch: after 15 s of silence the session sends a 1x1 Refresh Rect; if nothing comes back (or after a sleep/wake clock jump) it shows "No response from server" with a reconnect button and a warning status bar. It never disconnects by itself. `ts-rdp` exposes this as `liveness` options and `unresponsive`/`responsive` events.

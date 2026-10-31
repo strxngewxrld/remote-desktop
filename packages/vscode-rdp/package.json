@@ -617,7 +617,7 @@
           "default": 4096,
           "minimum": 1,
           "maximum": 102400,
-          "description": "Maximale Gesamtgröße der Dateien pro Kopiervorgang in MiB (bis 100 GiB). Dateien werden von und auf die Platte gestreamt, auch über 4 GiB. Zum Server: auf macOS Dateien und Ordner im Finder kopieren und im Sitzungsfenster einfügen; sonst einzelne Dateien bis 256 MiB über das Webview. Vom Server auf macOS: im Remote-Explorer kopieren, Empfang abwarten und im Finder mit Cmd+V einfügen. Ordnerstrukturen und Zeitstempel bleiben erhalten."
+          "description": "Maximale Gesamtgröße der Dateien pro Kopiervorgang in MiB (bis 100 GiB). Dateien werden von und auf die Platte gestreamt, auch über 4 GiB. Zum Server: auf macOS Dateien und Ordner im Finder kopieren und im Sitzungsfenster einfügen; sonst einzelne Dateien bis 256 MiB über das Webview. Vom Server auf macOS: im Remote-Explorer kopieren, Empfang abwarten und im Finder mit Cmd+V einfügen. Ordnerstrukturen und Datei-Zeitstempel bleiben erhalten; Windows Explorer kann Ordner-Zeitstempel beim Einfügen neu setzen."
         },
         "rdp.connections": {
           "scope": "application",

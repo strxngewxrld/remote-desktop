@@ -48,7 +48,8 @@ On a local macOS extension host, copy files or folders in the remote Explorer,
 wait for “files ready” in the status bar, then paste into Finder with Cmd+V.
 Nested and empty folders are preserved. The total transfer limit is controlled
 by `rdp.clipboard.maxFileSizeMb` (4096 MiB by default, at most 100 GiB). Files
-stream to and from disk, so files above 4 GiB work, and timestamps are kept.
+stream to and from disk, so files above 4 GiB work. File timestamps are kept;
+Windows Explorer may reset folder timestamps when pasting.
 In the other direction, copy files or folders in Finder and paste into the
 session window; folders are sent recursively (symlinks are skipped). The browser
 paste fallback (non-macOS or remote hosts) sends individual files only, up to 256 MiB.

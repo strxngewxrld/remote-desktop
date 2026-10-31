@@ -17,7 +17,7 @@ export interface ClipboardFileWriter {
 }
 /**
  * Senke fuer einen Download: Die Eintraege kommen in Listenreihenfolge, die
- * Daten blockweise. So liegt nie mehr als ein Block im Speicher.
+ * Daten blockweise. Das begrenzte Lesefenster haelt hoechstens vier Bloecke im Speicher.
  */
 export interface ClipboardSink {
   directory(entry: RemoteClipboardEntry): void | Promise<void>;
@@ -47,6 +47,7 @@ const MAX_ENTRIES = 4096;
 const DESCRIPTOR_SIZE = 592;
 /** Groesse der Leseanfragen an den Server; kuerzere Antworten sind zulaessig. */
 const BLOCK_SIZE = 1024 * 1024;
+const READ_WINDOW = 4;
 
 /** MS-RDPECLIP 2.2.5.2.3: FILEGROUPDESCRIPTORW, including relative folder paths. */
 export function parseRemoteFileList(body: Buffer): RemoteClipboardEntry[] {
@@ -99,12 +100,14 @@ export function parseRemoteFileList(body: Buffer): RemoteClipboardEntry[] {
   return entries;
 }
 
-type Pending = { id?: number; max: number; resolve: (body: Buffer) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
+type Pending = { id?: number; max: number; resolve: (body: Buffer) => void; reject: (error: Error) => void };
 
 /** One bounded download. A clipboard change cancels it rather than mixing revisions. */
 export class ClipboardDownload {
-  private pending?: Pending;
+  private readonly pending = new Map<number | undefined, Pending>();
   private error?: Error;
+  /** Inaktivitaets-Watchdog: Parallele Anfragen warten hintereinander, jede Antwort zaehlt als Fortschritt. */
+  private timer?: ReturnType<typeof setTimeout>;
   private readonly onAbort = () => this.cancel(new Error('Clipboard-Dateiübertragung abgebrochen.'));
   constructor(
     private readonly send: (body: Buffer) => void,
@@ -116,20 +119,27 @@ export class ClipboardDownload {
 
   cancel(error = new Error('Die Remote-Zwischenablage wurde während der Übertragung geändert.')): void {
     this.error ??= error;
-    this.pending?.reject(this.error);
-    if (this.pending) clearTimeout(this.pending.timer);
-    this.pending = undefined;
+    clearTimeout(this.timer);
+    for (const pending of this.pending.values()) pending.reject(this.error);
+    this.pending.clear();
+  }
+
+  private armTimeout(): void {
+    clearTimeout(this.timer);
+    this.timer = this.pending.size
+      ? setTimeout(() => this.cancel(new Error('Zeitüberschreitung beim Empfang von Clipboard-Dateien.')), this.timeoutMs)
+      : undefined;
   }
 
   receive(body: Buffer, ok: boolean, declaredLength: number, stream?: number): void {
-    const pending = this.pending;
-    if (!pending || pending.id !== stream) return;
-    this.pending = undefined;
-    clearTimeout(pending.timer);
+    const pending = this.pending.get(stream);
+    if (!pending) return;
+    this.pending.delete(stream);
+    this.armTimeout();
     if (!ok || body.length !== declaredLength || body.length > pending.max) {
       const error = new RdpProtocolError('Ungültige oder abgelehnte Clipboard-Dateiantwort.');
-      this.error = error;
       pending.reject(error);
+      this.cancel(error);
     } else pending.resolve(body);
   }
 
@@ -137,8 +147,9 @@ export class ClipboardDownload {
     if (this.signal?.aborted) this.onAbort();
     if (this.error) return Promise.reject(this.error);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.cancel(new Error('Zeitüberschreitung beim Empfang von Clipboard-Dateien.')), this.timeoutMs);
-      this.pending = { id, max, resolve, reject, timer };
+      this.pending.set(id, { id, max, resolve, reject });
+      // Nur aus dem Leerlauf heraus starten; sonst laeuft die Frist der aelteren Anfrage weiter.
+      if (this.pending.size === 1) this.armTimeout();
       try { send(); } catch (error) { this.cancel(error as Error); }
     });
   }
@@ -151,6 +162,21 @@ export class ClipboardDownload {
     body.writeUInt32LE(offset >>> 0, 12); body.writeUInt32LE(Math.floor(offset / 0x100000000), 16);
     body.writeUInt32LE(count, 20);
     return this.wait(count, () => this.send(body), id);
+  }
+
+  /** Kurze Antworten ergaenzen, ohne die Offsets anderer Bereiche zu verschieben. */
+  private async readRange(index: number, offset: number, count: number): Promise<Buffer> {
+    let result: Buffer | undefined;
+    let received = 0;
+    while (received < count) {
+      const data = await this.request(index, false, offset + received, count - received);
+      if (!data.length) throw new RdpProtocolError('Clipboard-Datei wurde vorzeitig beendet.');
+      if (!received && data.length === count) return data;
+      result ??= Buffer.allocUnsafe(count);
+      data.copy(result, received);
+      received += data.length;
+    }
+    return result!;
   }
 
   /** Wie `stream`, sammelt aber alles im Speicher - nur fuer kleine Mengen gedacht. */
@@ -192,14 +218,33 @@ export class ClipboardDownload {
         if (entry.directory) { await sink.directory(entry); continue; }
         const writer = await sink.file(entry);
         try {
-          let offset = 0;
-          while (offset < (entry.size ?? 0)) {
-            const data = await this.request(index, false, offset, Math.min(BLOCK_SIZE, entry.size! - offset));
-            if (!data.length) throw new RdpProtocolError('Clipboard-Datei wurde vorzeitig beendet.');
-            await writer.write(data); offset += data.length;
+          // Mehrere unabhaengige Bereiche ueberbruecken die Netzwerklatenz.
+          // Ergebnisse bleiben geordnet; ein langsames Schreibziel bremst nach
+          // hoechstens READ_WINDOW Bloecken auch weitere Leseanfragen.
+          const reads: Promise<{ data: Buffer } | { error: Error }>[] = [];
+          let nextOffset = 0;
+          const fill = () => {
+            while (!this.error && reads.length < READ_WINDOW && nextOffset < entry.size!) {
+              const offset = nextOffset;
+              const count = Math.min(BLOCK_SIZE, entry.size! - offset);
+              nextOffset += count;
+              reads.push(this.readRange(index, offset, count).then(
+                data => ({ data }),
+                error => { this.cancel(error as Error); return { error: error as Error }; },
+              ));
+            }
+          };
+          fill();
+          while (reads.length) {
+            const result = await reads.shift()!;
+            if ('error' in result) throw result.error;
+            if (this.error) throw this.error;
+            await writer.write(result.data);
+            fill();
           }
           if (this.error) throw this.error;
         } catch (error) {
+          this.cancel(error as Error);
           await Promise.resolve(writer.close(error as Error)).catch(() => {});
           throw error;
         }
@@ -207,8 +252,8 @@ export class ClipboardDownload {
       }
     } finally {
       this.signal?.removeEventListener('abort', this.onAbort);
-      if (this.pending) clearTimeout(this.pending.timer);
-      this.pending = undefined;
+      clearTimeout(this.timer);
+      this.pending.clear();
     }
   }
 }

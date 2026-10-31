@@ -445,7 +445,7 @@
       }
       try {
         ctx.putImageData(
-          new ImageData(new Uint8ClampedArray(slice), tile.w, tile.h),
+          new ImageData(new Uint8ClampedArray(slice.buffer, slice.byteOffset, slice.byteLength), tile.w, tile.h),
           tile.x - ursprungX,
           tile.y - ursprungY,
         );
@@ -780,6 +780,7 @@
       vscode.postMessage({ type: 'key', code, down: false });
     }
     pressedKeys.clear();
+    ergaenzteModifier.clear();
   }
 
   /**
@@ -809,6 +810,36 @@
     return ['KeyQ', 'KeyW', 'KeyN', 'Comma'].indexOf(event.code) >= 0;
   }
 
+  // Bedienungshilfen und synthetische macOS-Eingaben liefern Modifier teils
+  // nur als Flags am Buchstaben, ohne eigenes keydown/keyup. Fehlende Tasten
+  // fuer diesen Anschlag ergaenzen; echte linke/rechte Modifier beibehalten.
+  const ergaenzteModifier = new Set();
+  const modifierGruppen = [
+    ['ctrlKey', 'ControlLeft', 'ControlRight'],
+    ['shiftKey', 'ShiftLeft', 'ShiftRight'],
+    ['altKey', 'AltLeft', 'AltRight'],
+    ['metaKey', 'MetaLeft', 'MetaRight'],
+  ];
+
+  function ergaenzeModifier(event) {
+    for (const [flag, links, rechts] of modifierGruppen) {
+      if (!event[flag] || event.code === links || event.code === rechts ||
+          pressedKeys.has(links) || pressedKeys.has(rechts)) continue;
+      if (flag === 'ctrlKey' && event.getModifierState?.('AltGraph')) continue;
+      pressedKeys.add(links);
+      ergaenzteModifier.add(links);
+      vscode.postMessage({ type: 'key', code: links, down: true });
+    }
+  }
+
+  function loeseErgaenzteModifier() {
+    for (const code of ergaenzteModifier) {
+      pressedKeys.delete(code);
+      vscode.postMessage({ type: 'key', code, down: false });
+    }
+    ergaenzteModifier.clear();
+  }
+
   window.addEventListener('keydown', (event) => {
     if (!focused || !connected) return;
     if (passThroughToVsCode(event)) return;
@@ -816,6 +847,7 @@
     if (event.code === 'KeyV' && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) return;
     event.preventDefault();
     event.stopPropagation();
+    ergaenzeModifier(event);
     pressedKeys.add(event.code);
     vscode.postMessage({
       type: 'key',
@@ -879,6 +911,7 @@
     event.stopPropagation();
     pressedKeys.delete(event.code);
     vscode.postMessage({ type: 'key', code: event.code, key: event.key, down: false });
+    loeseErgaenzteModifier();
   });
 
   window.addEventListener('blur', releaseAllKeys);

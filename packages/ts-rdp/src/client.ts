@@ -1966,7 +1966,11 @@ export class RdpClient extends EventEmitter {
         `${parseChannelChunk(bloecke[0]).flags.toString(16)}` +
         `${zeigeProtokoll ? ' (SHOW_PROTOCOL, der Endpunkt sieht den Kanalkopf)' : ''}`,
     );
-    for (const block of bloecke) this.sendMcs(channelId, block);
+    // Ein Dateiblock kann Hunderte 1600-Byte-Kanalfragmente enthalten.
+    // Corking buendelt deren Writes, ohne die RDP-Fragmentgrenzen zu aendern.
+    this.transport.batchWrites(() => {
+      for (const block of bloecke) this.sendMcs(channelId, block);
+    });
   }
 
   /** DVC-Kanal-ID eines offenen dynamischen Kanals, sonst `undefined`. */

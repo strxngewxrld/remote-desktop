@@ -96,7 +96,7 @@ höchstens 100 GiB). Umgekehrt lassen sich auf einem lokalen macOS-Extension-Hos
 Dateien und Ordner vom Server übernehmen: im Remote-Explorer kopieren, die
 Statusmeldung „Dateien bereit“ abwarten und im Finder mit Cmd+V einfügen. Die
 Dateien werden direkt auf die Platte geschrieben; Ordner, leere Ordner und
-Zeitstempel bleiben erhalten. Text bleibt in beide Richtungen verfügbar.
+Datei-Zeitstempel bleiben erhalten; Windows Explorer kann Ordner-Zeitstempel beim Einfügen neu setzen. Text bleibt in beide Richtungen verfügbar.
 
 ## Repository unter Windows öffnen
 

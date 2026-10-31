@@ -2,6 +2,10 @@
 
 ## [Unveröffentlicht]
 
+- Übertragung: Datei-Downloads lesen bis zu vier 1-MiB-Bereiche parallel mit geordneter Ausgabe und begrenztem Vorlauf. Kanalfragmente werden in TCP-/TLS-Schreibvorgängen gebündelt; fragmentierte Empfangspakete wachsen mit reserviertem Puffer. Bitmap-Anzeige und Webview-Versand vermeiden zusätzliche Pixelkopien. Die 15-s-Frist der Übertragung zählt ab der letzten Antwort, damit wartende Parallelbereiche langsame Verbindungen nicht abbrechen. Eine abgelehnte Anmeldung wird ohne Stacktrace protokolliert.
+
+- macOS-Tastatur: Modifikatoren aus synthetischen Eingaben werden auch ohne separate Tastenereignisse übernommen. Der Extension-Host gibt gehaltene Tasten bei Fokusverlust und beim Schließen eines Monitorfensters frei, falls dessen Webview kein Loslass-Ereignis mehr liefert.
+
 - Fenstergröße: Die Desktopauflösung folgt dem Panel jetzt beim Start, bei Größenänderungen, beim Herausziehen des Tabs in ein eigenes Fenster und beim Wechsel auf einen Monitor mit anderer Pixeldichte; Größen, die vor dem Öffnen von Display Control eintreffen, werden nachgeholt. Neuer Befehl `RDP: Auflösung an Fenster anpassen` (`rdp.fitResolution`, auch als Knopf in der Titelleiste) übernimmt die Fenstergröße einmalig, auch bei ausgeschaltetem `rdp.dynamicResolution` oder fester Auflösung; ohne Display Control wird angeboten, neu zu verbinden.
 
 - Verbindungsüberwachung: Nach 15 s Stille sendet die Sitzung ein 1×1-Refresh-Rect; bleibt die Antwort aus (oder nach einem Ruhezustand-Uhrensprung), erscheint „Keine Antwort vom Server“ mit Knopf zum Neuverbinden und einer Warnung in der Statusleiste. Getrennt wird nie von selbst. `ts-rdp` bietet dazu die Optionen `liveness` und die Ereignisse `unresponsive`/`responsive`.
