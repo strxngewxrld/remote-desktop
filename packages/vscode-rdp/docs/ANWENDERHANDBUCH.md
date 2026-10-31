@@ -136,11 +136,40 @@ Desktops, Maus und Tastatur funktionieren dort wie im Hauptfenster. Die Größe
 folgt dem Fenster. Wer das Fenster schließt, entfernt den Monitor wieder; mit
 der Sitzung schließen sich alle ihre Monitore.
 
-Voraussetzung ist der Display Control Channel (MS-RDPEDISP, Einstellung
-`rdp.dynamicResolution`) und ein Server, der mehrere Monitore erlaubt. Fehlt
+Voraussetzung ist der Display Control Channel (MS-RDPEDISP) und ein Server, der
+mehrere Monitore erlaubt. Fehlt
 beides, gibt es eine Meldung statt eines leeren Fensters. Screenshots zeigen
 nur den primären Monitor. Mit H.264 dekodiert jedes Fenster den ganzen
 Videostrom, die Rechenlast steigt also je Monitor.
+
+## Fenstergröße, Verbindungsüberwachung und abgelehnte Anmeldung
+
+**Auflösung.** Mit `rdp.dynamicResolution` folgt die Desktopauflösung dem Panel –
+beim Start, bei jeder Größenänderung, beim Herausziehen des Tabs in ein eigenes
+Fenster und beim Wechsel auf einen Monitor mit anderer Pixeldichte. Was vor dem
+Öffnen des Display-Control-Kanals eintrifft, wird nachgeholt. Der Befehl
+**RDP: Auflösung an Fenster anpassen** (auch als Knopf in der Titelleiste)
+übernimmt die Fenstergröße einmalig, selbst wenn `rdp.dynamicResolution`
+ausgeschaltet ist oder die Verbindung eine feste Auflösung hat. Bietet der
+Server keinen Display Control Channel an, erscheint ein Hinweis mit dem Knopf
+**Neu verbinden**, das die Fenstergröße beim Aufbau übernimmt.
+
+**Verbindungsüberwachung.** Kommt 15 Sekunden lang nichts vom Server, sendet die
+Extension eine winzige Bildanforderung (Refresh Rect, 1×1 Pixel). Bleibt die
+Antwort 8 Sekunden aus – oder war der Rechner im Ruhezustand –, erscheint
+**Keine Antwort vom Server** mit dem Knopf **Erneut verbinden**, und die
+Statusleiste färbt sich gelb. Die Sitzung wird nie von selbst getrennt: kommen
+wieder Daten an, verschwindet die Einblendung. Server ohne Refresh-Rect-
+Unterstützung werden nicht überwacht.
+
+**Abgelehnte Anmeldung.** Ein gespeichertes Passwort wird bei einem
+Anmeldefehler nie gelöscht. Meldet ein gerade startender Server
+`0xc000006d`, versucht die Extension es genau einmal nach 5 Sekunden erneut
+(bei anderen Fehlern wie falschem Passwort oder gesperrtem Konto nie, um keine
+Kontosperre auszulösen). Scheitert auch das, fragt der nächste Verbindungsaufbau,
+ob das **gespeicherte Passwort erneut verwendet** oder ein **neues Passwort
+eingegeben** werden soll; ein neues ersetzt das gespeicherte erst nach
+erfolgreicher Anmeldung und nur, wenn Sie es merken lassen.
 
 ## Befehlsübersicht
 
@@ -154,6 +183,7 @@ Videostrom, die Rechenlast steigt also je Monitor.
 | `RDP: Skalierung umschalten` | Zwischen Einpassen und Originalgröße wechseln |
 | `RDP: Gespeichertes Passwort löschen` | Zugangsdaten aus dem sicheren Speicher entfernen |
 | `RDP: Protokoll anzeigen` | Ausgabekanal mit dem Verbindungsverlauf |
+| `RDP: Auflösung an Fenster anpassen` | Desktopauflösung einmalig an die Fenstergröße angleichen, auch bei festem oder ausgeschaltetem Mitziehen |
 | `RDP: Weiteren Monitor hinzufügen` | Zusätzliches Fenster als weiterer Monitor der Sitzung |
 | `RDP: Laufwerksfreigaben vergessen` | Gemerkte Antworten auf die Freigabefrage löschen; beim nächsten Verbinden wird wieder gefragt |
 | `RDP: Laufzeitumgebung anzeigen (lokal oder entfernt)` | Wo die Extension läuft und von welchem Rechner die RDP-Verbindung ausgeht – siehe [Remote-SSH](#remote-ssh-der-ssh-rechner-als-sprungbrett) |
@@ -179,7 +209,7 @@ Alle Schalter liegen unter `rdp.*`:
 | `rdp.connectTimeout` | `15000` | Zeitlimit für den Verbindungsaufbau in Millisekunden |
 | `rdp.logLevel` | `info` | `error`, `warn`, `info`, `debug` oder `trace` |
 | `rdp.performance.*` | – | Hintergrundbild (aus), Themes (an), Menüanimationen (aus), Fensterinhalt beim Ziehen (aus), Schriftglättung (an) |
-| `rdp.dynamicResolution` | `true` | Auflösung folgt der Panelgröße auch während der Sitzung |
+| `rdp.dynamicResolution` | `true` | Auflösung folgt der Panelgröße automatisch; der Befehl „Auflösung an Fenster anpassen“ wirkt unabhängig davon |
 | `rdp.clipboard.enabled` / `.direction` | `true` / beide | Zwischenablage an und in welche Richtung |
 | `rdp.clipboard.maxFileSizeMb` | `4096` | Gesamtgröße der Dateien je Kopiervorgang in MiB (1 bis 102400) |
 | `rdp.driveRedirection.enabled` | `true` | Ordner des Arbeitsbereichs als Laufwerk freigeben |

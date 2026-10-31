@@ -43,7 +43,7 @@ provider: use a UPN (`user@ad.example.com`) or set `rdp.kerberosRealm`. Optional
 `rdp.kerberosKdc` entries (`host` and `port`) override AD DNS discovery.
 
 Audio, RD Gateway, RemoteApp, AVC444 and Per-Device RDS CAL issuance are not supported.
-Additional monitors are placed to the right. H.264 AVC420 depends on WebCodecs.
+The resolution follows the panel (command `RDP: Fit Resolution to Window` applies it on demand), and a stalled connection is flagged after about 15 s instead of minutes. Additional monitors are placed to the right. H.264 AVC420 depends on WebCodecs.
 On a local macOS extension host, copy files or folders in the remote Explorer,
 wait for “files ready” in the status bar, then paste into Finder with Cmd+V.
 Nested and empty folders are preserved. The total transfer limit is controlled

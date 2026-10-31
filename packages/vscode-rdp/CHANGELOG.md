@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- Window size: the desktop resolution now follows the panel at start-up, on resize, when the tab is moved into its own window and when the window moves to a monitor with a different pixel density; sizes that arrive before Display Control is open are applied afterwards. New command `RDP: Fit Resolution to Window` (`rdp.fitResolution`, also a title-bar button) applies the window size once, even with `rdp.dynamicResolution` off or a fixed resolution; without Display Control it offers to reconnect.
+
+- Connection watch: after 15 s of silence the session sends a 1x1 Refresh Rect; if nothing comes back (or after a sleep/wake clock jump) it shows "No response from server" with a reconnect button and a warning status bar. It never disconnects by itself. `ts-rdp` exposes this as `liveness` options and `unresponsive`/`responsive` events.
+
+- Rejected sign-in: a saved password is no longer deleted when the server rejects it. `0xc000006d` with a saved password is retried once after 5 s (a starting server cannot verify logons yet); other codes are never retried. Afterwards the next connect asks whether to reuse the saved password or enter a new one. Known NTSTATUS codes are explained in German; `RdpAuthError` carries `ntStatus`.
+
 - Clipboard files: folders (recursive, including empty ones) and timestamps in both directions; files above 64 MB and above 4 GiB stream from/to disk instead of memory. On macOS, folders copied in Finder can be pasted into the session. `rdp.clipboard.maxFileSizeMb` now defaults to 4096 and allows up to 102400.
 
 - macOS: copy files and folders in the remote Explorer and paste them into Finder with Cmd+V; preserves nested and empty folders, with bounded transfers and cancellation.
