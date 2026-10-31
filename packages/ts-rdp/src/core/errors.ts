@@ -14,7 +14,11 @@ export class RdpProtocolError extends RdpError {
 }
 
 export class RdpAuthError extends RdpError {
-  constructor(message: string) {
+  /**
+   * NTSTATUS, den der Server in CredSSP (TSRequest.errorCode) gemeldet hat,
+   * z.B. 0xc000006d (STATUS_LOGON_FAILURE). Fehlt bei Fehlern ohne Servercode.
+   */
+  constructor(message: string, public readonly ntStatus?: number) {
     super(message, 'RDP_AUTH');
     this.name = 'RdpAuthError';
   }

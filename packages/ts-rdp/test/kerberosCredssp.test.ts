@@ -71,7 +71,11 @@ test('server authentication errors are surfaced without credential delegation', 
   const security = provider();
   const client = new SecurityCredSspClient(credentials, publicKey, security);
   await client.start();
-  await assert.rejects(client.step(encodeTsRequest({ version: 6, errorCode: 0xc000006d })), /c000006d/);
+  await assert.rejects(client.step(encodeTsRequest({ version: 6, errorCode: 0xc000006d })), {
+    name: 'RdpAuthError',
+    message: /c000006d/,
+    ntStatus: 0xc000006d,
+  });
   assert.equal(security.sealed.length, 0);
 });
 

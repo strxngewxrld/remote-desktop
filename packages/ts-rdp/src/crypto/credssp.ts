@@ -133,7 +133,7 @@ export class CredSspClient {
     const req = decodeTsRequest(incoming);
     if (req.version) this.peerVersion = Math.min(req.version, CLIENT_VERSION);
     if (req.errorCode) {
-      throw new RdpAuthError(`CredSSP: Server meldet Fehler 0x${(req.errorCode >>> 0).toString(16)}`);
+      throw new RdpAuthError(`CredSSP: Server meldet Fehler 0x${(req.errorCode >>> 0).toString(16)}`, req.errorCode >>> 0);
     }
 
     switch (this.state) {
@@ -230,7 +230,7 @@ export class SecurityCredSspClient {
   async step(incoming: Buffer): Promise<CredSspResult> {
     const request = decodeTsRequest(incoming);
     if (request.version) this.peerVersion = Math.min(request.version, this.peerVersion);
-    if (request.errorCode) throw new RdpAuthError(`CredSSP: Server meldet Fehler 0x${(request.errorCode >>> 0).toString(16)}`);
+    if (request.errorCode) throw new RdpAuthError(`CredSSP: Server meldet Fehler 0x${(request.errorCode >>> 0).toString(16)}`, request.errorCode >>> 0);
     if (this.state === 'negotiate') {
       if (!request.negoTokens?.[0]?.length) throw new RdpAuthError('CredSSP: Kerberos-Antworttoken fehlt.');
       return { send: await this.negotiate(request.negoTokens[0]), done: false };
