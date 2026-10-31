@@ -119,11 +119,13 @@ test('SIZE und RANGE mit 64-Bit-Groesse und Offset ueber 4 GiB; cbRequested wird
   const ende = await antwort(4, 0, 2, gross, 4096);
   assert.equal(ende.msgFlags, c.CB_RESPONSE_OK);
   assert.equal(ende.body.length, 4);
-  // cbRequested = 4 GiB - 1: die Antwort ist auf 8 MiB begrenzt.
-  const grossAnfrage = await antwort(5, 0, 2, 0, 0xffffffff);
-  assert.equal(laengen.at(-1), c.MAX_DATEIANTWORT_BYTES);
-  assert.equal(grossAnfrage.msgFlags, c.CB_RESPONSE_OK);
-  assert.equal(grossAnfrage.body.length, 4 + c.MAX_DATEIANTWORT_BYTES);
+  // Genau 8 MiB werden voll geliefert, mehr wird abgelehnt statt still gekuerzt.
+  const grenzAnfrage = await antwort(5, 0, 2, 0, c.MAX_DATEIANTWORT_BYTES);
+  assert.equal(grenzAnfrage.msgFlags, c.CB_RESPONSE_OK);
+  assert.equal(grenzAnfrage.body.length, 4 + c.MAX_DATEIANTWORT_BYTES);
+  const zuGross = await antwort(6, 0, 2, 0, 0xffffffff);
+  assert.equal(zuGross.msgFlags, c.CB_RESPONSE_FAIL);
+  assert.equal(zuGross.body.readUInt32LE(0), 6);
 });
 
 test('Fehlerantworten: Offset hinter dem Ende, Ordner, falscher Index, Lesefehler, Kurzlesung, Lock-Laenge', async () => {

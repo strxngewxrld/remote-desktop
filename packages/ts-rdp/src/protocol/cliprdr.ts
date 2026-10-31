@@ -190,7 +190,7 @@ export interface ClipboardFileSource {
 
 /** Hoechstzahl an Eintraegen (Dateien und Ordner) je Kopiervorgang, wie beim Empfang. */
 export const MAX_CLIPBOARD_EINTRAEGE = 4096;
-/** Mehr liefern wir pro CB_FILECONTENTS_RESPONSE nicht - so bleibt der Speicher begrenzt. */
+/** Groessere Bereichsanfragen lehnen wir ab - so bleibt der Speicher begrenzt. */
 export const MAX_DATEIANTWORT_BYTES = 8 * 1024 * 1024;
 
 /** Adapter: eine Datei im Speicher als Quelle. Die Daten werden kopiert. */
@@ -1175,7 +1175,9 @@ export class CliprdrSession {
         payload.writeBigUInt64LE(BigInt(file.size));
       } else {
         if (offset > file.size || !Number.isSafeInteger(offset)) { fail('Offset hinter dem Dateiende'); return; }
-        const laenge = Math.min(count, file.size - offset, MAX_DATEIANTWORT_BYTES);
+        // Kuerzer als angefragt antworten wir nur am Dateiende; sonst saehe der Server ein falsches Ende.
+        if (count > MAX_DATEIANTWORT_BYTES) { fail(`${count} Byte auf einmal angefragt`); return; }
+        const laenge = Math.min(count, file.size - offset);
         payload = laenge > 0 ? await file.read(offset, laenge) : Buffer.alloc(0);
         if (payload.length !== laenge) throw new Error('Datei hat sich während der Übertragung geändert');
       }

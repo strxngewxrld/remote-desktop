@@ -65,7 +65,6 @@ import {
 import { frageFreigabe, vscodeArbeitsbereichZugriff } from './arbeitsbereichZugriff.js';
 import { bereicheAusServer, schneidet, type Bereich } from './monitore.js';
 
-/** Ein Rastschritt des Mausrads, wie ihn Windows erwartet. */
 /** Obergrenze von `rdp.clipboard.maxFileSizeMb` in MiB (100 GiB). */
 export const MAX_CLIPBOARD_DATEI_MB = 102400;
 /** Gesamtgroesse der Dateien je Kopiervorgang in Byte, aus der Einstellung (1 MiB bis 100 GiB). */
@@ -73,7 +72,10 @@ function dateiGrenzeBytes(): number {
   const mb = vscode.workspace.getConfiguration('rdp').get<number>('clipboard.maxFileSizeMb', 4096);
   return Math.min(MAX_CLIPBOARD_DATEI_MB, Math.max(1, Number.isFinite(mb) ? mb : 4096)) * 1024 * 1024;
 }
+/** Das Webview reicht Dateien als Base64 durch, mehr nehmen wir auf diesem Weg nicht an. */
+const WEBVIEW_DATEIGRENZE_BYTES = 256 * 1024 * 1024;
 
+/** Ein Rastschritt des Mausrads, wie ihn Windows erwartet. */
 const WHEEL_STEP = 120;
 
 /** Befehl, der das Diagnose-Overlay ein- und ausblendet. */
@@ -675,7 +677,7 @@ export class RdpSession {
         break;
       case 'clipboardFiles': {
         // Rueckfall: das Webview liefert Dateien (ohne Ordner) als Base64.
-        const limit = dateiGrenzeBytes();
+        const limit = Math.min(dateiGrenzeBytes(), WEBVIEW_DATEIGRENZE_BYTES);
         const raw = message.files;
         if (!Array.isArray(raw) || !raw.length || raw.length > 256) break;
         let encodedSize = 0;
