@@ -80,6 +80,10 @@ export interface WebviewUmgebung {
   readonly bild: { datenUrl: string; wirft?: string };
   /** Die Buehne auf eine neue Groesse bringen und 'resize' ausloesen. */
   groesseAendern(breite: number, hoehe: number): void;
+  /** Die Buehne aendern und nur den ResizeObserver ausloesen (kein 'resize' des Fensters). */
+  groesseNurBeobachter(breite: number, hoehe: number): void;
+  /** devicePixelRatio aendern und die matchMedia-Abfrage ausloesen, wie beim Wechsel des Monitors. */
+  dprAendern(neu: number): void;
   /** Ein Fensterereignis ausloesen, ohne die Groesse anzufassen. */
   loeseFensterEreignisAus(typ: string, ereignis?: unknown): void;
   /** Ein Ereignis an der Zeichenflaeche ausloesen, etwa eine Mausbewegung. */
@@ -169,6 +173,8 @@ export function starteWebview(
   const nachrichtenHorcher: ((e: { data: unknown }) => void)[] = [];
   /** Alle Fensterhorcher, nach Ereignisart - damit Tests sie ausloesen koennen. */
   const fensterHorcher = new Map<string, ((e: unknown) => void)[]>();
+  const beobachter: Array<() => void> = [];
+  const dprHorcher: Array<{ abfrage: string; fn: () => void }> = [];
 
   /**
    * Eine gueltige 1x1-PNG-Datei. Der Host prueft die Signatur, bevor er
@@ -367,6 +373,13 @@ export function starteWebview(
       },
       removeEventListener: () => {},
       devicePixelRatio: 1,
+      matchMedia: (abfrage: string) => ({
+        addEventListener: (_typ: string, fn: () => void) => dprHorcher.push({ abfrage, fn }),
+        removeEventListener: (_typ: string, fn: () => void) => {
+          const i = dprHorcher.findIndex((h) => h.fn === fn);
+          if (i >= 0) dprHorcher.splice(i, 1);
+        },
+      }),
       requestAnimationFrame: (fn: () => void) => {
         fn();
         return 0;
@@ -376,6 +389,13 @@ export function starteWebview(
         : { VideoDecoder: VideoDecoderStub, EncodedVideoChunk: EncodedVideoChunkStub }),
     },
     ImageData: ImageDataStub,
+    ResizeObserver: class {
+      constructor(fn: () => void) {
+        beobachter.push(fn);
+      }
+      observe(): void {}
+      disconnect(): void {}
+    },
     // Bewusst gesetzt und nicht aus Node geerbt: sonst haengt das Ergebnis am
     // Rechner, auf dem die Tests laufen.
     navigator: { platform: umgebungOptionen.plattform ?? 'Linux x86_64' },
@@ -404,6 +424,14 @@ export function starteWebview(
     groesseAendern: (breite: number, hoehe: number) => {
       elemente.get('stage')!.rect = { width: breite, height: hoehe };
       loeseFensterEreignisAus('resize');
+    },
+    groesseNurBeobachter: (breite: number, hoehe: number) => {
+      elemente.get('stage')!.rect = { width: breite, height: hoehe };
+      for (const fn of beobachter) fn();
+    },
+    dprAendern: (neu: number) => {
+      (umgebung.window as { devicePixelRatio: number }).devicePixelRatio = neu;
+      for (const h of dprHorcher.splice(0)) h.fn();
     },
     loeseFensterEreignisAus,
     loeseCanvasEreignisAus: (typ: string, ereignis: unknown) => canvas.loeseAus(typ, ereignis),

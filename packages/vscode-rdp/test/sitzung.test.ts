@@ -697,7 +697,7 @@ describe('Auflösung zieht mit der Panelgröße', () => {
 
     panel.webview.vomWebview({ type: 'resizeRequest', width: 1400, height: 900, devicePixelRatio: 1 });
     await warteBis(
-      () => ausgabe.zeilen.some((z) => z.includes('keinen Auflösungswechsel')),
+      () => ausgabe.zeilen.some((z) => z.includes('vorgemerkt')),
       'Protokolleintrag zur fehlenden Unterstützung',
     );
 

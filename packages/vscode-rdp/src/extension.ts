@@ -373,6 +373,12 @@ export function activate(context: vscode.ExtensionContext): void {
       await session?.monitorHinzufuegen();
     }),
 
+    vscode.commands.registerCommand('rdp.fitResolution', async () => {
+      // Wie bei rdp.addMonitor: gemeint ist die Sitzung, in deren Titelleiste der Knopf sitzt.
+      const session = [...sessions].find((s) => s.istAktiv) ?? (await pickSession());
+      session?.passeAufloesungAn();
+    }),
+
     vscode.commands.registerCommand('rdp.toggleScaling', async () => {
       const session = await pickSession();
       session?.toggleScaling();

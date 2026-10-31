@@ -228,6 +228,12 @@
         "icon": "$(multiple-windows)"
       },
       {
+        "command": "rdp.fitResolution",
+        "category": "RDP",
+        "title": "Auflösung an Fenster anpassen",
+        "icon": "$(screen-normal)"
+      },
+      {
         "command": "rdp.clearCredentials",
         "category": "RDP",
         "title": "Gespeichertes Passwort löschen"
@@ -449,6 +455,11 @@
           "command": "rdp.addMonitor",
           "when": "activeWebviewPanelId == rdpSession",
           "group": "navigation@2"
+        },
+        {
+          "command": "rdp.fitResolution",
+          "when": "activeWebviewPanelId == rdpSession",
+          "group": "navigation@3"
         }
       ],
       "commandPalette": [
@@ -1073,7 +1084,7 @@
         "rdp.dynamicResolution": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Die Desktopauflösung der Größe des Panels folgen lassen (**MS-RDPEDISP**). Ohne diese Funktion bleibt die beim Verbinden ausgehandelte Auflösung bestehen und das Bild wird beim Vergrößern nur unscharf skaliert. Server, die den Kanal nicht anbieten, verhalten sich unverändert."
+          "markdownDescription": "Die Desktopauflösung der Größe des Panels folgen lassen (**MS-RDPEDISP**). Ohne diese Funktion bleibt die beim Verbinden ausgehandelte Auflösung bestehen und das Bild wird beim Vergrößern nur unscharf skaliert. Server, die den Kanal nicht anbieten, verhalten sich unverändert. Der Befehl „Auflösung an Fenster anpassen“ wirkt auch bei ausgeschalteter Einstellung."
         },
         "rdp.dynamicResolutionDelay": {
           "type": "number",

@@ -98,7 +98,7 @@ test('Ohne Profil wird bei jeder Anmeldung gefragt und kein Passwort wiederverwe
   const state = { connection: { host: 'host' }, context };
   const resolve = (RdpSession.prototype as any).resolveCredentials;
   antworten.eingaben.push('DOM\\alice', 'first', 'bob', 'second');
-  assert.deepEqual(await resolve.call(state), { username: 'alice', password: 'first', shouldSave: false });
-  assert.deepEqual(await resolve.call(state), { username: 'bob', password: 'second', shouldSave: false });
+  assert.deepEqual(await resolve.call(state), { username: 'alice', password: 'first', shouldSave: false, ausSpeicher: false });
+  assert.deepEqual(await resolve.call(state), { username: 'bob', password: 'second', shouldSave: false, ausSpeicher: false });
   assert.equal((state.connection as any).domain, '');
 });

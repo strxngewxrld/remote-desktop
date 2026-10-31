@@ -58,7 +58,12 @@
   let aufloesungsVerzug = 400;
   /** Laufender Entprell-Zeitgeber, oder null. */
   let aufloesungsTimer = null;
-  /** Zuletzt gemeldete Buehnengroesse - dieselbe wird nicht zweimal geschickt. */
+  /**
+   * Zuletzt gemeldete Buehnengroesse samt devicePixelRatio - dieselbe wird
+   * nicht zweimal geschickt. Gesetzt wird sie beim 'ready' und bei jeder
+   * Meldung, nie aus dem 'init': dort wuerde sie eine Abweichung verdecken,
+   * die der Host noch gar nicht kennt.
+   */
   let gemeldeteGroesse = null;
   /** Ab dieser Nutzlast lohnt der Umweg ueber Objekteigenschaften nicht mehr. */
   const OBJEKTWEG_GRENZE = 256 * 1024;
@@ -166,27 +171,57 @@
    * sofort bei jedem Ereignis gerufen, damit das Bild waehrend des Ziehens
    * mitwaechst (unscharf) und erst danach scharf nachgezogen wird.
    */
-  function meldeGroesse() {
+  function meldeGroesse(erzwingen) {
     aufloesungsTimer = null;
-    if (!dynamischeAufloesung) return;
+    // Ausdrueckliche Bitte des Hosts (Befehl "Auflösung an Fenster anpassen")
+    // gilt auch bei abgeschaltetem Mitziehen und ohne Vergleich.
+    if (erzwingen !== true && !dynamischeAufloesung) return;
     const groesse = buehnenGroesse();
     if (groesse.width < 1 || groesse.height < 1) return;
-    if (gemeldeteGroesse && gemeldeteGroesse.width === groesse.width && gemeldeteGroesse.height === groesse.height) {
+    const dpr = window.devicePixelRatio || 1;
+    if (
+      erzwingen !== true &&
+      gemeldeteGroesse &&
+      gemeldeteGroesse.width === groesse.width &&
+      gemeldeteGroesse.height === groesse.height &&
+      gemeldeteGroesse.devicePixelRatio === dpr
+    ) {
       return;
     }
-    gemeldeteGroesse = groesse;
+    gemeldeteGroesse = { width: groesse.width, height: groesse.height, devicePixelRatio: dpr };
     vscode.postMessage({
       type: 'resizeRequest',
       width: groesse.width,
       height: groesse.height,
-      devicePixelRatio: window.devicePixelRatio || 1,
+      devicePixelRatio: dpr,
+      ...(erzwingen === true ? { erzwingen: true } : {}),
     });
+  }
+
+  /** Weicht die Buehne von der zuletzt gemeldeten Groesse ab? */
+  function weichtAb() {
+    const groesse = buehnenGroesse();
+    const dpr = window.devicePixelRatio || 1;
+    return (
+      !gemeldeteGroesse ||
+      gemeldeteGroesse.width !== groesse.width ||
+      gemeldeteGroesse.height !== groesse.height ||
+      gemeldeteGroesse.devicePixelRatio !== dpr
+    );
   }
 
   function planeGroessenmeldung() {
     if (!dynamischeAufloesung) return;
     if (aufloesungsTimer !== null) clearTimeout(aufloesungsTimer);
-    aufloesungsTimer = setTimeout(meldeGroesse, aufloesungsVerzug);
+    aufloesungsTimer = setTimeout(() => meldeGroesse(false), aufloesungsVerzug);
+  }
+
+  /** Das Fenster hat sich geaendert: neu skalieren und spaeter die Groesse melden. */
+  function fensterGeaendert() {
+    // Sofort neu skalieren, damit das Bild waehrend des Ziehens mitgeht ...
+    layout();
+    // ... und erst nach der Ruhephase eine scharfe Aufloesung anfragen.
+    planeGroessenmeldung();
   }
 
   /** Bildschirmkoordinaten des Remote-Desktops aus einem Mausereignis. */
@@ -850,12 +885,30 @@
 
   overlayAction.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' }));
 
-  window.addEventListener('resize', () => {
-    // Sofort neu skalieren, damit das Bild waehrend des Ziehens mitgeht ...
-    layout();
-    // ... und erst nach der Ruhephase eine scharfe Aufloesung anfragen.
-    planeGroessenmeldung();
-  });
+  window.addEventListener('resize', fensterGeaendert);
+
+  // 'resize' des Fensters allein genuegt nicht: Das Panel kann seine Groesse
+  // auch aendern, ohne dass das Fenster es tut (Seitenleiste auf- und zugeklappt,
+  // Tab in ein eigenes Fenster gezogen, Editorgruppe geteilt).
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(fensterGeaendert).observe(stage);
+  }
+
+  // Wechselt das Fenster auf einen Monitor mit anderer Pixeldichte, aendert
+  // sich devicePixelRatio, nicht unbedingt die Groesse in CSS-Pixeln. Eine
+  // `resolution`-Abfrage trifft nur auf genau einen Wert zu; nach jedem
+  // Wechsel muss sie deshalb neu aufgebaut werden.
+  function beobachteDpr() {
+    if (typeof window.matchMedia !== 'function') return;
+    const abfrage = window.matchMedia('(resolution: ' + (window.devicePixelRatio || 1) + 'dppx)');
+    const geaendert = () => {
+      if (abfrage.removeEventListener) abfrage.removeEventListener('change', geaendert);
+      fensterGeaendert();
+      beobachteDpr();
+    };
+    if (abfrage.addEventListener) abfrage.addEventListener('change', geaendert, { once: true });
+  }
+  beobachteDpr();
 
   // -------------------------------------------------- Nachrichten vom Host
 
@@ -889,14 +942,17 @@
         if (typeof message.resizeDelay === 'number' && message.resizeDelay >= 0) {
           aufloesungsVerzug = message.resizeDelay;
         }
-        // Der Server hat gerade eine Groesse bestaetigt. Sie gilt jetzt als
-        // gemeldet, sonst schickt die naechste Ruhephase dieselbe Bitte erneut.
-        //
-        // Nur, wenn gerade keine Meldung ansteht: sonst verschluckt eine
-        // Bestaetigung, die waehrend des Ziehens eintrifft, genau die
-        // Groessenaenderung, auf die der Nutzer noch wartet.
-        if (aufloesungsTimer === null) gemeldeteGroesse = buehnenGroesse();
         layout();
+        // Die gemeldete Groesse bleibt, wie sie ist: wuerde sie hier auf die
+        // aktuelle Buehne gesetzt, verdeckte das jede Abweichung, die der Host
+        // noch nicht kennt (Fenster wurde waehrend des Aufbaus veraendert).
+        if (dynamischeAufloesung && aufloesungsTimer === null && weichtAb()) planeGroessenmeldung();
+        break;
+
+      case 'groesseMelden':
+        // Der Host will die Groesse jetzt wissen, nicht erst nach der Ruhephase.
+        if (aufloesungsTimer !== null) clearTimeout(aufloesungsTimer);
+        meldeGroesse(true);
         break;
 
       case 'config':
@@ -973,11 +1029,16 @@
 
   // Groesse melden, damit der Host die Sitzung passend aufloest.
   const rect = stage.getBoundingClientRect();
-  vscode.postMessage({
-    type: 'ready',
+  gemeldeteGroesse = {
     width: Math.floor(rect.width),
     height: Math.floor(rect.height),
     devicePixelRatio: window.devicePixelRatio || 1,
+  };
+  vscode.postMessage({
+    type: 'ready',
+    width: gemeldeteGroesse.width,
+    height: gemeldeteGroesse.height,
+    devicePixelRatio: gemeldeteGroesse.devicePixelRatio,
     // Grobpruefung, noch ohne Codecnamen: gibt es die WebCodecs-API ueberhaupt?
     // Der Host entscheidet damit, ob er H.264 beim Server anmeldet - lieber gar
     // nicht erst anmelden als spaeter leere Bildbereiche erklaeren muessen.

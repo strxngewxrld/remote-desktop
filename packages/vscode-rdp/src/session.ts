@@ -36,6 +36,7 @@ import {
   RDPDR_CHANNEL_NAME,
   RdpdrSession,
   createLogger,
+  RdpAuthError,
 } from 'ts-rdp';
 import type { RdpDiagnostics, EgfxVideoFrame, LogLevel, cliprdr } from 'ts-rdp';
 import { RdpConnection, secretKey, credentialSecretKey, parseUsername } from './connections.js';
@@ -103,6 +104,18 @@ interface ReadyMessage {
   webCodecs?: boolean;
 }
 
+/** Die Zugangsdaten, mit denen ein Verbindungsversuch gemacht wird. */
+interface Anmeldedaten {
+  username: string;
+  password: string;
+  shouldSave: boolean;
+  /** Stammt das Passwort aus dem sicheren Speicher (und nicht aus einer Eingabe)? */
+  ausSpeicher: boolean;
+}
+
+/** STATUS_LOGON_FAILURE: der einzige Code, bei dem ein zweiter Versuch vertretbar ist. */
+const STATUS_LOGON_FAILURE = 0xc000006d;
+
 /**
  * Die Webview meldet eine neue Panelgroesse. Sie ist dort bereits entprellt -
  * hier kommt nur an, was nach der Ruhephase uebrig bleibt.
@@ -112,6 +125,11 @@ interface ResizeRequestMessage {
   width: number;
   height: number;
   devicePixelRatio: number;
+  /**
+   * Antwort auf 'groesseMelden' (Befehl "Auflösung an Fenster anpassen"):
+   * gilt auch bei abgeschaltetem Mitziehen und fester Auflösung.
+   */
+  erzwingen?: boolean;
 }
 
 /** Vorgabe fuer die Ruhezeit der Entprellung in Millisekunden. */
@@ -387,6 +405,32 @@ export class RdpSession {
    */
   private verbindungSteht = false;
   private watchdogTimers: NodeJS.Timeout[] = [];
+  /** Zuletzt gezeigter Overlay-Zustand - fuer ein neu geladenes Webview und fuers Zurueck aus 'keine Antwort'. */
+  private letzterZustand?: { state: string; title?: string; message?: string; action?: string };
+  /** Zuletzt gesendete Zeigerform; ein neu geladenes Webview kennt sie nicht. */
+  private letzterZeiger?: unknown;
+  /** Meldet der Client gerade 'unresponsive'? */
+  private keineAntwort = false;
+  private keineAntwortNachricht?: unknown;
+  /**
+   * Die zuletzt angefragte Zielgroesse. Verhindert, dass ein Server, der eine
+   * andere Groesse erzwingt, eine Endlosschleife aus Anfrage und Antwort ausloest.
+   */
+  private letztesZiel?: string;
+  /** Wie oft wurde diese Sitzung von Grund auf gestartet (ohne automatische Wiederholung)? */
+  private startVersuche = 0;
+  /** Scheiterte der vorige Start an der Verbindung selbst (Timeout, abgelehnt) statt an der Anmeldung? */
+  private vorherVerbindungsfehler = false;
+  /** Stand die Verbindung dieser Sitzung schon einmal? */
+  private warVerbunden = false;
+  /** Wartezeit vor dem einmaligen zweiten Anmeldeversuch; nur Tests aendern sie. */
+  static anmeldeWiederholungMs = 5000;
+  /**
+   * Gespeicherte Passwoerter (nach Secret-Schluessel), mit denen die letzte
+   * Anmeldung abgelehnt wurde. Sie bleiben gespeichert; nur die Rueckfrage
+   * beim naechsten Verbinden haengt daran.
+   */
+  private static readonly abgelehnteAnmeldungen = new Set<string>();
 
   // --- Zwischenablage (MS-RDPECLIP). Fehlt der Kanal, bleibt alles undefined
   //     und die Sitzung verhaelt sich wie vor dieser Erweiterung.
@@ -593,7 +637,12 @@ export class RdpSession {
     if (this.disposed) return;
     switch (message?.type) {
       case 'ready':
-        if (this.lastReady) break;
+        if (this.lastReady) {
+          // Beim Herausziehen in ein eigenes Fenster laedt VS Code das Webview
+          // neu: es ist leer und fragt noch einmal an.
+          this.erneutBereit(message as ReadyMessage);
+          break;
+        }
         // Der Zustand des Overlays geht vor dem Verbindungsaufbau hinueber:
         // die Webview soll ihn nicht erst nach dem ersten Bild erfahren.
         this.setzeDiagnose(this.diagnoseSichtbar);
@@ -610,20 +659,7 @@ export class RdpSession {
         if (message.seq === this.rttSeq && this.rttGesendet) this.rttMs = Date.now() - this.rttGesendet;
         break;
       case 'reconnect':
-        this.painted = false;
-        this.verbindungSteht = false;
-        this.clearWatchdog();
-        // Die neue Verbindung faengt bei null an - sonst stuende im Overlay
-        // eine Rate, die aus zwei verschiedenen Sitzungen stammt.
-        this.diagnoseZaehlerZuruecksetzen();
-        // Die alte Verbindung erst trennen, dann vergessen. Andersherum bleibt
-        // sie offen, ohne dass noch jemand sie kennt: der Server haelt die
-        // Sitzung, und ihre Horcher speisen weiter Kacheln und Fehler in
-        // dieses Webview. Bei jedem Klick auf "Erneut verbinden" kaeme eine
-        // weitere solche Geistersitzung dazu.
-        this.client?.disconnect();
-        this.client = undefined;
-        await this.start(this.lastReady ?? { type: 'ready', width: 1280, height: 800, devicePixelRatio: 1 });
+        await this.verbindeNeu();
         break;
       case 'painted':
         if (!this.painted) {
@@ -718,13 +754,83 @@ export class RdpSession {
 
   private lastReady?: ReadyMessage;
 
+  /** Die alte Verbindung trennen und von vorn beginnen. */
+  private async verbindeNeu(): Promise<void> {
+    this.painted = false;
+    this.verbindungSteht = false;
+    this.keineAntwort = false;
+    this.letztesZiel = undefined;
+    this.clearWatchdog();
+    // Die neue Verbindung faengt bei null an - sonst stuende im Overlay
+    // eine Rate, die aus zwei verschiedenen Sitzungen stammt.
+    this.diagnoseZaehlerZuruecksetzen();
+    // Die alte Verbindung erst trennen, dann vergessen. Andersherum bleibt
+    // sie offen, ohne dass noch jemand sie kennt: der Server haelt die
+    // Sitzung, und ihre Horcher speisen weiter Kacheln und Fehler in
+    // dieses Webview. Bei jedem Klick auf "Erneut verbinden" kaeme eine
+    // weitere solche Geistersitzung dazu.
+    this.client?.disconnect();
+    this.client = undefined;
+    await this.start(this.lastReady ?? { type: 'ready', width: 1280, height: 800, devicePixelRatio: 1 });
+  }
+
+  /**
+   * Das Webview hat erneut 'ready' gemeldet, obwohl die Sitzung schon laeuft:
+   * es wurde neu geladen und ist leer. Alles, was der Host ihm bisher
+   * geschickt hat, geht noch einmal hinaus.
+   */
+  private erneutBereit(ready: ReadyMessage): void {
+    // Die neue Groesse merken - in jedem Fall, auch waehrend des Aufbaus.
+    this.merkePanelgroesse(ready);
+    const config = vscode.workspace.getConfiguration('rdp');
+    this.setzeDiagnose(this.diagnoseSichtbar);
+    this.sendeFarbe();
+    const client = this.client;
+    if (!client?.isConnected || !this.verbindungSteht) {
+      // Der Aufbau laeuft noch (oder die Sitzung ist beendet): nur den
+      // Zustand zeigen, die gemerkte Groesse wirkt, sobald die Verbindung steht.
+      if (this.letzterZustand) this.post({ type: 'state', ...this.letzterZustand });
+      return;
+    }
+    this.log('Webview wurde neu geladen – Zustand und Bild werden erneut gesendet');
+    this.sendeInit(config);
+    if (this.letzterZeiger) this.post(this.letzterZeiger);
+    this.painted = false;
+    if (this.keineAntwort && this.keineAntwortNachricht) {
+      this.post(this.keineAntwortNachricht);
+    } else {
+      this.post({ type: 'state', state: 'waiting', title: 'Verbunden', message: 'Warte auf den Bildschirminhalt des Servers…' });
+    }
+    this.startWatchdog(client);
+    client.refresh();
+    this.aufloesungMitziehen({
+      type: 'resizeRequest',
+      width: ready.width,
+      height: ready.height,
+      devicePixelRatio: ready.devicePixelRatio,
+    });
+  }
+
+  /** Die letzte bekannte Panelgroesse; sie dient auch dem Wiederverbinden. */
+  private merkePanelgroesse(groesse: { width: number; height: number; devicePixelRatio: number }): void {
+    if (!this.lastReady) return;
+    this.lastReady = {
+      ...this.lastReady,
+      width: groesse.width,
+      height: groesse.height,
+      devicePixelRatio: groesse.devicePixelRatio,
+    };
+  }
+
   // ------------------------------------------------------------ Verbindung
 
-  private async start(ready: ReadyMessage): Promise<void> {
+  private async start(ready: ReadyMessage, wiederholung?: Anmeldedaten): Promise<void> {
     if (this.disposed) return;
     const generation = ++this.startGeneration;
+    if (!wiederholung) this.startVersuche++;
     const cancelled = () => this.disposed || generation !== this.startGeneration;
     this.lastReady = ready;
+    let credentials: Anmeldedaten | undefined;
     const config = vscode.workspace.getConfiguration('rdp');
     const host = this.connection.host;
     const port = this.connection.port ?? 3389;
@@ -762,7 +868,7 @@ export class RdpSession {
       }
       const expectedFingerprint = certificate.fingerprint256;
 
-      const credentials = await this.resolveCredentials();
+      credentials = wiederholung ?? (await this.resolveCredentials());
       if (cancelled()) return;
       if (!credentials) {
         this.setState('error', 'Verbindung abgebrochen', 'Es wurden keine Zugangsdaten eingegeben.', 'Erneut versuchen');
@@ -813,9 +919,11 @@ export class RdpSession {
           ...(laufwerkEinstellungen.aktiv ? [RDPSND_CHANNEL_DEF, RDPDR_CHANNEL_DEF] : []),
         ],
         enableGraphicsPipeline: config.get<boolean>('graphicsPipeline', true),
-        // Der Display Control Channel wird angefragt, sobald das Mitziehen
-        // erlaubt ist. Oeffnet der Server ihn nicht, aendert das nichts.
-        enableDisplayControl: config.get<boolean>('dynamicResolution', true),
+        // Der Display Control Channel wird immer angemeldet: der Befehl
+        // "Auflösung an Fenster anpassen" braucht ihn auch bei ausgeschaltetem
+        // Mitziehen. Ob die Groesse automatisch folgt, entscheidet allein die
+        // Einstellung. Oeffnet der Server den Kanal nicht, aendert das nichts.
+        enableDisplayControl: true,
         // H.264 nur auf ausdrueckliche Ansage. Ohne die Einstellung wird der
         // Capabilityssatz gar nicht erst uebergeben, der Server bekommt also
         // dasselbe Angebot wie bisher und schickt weiterhin ClearCodec,
@@ -840,18 +948,55 @@ export class RdpSession {
       await client.connect();
       if (cancelled()) { client.disconnect(); return; }
 
-      if (credentials.shouldSave) {
-        await this.context.secrets.store(this.anmeldeSecretKey ?? secretKey(this.connection), credentials.password);
-      }
+      const schluessel = this.anmeldeSecretKey ?? secretKey(this.connection);
+      this.warVerbunden = true;
+      this.vorherVerbindungsfehler = false;
+      RdpSession.abgelehnteAnmeldungen.delete(schluessel);
+      // Ein neu eingegebenes Passwort ueberschreibt das gespeicherte erst jetzt,
+      // wo es sich bewaehrt hat.
+      if (credentials.shouldSave) await this.context.secrets.store(schluessel, credentials.password);
     } catch (error) {
       if (cancelled()) return;
       const err = error as Error;
       this.log(`Fehler: ${err.stack ?? err.message}`);
-      this.setState('error', 'Verbindung fehlgeschlagen', humanizeError(err, port), 'Erneut verbinden');
-      // Ein falsches Passwort soll nicht dauerhaft gespeichert bleiben.
-      if (/CredSSP|Anmelde|Zugangsdaten/i.test(err.message) && this.anmeldeSecretKey) {
-        await this.context.secrets.delete(this.anmeldeSecretKey);
+      const abgelehnt = err instanceof RdpAuthError || /CredSSP|Anmelde|Zugangsdaten/i.test(err.message);
+      if (!abgelehnt) {
+        this.vorherVerbindungsfehler = true;
+      } else {
+        const ntStatus = err instanceof RdpAuthError ? err.ntStatus : undefined;
+        // Ein frisch startender Server kann Anmeldungen noch nicht pruefen und
+        // meldet dann 0xc000006d, obwohl das Passwort stimmt. Einmal nach
+        // einer Pause nachfassen - nur bei diesem Code und nur mit dem
+        // gespeicherten Passwort, damit keine Kontosperre riskiert wird.
+        const serverStartetEvtl = this.startVersuche <= 1 || this.vorherVerbindungsfehler;
+        this.vorherVerbindungsfehler = false;
+        if (
+          credentials?.ausSpeicher &&
+          ntStatus === STATUS_LOGON_FAILURE &&
+          !wiederholung &&
+          !this.warVerbunden &&
+          serverStartetEvtl
+        ) {
+          const wartezeit = RdpSession.anmeldeWiederholungMs;
+          this.log(`Anmeldung mit gespeichertem Passwort abgelehnt (0xc000006d) – einmaliger neuer Versuch in ${Math.round(wartezeit / 1000)} s`);
+          this.setState(
+            'connecting',
+            'Anmeldung abgelehnt',
+            `Anmeldung abgelehnt – der Server startet evtl. noch, neuer Versuch in ${Math.round(wartezeit / 1000)} s`,
+          );
+          await new Promise<void>((weiter) => this.watchdogTimers.push(setTimeout(weiter, wartezeit)));
+          if (cancelled()) return;
+          await this.start(ready, credentials);
+          return;
+        }
+        // Das gespeicherte Passwort bleibt, wie es ist: der Fehler kann am
+        // Server liegen. Gemerkt wird nur, dass beim naechsten Mal gefragt wird.
+        if (credentials?.ausSpeicher) {
+          RdpSession.abgelehnteAnmeldungen.add(this.anmeldeSecretKey ?? secretKey(this.connection));
+          this.log('Das gespeicherte Passwort bleibt erhalten; beim nächsten Verbinden wird gefragt, ob es erneut verwendet werden soll.');
+        }
       }
+      this.setState('error', 'Verbindung fehlgeschlagen', humanizeError(err, port), 'Erneut verbinden');
     }
   }
 
@@ -922,30 +1067,63 @@ export class RdpSession {
     };
   }
 
-  private aufloesungMitziehen(nachricht: ResizeRequestMessage): void {
+  /**
+   * Die Panelgroesse beim Server nachfuehren.
+   *
+   * Die Groesse wird immer gemerkt, auch wenn sie jetzt nicht angewendet
+   * werden kann (Verbindung im Aufbau, Display Control noch nicht offen) -
+   * `wendeGemerkteGroesseAn` holt das nach. Mit `nachziehen` kommt der Aufruf
+   * aus dem Host selbst und nicht aus dem Webview.
+   */
+  private aufloesungMitziehen(nachricht: ResizeRequestMessage, nachziehen = false): void {
+    const erzwingen = nachricht.erzwingen === true;
+    if (!nachziehen) this.merkePanelgroesse(nachricht);
     const client = this.client;
     if (!client || !this.verbindungSteht) return;
 
     const config = vscode.workspace.getConfiguration('rdp');
-    if (!config.get<boolean>('dynamicResolution', true)) return;
-
-    // Eine fest eingetragene Aufloesung ist eine Ansage des Nutzers und wird
-    // nicht ueberstimmt - auch nicht, wenn das Panel eine andere Form hat.
-    if (this.connection.width && this.connection.height) {
-      this.log('Auflösung ist für diese Verbindung fest eingestellt - das Panel zieht nicht mit.');
-      return;
+    // Der Befehl "Auflösung an Fenster anpassen" ist ein ausdruecklicher
+    // Wunsch und geht an Einstellung und fester Auflösung vorbei.
+    if (!erzwingen) {
+      if (!config.get<boolean>('dynamicResolution', true)) return;
+      // Eine fest eingetragene Aufloesung ist eine Ansage des Nutzers und wird
+      // nicht ueberstimmt - auch nicht, wenn das Panel eine andere Form hat.
+      if (this.connection.width && this.connection.height) {
+        if (!nachziehen) this.log('Auflösung ist für diese Verbindung fest eingestellt - das Panel zieht nicht mit.');
+        return;
+      }
     }
 
     const faktor = this.pixelFaktor(nachricht.devicePixelRatio, config);
     const groesse = RdpSession.aufloesungAusPanel(nachricht.width, nachricht.height, faktor);
+    if (!client.canChangeResolution && !erzwingen) {
+      // Der Kanal ist noch nicht offen (oder der Server hat keinen). Die
+      // Groesse ist gemerkt und wird mit 'displayControlReady' angewendet.
+      this.log(
+        `Auflösung ${groesse.width}×${groesse.height} vorgemerkt – der Server hat den Auflösungswechsel (Display Control) noch nicht gemeldet; ` +
+          'ohne ihn bleibt es beim Skalieren.',
+      );
+      return;
+    }
+
     // Mit weiteren Monitoren ist der Desktop breiter als dieses Panel. Dann
     // geht die ganze Anordnung neu hinaus, nicht nur dieser eine Monitor.
     if (this.zusatzMonitore.length > 0) {
+      const ziel = `anordnung:${groesse.width}x${groesse.height}+${this.zusatzMonitore.map((m) => `${m.groesse?.width}x${m.groesse?.height}`).join('+')}`;
+      if (!erzwingen && ziel === this.letztesZiel) return;
+      this.letztesZiel = ziel;
       this.primaerGroesse = groesse;
       this.anordnungAnfragen();
       return;
     }
-    if (groesse.width === client.width && groesse.height === client.height) return;
+    if (groesse.width === client.width && groesse.height === client.height) {
+      if (erzwingen) this.log(`Auflösung passt bereits zum Fenster (${groesse.width}×${groesse.height})`);
+      return;
+    }
+    // Hoechstens einmal je Zielgroesse: erzwingt der Server eine andere, fragt
+    // der Nachzug nicht ein zweites Mal dasselbe an.
+    const ziel = `${groesse.width}x${groesse.height}`;
+    if (!erzwingen && ziel === this.letztesZiel) return;
     this.primaerGroesse = groesse;
 
     // Bei eingeschaltetem HiDPI weiss der Server ueber die Skalierungsfelder,
@@ -955,7 +1133,12 @@ export class RdpSession {
       deviceScaleFactor: Math.round(faktor * 100),
     });
     if (gesendet) {
-      this.log(`Neue Auflösung angefragt: ${groesse.width}×${groesse.height}`);
+      this.letztesZiel = ziel;
+      this.log(
+        erzwingen
+          ? `Auflösung auf Wunsch an das Fenster angepasst: ${groesse.width}×${groesse.height}`
+          : `Neue Auflösung angefragt: ${groesse.width}×${groesse.height}`,
+      );
     } else {
       // Kein Fehlerzustand, keine Einblendung: ein Server ohne RDPEDISP ist
       // voellig in Ordnung, das Bild wird dann eben weiter skaliert.
@@ -964,6 +1147,46 @@ export class RdpSession {
           'der Server unterstützt keinen Auflösungswechsel im laufenden Betrieb.',
       );
     }
+  }
+
+  /**
+   * Die gemerkte Panelgroesse anwenden, falls sie von der Sitzung abweicht.
+   * Nach dem Aufbau der Verbindung, wenn Display Control bereit ist, und nach
+   * jeder Groessenmeldung des Servers.
+   */
+  private wendeGemerkteGroesseAn(): void {
+    const ready = this.lastReady;
+    if (!ready) return;
+    this.aufloesungMitziehen(
+      { type: 'resizeRequest', width: ready.width, height: ready.height, devicePixelRatio: ready.devicePixelRatio },
+      true,
+    );
+  }
+
+  /**
+   * Befehl "Auflösung an Fenster anpassen": die Webview nach der aktuellen
+   * Groesse fragen; ihre Antwort wird auch bei ausgeschaltetem Mitziehen
+   * angewendet.
+   */
+  passeAufloesungAn(): void {
+    const client = this.client;
+    if (!client?.isConnected || !this.verbindungSteht) {
+      void vscode.window.showInformationMessage('Die Auflösung lässt sich erst anpassen, wenn die Sitzung verbunden ist.');
+      return;
+    }
+    if (!client.canChangeResolution) {
+      void vscode.window
+        .showInformationMessage(
+          'Der Server unterstützt keinen Auflösungswechsel im laufenden Betrieb – neu verbinden übernimmt die Fenstergröße.',
+          'Neu verbinden',
+        )
+        .then((wahl) => {
+          if (wahl === 'Neu verbinden' && !this.disposed) void this.verbindeNeu();
+        });
+      return;
+    }
+    this.log('Auflösung an Fenster anpassen: Fenstergröße wird abgefragt');
+    this.postAlle({ type: 'groesseMelden' });
   }
 
   /**
@@ -982,7 +1205,7 @@ export class RdpSession {
 
   private anmeldeSecretKey?: string;
 
-  private async resolveCredentials(): Promise<{ username: string; password: string; shouldSave: boolean } | undefined> {
+  private async resolveCredentials(): Promise<Anmeldedaten | undefined> {
     this.anmeldeSecretKey = undefined;
     const profiles = this.connection.promptCredentials ? [] : this.connection.credentials ?? [];
     let profile = profiles.find(c => c.id === this.connection.defaultCredential);
@@ -1017,8 +1240,22 @@ export class RdpSession {
     // Den tatsächlich verwendeten Benutzernamen auch dem Passwortschlüssel zugrunde legen.
     if (!prompt) this.connection.username = username;
     if (!prompt) this.anmeldeSecretKey ??= secretKey(this.connection);
-    const stored = prompt ? undefined : await this.context.secrets.get(this.anmeldeSecretKey ?? secretKey(this.connection));
-    if (stored) return { username, password: stored, shouldSave: false };
+    const schluessel = this.anmeldeSecretKey ?? secretKey(this.connection);
+    const stored = prompt ? undefined : await this.context.secrets.get(schluessel);
+    if (stored) {
+      if (!RdpSession.abgelehnteAnmeldungen.has(schluessel)) {
+        return { username, password: stored, shouldSave: false, ausSpeicher: true };
+      }
+      const wahl = await vscode.window.showQuickPick(
+        [
+          { label: 'Gespeichertes Passwort erneut verwenden', description: 'Die letzte Anmeldung wurde abgelehnt – evtl. war der Server noch nicht bereit', value: true },
+          { label: 'Neues Passwort eingeben', description: 'Das gespeicherte Passwort wird nach erfolgreicher Anmeldung ersetzt, wenn Sie es merken lassen', value: false },
+        ],
+        { title: `Anmeldung an ${this.connection.host} wurde abgelehnt`, ignoreFocusOut: true },
+      );
+      if (!wahl) return undefined;
+      if (wahl.value) return { username, password: stored, shouldSave: false, ausSpeicher: true };
+    }
 
     const password = await vscode.window.showInputBox({
       title: `Anmeldung an ${this.connection.host}`,
@@ -1028,7 +1265,7 @@ export class RdpSession {
     });
     if (password === undefined) return undefined;
 
-    if (prompt) return { username, password, shouldSave: false };
+    if (prompt) return { username, password, shouldSave: false, ausSpeicher: false };
 
     const save = await vscode.window.showQuickPick(
       [
@@ -1038,7 +1275,7 @@ export class RdpSession {
       { title: 'Passwort speichern?', ignoreFocusOut: true },
     );
 
-    return { username, password, shouldSave: save?.value === true };
+    return { username, password, shouldSave: save?.value === true, ausSpeicher: false };
   }
 
   private wireClient(client: RdpClient): void {
@@ -1046,6 +1283,7 @@ export class RdpSession {
 
     client.on('connect', () => {
       this.verbindungSteht = true;
+      this.letztesZiel = undefined;
       this.verbundenSeit = Date.now();
       // Jede Verbindung beginnt mit einem Monitor - auch ein automatisches
       // Wiederverbinden. Weitere werden gleich unten erneut angefragt.
@@ -1085,17 +1323,40 @@ export class RdpSession {
 
     client.on('pointer', (pointer: PointerImage | null) => {
       if (!pointer) {
-        this.postAlle({ type: 'pointerDefault' });
+        this.letzterZeiger = { type: 'pointerDefault' };
+        this.postAlle(this.letzterZeiger);
         return;
       }
-      this.postAlle({
+      this.letzterZeiger = {
         type: 'pointer',
         width: pointer.width,
         height: pointer.height,
         hotspotX: pointer.hotspotX,
         hotspotY: pointer.hotspotY,
         data: this.encode(Buffer.from(pointer.rgba.buffer, pointer.rgba.byteOffset, pointer.rgba.byteLength)),
-      });
+      };
+      this.postAlle(this.letzterZeiger);
+    });
+
+    // Display Control ist offen: eine Panelgroesse, die waehrend des Aufbaus
+    // nicht angewendet werden konnte, wird jetzt nachgeholt.
+    client.on('displayControlReady', () => {
+      if (this.verbindungSteht) this.wendeGemerkteGroesseAn();
+    });
+
+    client.on('unresponsive', ({ sinceMs }) => {
+      this.log(`Seit ${Math.round(sinceMs / 1000)} s kommt nichts mehr vom Server an`);
+      this.zeigeKeineAntwort(sinceMs);
+    });
+
+    client.on('responsive', () => {
+      this.log('Der Server antwortet wieder');
+      if (!this.keineAntwort) return;
+      this.keineAntwort = false;
+      this.keineAntwortNachricht = undefined;
+      // Zurueck in den Zustand davor (verbunden bzw. wartend).
+      this.postAlle({ type: 'state', ...(this.letzterZustand ?? { state: 'connected' }) });
+      this.updateStatusBar();
     });
 
     client.on('resize', ({ width, height, monitors }) => {
@@ -1114,9 +1375,15 @@ export class RdpSession {
       for (const monitor of this.zusatzMonitore) monitor.gezeichnet = false;
       this.setState('waiting', 'Auflösung geändert', 'Warte auf das neue Bild…');
       this.startWatchdog(client);
+      // Hat sich das Panel inzwischen weiter veraendert, ist die Antwort des
+      // Servers schon wieder veraltet.
+      this.wendeGemerkteGroesseAn();
     });
 
-    client.on('pointerHidden', () => this.postAlle({ type: 'pointerHidden' }));
+    client.on('pointerHidden', () => {
+      this.letzterZeiger = { type: 'pointerHidden' };
+      this.postAlle(this.letzterZeiger);
+    });
 
     client.on('error', (err: Error) => {
       this.log(`Sitzungsfehler: ${err.stack ?? err.message}`);
@@ -2111,7 +2378,32 @@ export class RdpSession {
     message?: string,
     action?: string,
   ): void {
+    this.letzterZustand = { state, title, message, action };
+    if (this.keineAntwort) {
+      this.keineAntwort = false;
+      this.keineAntwortNachricht = undefined;
+      this.updateStatusBar();
+    }
     this.postAlle({ type: 'state', state, title, message, action });
+  }
+
+  /**
+   * Der Server schweigt seit `sinceMs`. Das Overlay bleibt bedienbar (Zustand
+   * 'waiting' erlaubt Eingaben): ein Fehlalarm darf eine gesunde Sitzung nicht
+   * sperren. `letzterZustand` bleibt unberuehrt, damit 'responsive' dorthin
+   * zurueckkehren kann.
+   */
+  private zeigeKeineAntwort(sinceMs: number): void {
+    this.keineAntwort = true;
+    this.keineAntwortNachricht = {
+      type: 'state',
+      state: 'waiting',
+      title: 'Keine Antwort vom Server',
+      message: `Seit ${Math.round(sinceMs / 1000)} s kommt nichts mehr an. Netzwerk unterbrochen oder Rechner war im Ruhezustand.`,
+      action: 'Erneut verbinden',
+    };
+    this.postAlle(this.keineAntwortNachricht);
+    this.updateStatusBar();
   }
 
   private updateStatusBar(): void {
@@ -2120,8 +2412,11 @@ export class RdpSession {
       return;
     }
     const kennung = farbeZu(this.connection.color);
-    this.statusBar.text = `$(vm-active) ${this.title}`;
-    this.statusBar.tooltip = kennung
+    this.statusBar.text = this.keineAntwort ? `$(warning) ${this.title}` : `$(vm-active) ${this.title}`;
+    this.statusBar.backgroundColor = this.keineAntwort ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined;
+    this.statusBar.tooltip = this.keineAntwort
+      ? `Keine Antwort von ${this.connection.host}: Netzwerk unterbrochen oder Rechner war im Ruhezustand`
+      : kennung
       ? `RDP-Sitzung aktiv: ${this.connection.host} · ${kennung.titel}`
       : `RDP-Sitzung aktiv: ${this.connection.host}`;
     // Bewusst nur die Vordergrundfarbe: `backgroundColor` nimmt laut API
@@ -2188,9 +2483,31 @@ function formatFingerprint(value: string | undefined): string | undefined {
   return clean.match(/.{2}/g)?.join(':');
 }
 
+/** NTSTATUS-Codes, die CredSSP bei einer abgelehnten Anmeldung meldet. */
+const NTSTATUS_TEXTE: Record<number, string> = {
+  0xc000006d:
+    'Die Anmeldung wurde abgelehnt (0xc000006d, Anmeldung fehlgeschlagen): Benutzername oder Passwort stimmen nicht. ' +
+    'Wenn der Server gerade erst gestartet ist, kurz warten und erneut verbinden – das gespeicherte Passwort bleibt erhalten.',
+  0xc000006a: 'Das Passwort ist falsch (0xc000006a).',
+  0xc0000064: 'Den Benutzernamen gibt es auf dem Server nicht (0xc0000064).',
+  0xc0000234: 'Das Konto ist gesperrt (0xc0000234). Bitte nicht erneut versuchen, sondern den Administrator bitten, es zu entsperren.',
+  0xc0000071: 'Das Passwort ist abgelaufen (0xc0000071) und muss geändert werden.',
+  0xc0000224: 'Das Passwort muss bei der nächsten Anmeldung geändert werden (0xc0000224).',
+  0xc000015b: 'Dem Konto fehlt das Recht zur Anmeldung über Remotedesktop (0xc000015b).',
+  0xc0000072: 'Das Konto ist deaktiviert (0xc0000072).',
+};
+
+/** Deutscher Klartext zu einem NTSTATUS aus CredSSP; undefined bei unbekannten Codes. */
+export function ntStatusText(status: number): string | undefined {
+  return NTSTATUS_TEXTE[status >>> 0];
+}
+
 /** Uebersetzt technische Fehler in eine Erklaerung mit Handlungshinweis. */
 export function humanizeError(err: Error, port = 3389): string {
   const message = err.message;
+  const ntStatus = (err as { ntStatus?: number }).ntStatus;
+  const statusText = ntStatus !== undefined ? ntStatusText(ntStatus) : undefined;
+  if (statusText) return statusText;
   if (isTlsCompatibilityError(err)) {
     return (
       'Der TLS-Handshake ist an einer Unverträglichkeit gescheitert – auch der Versuch mit ' +
