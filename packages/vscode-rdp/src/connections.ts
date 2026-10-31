@@ -524,9 +524,10 @@ export class ConnectionNode extends vscode.TreeItem {
     this.aufgeloest = loeseVerbindungAuf(eintrag);
 
     const aufgeloest = this.aufgeloest;
-    const user = aufgeloest.domain
-      ? `${aufgeloest.domain}\\${aufgeloest.username ?? ''}`
-      : aufgeloest.username ?? '';
+    const profile = aufgeloest.promptCredentials ? [] : aufgeloest.credentials ?? [];
+    const vorgabe = profile.find((c) => c.id === aufgeloest.defaultCredential) ?? (profile.length === 1 ? profile[0] : undefined);
+    const login = vorgabe ?? aufgeloest;
+    const user = login.domain ? `${login.domain}\\${login.username ?? ''}` : login.username ?? '';
     const tags = effektiveTags(verbindung, eintrag.ordnerKette);
     const basis = user ? `${user} · ${aufgeloest.host}` : aufgeloest.host;
     this.description = tags.length > 0 ? `${basis} · ${tags.map((t) => '#' + t).join(' ')}` : basis;
@@ -541,7 +542,12 @@ export class ConnectionNode extends vscode.TreeItem {
         `**${verbindung.name || verbindung.host}**`,
         '',
         `- Host: \`${aufgeloest.host}:${aufgeloest.port ?? 3389}\``,
-        user ? `- Anmeldung: \`${user}\`` : '- Anmeldung: wird beim Verbinden abgefragt',
+        user
+          ? `- Anmeldung: \`${user}\`${vorgabe ? ` (${vorgabe.name})` : ''}`
+          : profile.length > 1
+            ? '- Anmeldung: Auswahl beim Verbinden'
+            : '- Anmeldung: wird beim Verbinden abgefragt',
+        ...(profile.length > 1 ? [`- Zur Auswahl: ${profile.map((c) => c.name).join(', ')}`] : []),
         aufgeloest.width && aufgeloest.height
           ? `- Auflösung: ${aufgeloest.width}×${aufgeloest.height}`
           : '- Auflösung: an Panelgröße angepasst',

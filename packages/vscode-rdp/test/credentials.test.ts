@@ -6,6 +6,19 @@ import { verwalteCredentials, waehleAnmeldung } from '../src/credentials.js';
 import { RdpSession } from '../src/session.js';
 
 beforeEach(() => zuruecksetzen());
+
+test('Baumeintrag zeigt Standardprofil und Auswahl im Tooltip', async () => {
+  const { ConnectionNode } = await import('../src/connections.js');
+  const text = (k: InstanceType<typeof ConnectionNode>) => String((k.tooltip as { value: string }).value);
+  const p1 = { id: 'admin', name: 'Admin', username: 'administrator' };
+  const p2 = { id: 'user', name: 'Benutzer', username: 'user' };
+  const knoten = new ConnectionNode({ verbindung: { name: 'DC', host: 'dc', credentials: [p1, p2], defaultCredential: 'user' }, pfad: [0], ordnerKette: [] });
+  assert.match(text(knoten), /Anmeldung: `user` \(Benutzer\)/);
+  assert.match(text(knoten), /Zur Auswahl: Admin, Benutzer/);
+  const ohne = new ConnectionNode({ verbindung: { name: 'X', host: 'x', credentials: [p1, p2] }, pfad: [1], ordnerKette: [] });
+  assert.match(text(ohne), /Auswahl beim Verbinden/);
+  assert.equal(ohne.description, 'x');
+});
 const admin = { id: 'admin', name: 'Admin', username: 'administrator' };
 const user = { id: 'user', name: 'Benutzer', username: 'user' };
 
