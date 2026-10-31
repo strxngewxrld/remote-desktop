@@ -262,7 +262,34 @@ export interface RdpClientOptions {
    * Info-PDU, ein Verbindungsverlust endet unmittelbar in 'close'.
    */
   autoReconnect?: AutoReconnectOptions;
+  /**
+   * Ueberwachung der laufenden Verbindung. Ein toter Socket faellt dem
+   * Betriebssystem oft erst nach Minuten auf (TCP-Retransmission); hiermit
+   * meldet der Client schon nach wenigen Sekunden 'unresponsive'. Er trennt
+   * dabei nie selbst - das Ereignis ist ein Hinweis, kein Urteil.
+   * Ohne Angabe an.
+   */
+  liveness?: LivenessOptions;
 }
+
+/** Stellschrauben der Verbindungsueberwachung. */
+export interface LivenessOptions {
+  /** Standard: an. */
+  enabled?: boolean;
+  /** Stille in Millisekunden, ab der eine Probe gesendet wird (Standard 15000). */
+  idleMs?: number;
+  /** So lange wird auf eine Antwort auf die Probe gewartet (Standard 8000). */
+  probeTimeoutMs?: number;
+  /** Takt der Pruefung in Millisekunden (Standard 2000). */
+  tickMs?: number;
+  /** Uhr in Millisekunden - nur zum Nachstellen von Zeit in Tests. */
+  now?: () => number;
+}
+
+/** Springt die Uhr zwischen zwei Takten um mehr als das, gilt das als Ruhezustand. */
+const LIVENESS_SPRUNG_MS = 10_000;
+/** Probe-Wartezeit nach einem Uhrensprung: der Netzwerkzustand ist dann ohnehin fraglich. */
+const LIVENESS_SPRUNG_TIMEOUT_MS = 3_000;
 
 /**
  * Stellschrauben des automatischen Wiederverbindungsaufbaus.
@@ -354,6 +381,14 @@ export interface RdpClientEvents {
   }) => void;
   /** Alle Versuche sind verbraucht. Danach folgt noch genau ein 'close'. */
   gaveUp: (info: { attempts: number; lastError?: Error; reason?: string }) => void;
+  /**
+   * Seit `sinceMs` Millisekunden kam nichts mehr vom Server an, und auch eine
+   * Probe blieb unbeantwortet. Die Verbindung wird nicht getrennt: manche
+   * Server antworten auf Refresh Rect nicht, ohne dass etwas kaputt waere.
+   */
+  unresponsive: (info: { sinceMs: number }) => void;
+  /** Nach 'unresponsive' sind wieder Daten eingetroffen. */
+  responsive: () => void;
   /**
    * Der Server hat einen Auto-Reconnect-Cookie hinterlegt: ab jetzt ist eine
    * Rueckkehr in dieselbe Sitzung ohne erneute Anmeldung moeglich.
@@ -536,6 +571,11 @@ export class RdpClient extends EventEmitter {
    * Wiederholung, kein Fehler, kein Ereignis.
    */
   private benutzerTrennung = false;
+  private livenessTimer?: NodeJS.Timeout;
+  private livenessLetzterTakt = 0;
+  private livenessProbe?: { gesendetUm: number; timeoutMs: number };
+  private livenessLetzteProbe = 0;
+  private reagiertNicht = false;
 
   constructor(options: RdpClientOptions) {
     super();
@@ -585,6 +625,7 @@ export class RdpClient extends EventEmitter {
       rejectUnauthorized: this.opts.rejectUnauthorized,
       verifyCertificate: this.opts.verifyCertificate,
       tlsProfile,
+      now: this.opts.liveness?.now,
     });
     transport.on('error', (err) => this.fail(err));
     transport.on('close', () => this.handleClose());
@@ -675,6 +716,81 @@ export class RdpClient extends EventEmitter {
     this.queuedFrameBytes = 0;
     for (const frame of queued) this.handleFrame(frame);
     this.transport.startFlowing();
+    this.starteLiveness();
+  }
+
+  // ------------------------------------------------ Verbindungsueberwachung
+
+  private starteLiveness(): void {
+    this.stoppeLiveness();
+    const opt = this.opts.liveness;
+    if (opt?.enabled === false) return;
+    const takt = opt?.tickMs ?? 2000;
+    const uhr = opt?.now ?? Date.now;
+    this.livenessLetzterTakt = uhr();
+    this.livenessLetzteProbe = 0;
+    this.livenessTimer = setInterval(() => this.livenessTakt(uhr), takt);
+    this.livenessTimer.unref();
+  }
+
+  private stoppeLiveness(): void {
+    if (this.livenessTimer) clearInterval(this.livenessTimer);
+    this.livenessTimer = undefined;
+    this.livenessProbe = undefined;
+    this.reagiertNicht = false;
+  }
+
+  private livenessTakt(uhr: () => number): void {
+    if (this.phase !== 'active') {
+      this.stoppeLiveness();
+      return;
+    }
+    const opt = this.opts.liveness;
+    const idleMs = opt?.idleMs ?? 15000;
+    const probeTimeoutMs = opt?.probeTimeoutMs ?? 8000;
+    const takt = opt?.tickMs ?? 2000;
+    const jetzt = uhr();
+    // Ein Takt, der viel laenger dauerte als geplant, heisst: der Rechner stand.
+    const sprung = jetzt - this.livenessLetzterTakt - takt > LIVENESS_SPRUNG_MS;
+    this.livenessLetzterTakt = jetzt;
+    const zuletzt = this.transport.lastReceivedAt;
+    const still = jetzt - zuletzt;
+
+    if (this.livenessProbe && zuletzt >= this.livenessProbe.gesendetUm) this.livenessProbe = undefined;
+    if (this.reagiertNicht && still < idleMs) {
+      this.reagiertNicht = false;
+      this.log.info('Server antwortet wieder');
+      this.emit('responsive');
+    }
+
+    if (this.livenessProbe) {
+      if (sprung) this.livenessProbe.timeoutMs = Math.min(this.livenessProbe.timeoutMs, LIVENESS_SPRUNG_TIMEOUT_MS);
+      if (jetzt - this.livenessProbe.gesendetUm >= this.livenessProbe.timeoutMs) {
+        this.livenessProbe = undefined;
+        if (!this.reagiertNicht) {
+          this.reagiertNicht = true;
+          this.log.warn(`Seit ${still} ms kommt nichts mehr vom Server an`);
+          this.emit('unresponsive', { sinceMs: still });
+        }
+      }
+      return;
+    }
+
+    const faellig = sprung || (still >= idleMs && jetzt - this.livenessLetzteProbe >= idleMs);
+    if (!faellig) return;
+    let gesendet = false;
+    try {
+      // 1x1 Pixel: der Server muss antworten, kostet aber praktisch nichts.
+      gesendet = this.refresh({ left: 0, top: 0, right: 0, bottom: 0 });
+    } catch {
+      // Schreibfehler zeigen sich ueber den Transport; die Probe entfaellt.
+    }
+    if (!gesendet) {
+      this.log.debug('Verbindungsprobe nicht moeglich (Server kennt kein Refresh Rect)');
+      return;
+    }
+    this.livenessLetzteProbe = jetzt;
+    this.livenessProbe = { gesendetUm: jetzt, timeoutMs: sprung ? LIVENESS_SPRUNG_TIMEOUT_MS : probeTimeoutMs };
   }
 
   /** Setzt den gesamten Sitzungszustand zurueck und baut den Transport neu auf. */
@@ -736,6 +852,7 @@ export class RdpClient extends EventEmitter {
       }
     }
     this.phase = 'closed';
+    this.stoppeLiveness();
     this.transport.close();
   }
 
@@ -2031,6 +2148,7 @@ export class RdpClient extends EventEmitter {
       return;
     }
     const grund = reason ?? this.lastErrorInfo;
+    this.stoppeLiveness();
     if (this.starteWiederverbindung(grund)) return;
     this.phase = 'closed';
     this.emit('close', grund);

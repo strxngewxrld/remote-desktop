@@ -36,6 +36,8 @@ export interface TransportOptions {
   verifyCertificate?: (cert: tls.PeerCertificate, socket: tls.TLSSocket) => void;
   /** Suiten und Protokollversionen fuer den TLS-Handshake. */
   tlsProfile?: TlsProfile;
+  /** Uhr in Millisekunden - nur zum Nachstellen von Zeit in Tests. */
+  now?: () => number;
 }
 
 interface PendingRead {
@@ -56,10 +58,20 @@ export class RdpTransport extends EventEmitter {
   private cancelHandshake?: (error: Error) => void;
   private readonly maxBufferedBytes = 16 * 1024 * 1024;
   private readonly log: Logger;
+  private readonly now: () => number;
+  /** Zeitpunkt des zuletzt empfangenen Bytes - Grundlage der Verbindungsueberwachung. */
+  private empfangenUm: number;
 
   constructor(private readonly opts: TransportOptions) {
     super();
     this.log = opts.logger ?? nullLogger;
+    this.now = opts.now ?? Date.now;
+    this.empfangenUm = this.now();
+  }
+
+  /** Wann zuletzt Daten vom Server eintrafen (Uhr der Option `now`). */
+  get lastReceivedAt(): number {
+    return this.empfangenUm;
   }
 
   get tlsSocket(): tls.TLSSocket | undefined {
@@ -176,6 +188,7 @@ export class RdpTransport extends EventEmitter {
 
   private onData = (chunk: Buffer): void => {
     if (this.closed) return;
+    this.empfangenUm = this.now();
     try {
       if (this.buffer.length + chunk.length > this.maxBufferedBytes) throw new RdpError('Transportpuffer überschreitet 16 MiB', 'RDP_PROTOCOL');
       this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);

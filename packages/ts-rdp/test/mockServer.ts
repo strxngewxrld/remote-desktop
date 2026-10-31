@@ -567,6 +567,10 @@ export class MockRdpServer extends EventEmitter {
       this.starteDvc();
       return;
     }
+    if (data.pduType2 === 0x21) {
+      this.emit('refreshRect');
+      return;
+    }
     if (data.pduType2 === 0x1c) {
       const count = r.uint16le();
       r.uint16le();

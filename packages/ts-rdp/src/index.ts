@@ -28,6 +28,7 @@ export type {
   RdpClientEvents,
   RdpDiagnostics,
   AutoReconnectOptions,
+  LivenessOptions,
 } from './client.js';
 export { buildClientCapabilities } from './protocol/caps.js';
 export type { CapabilityProfile } from './protocol/caps.js';
