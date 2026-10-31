@@ -11,30 +11,31 @@ function setup(richtung: c.ZwischenablageRichtung = 'beide') {
   return { session, sent, texts, last: () => c.parseCliprdrPdu(sent.at(-1)!) };
 }
 
-test('Dateiübertragung: Deskriptor, Größe, Teilbereiche, EOF und ungültige Anfragen', () => {
+test('Dateiübertragung: Deskriptor, Größe, Teilbereiche, EOF und ungültige Anfragen', async () => {
   const s = setup();
   assert.equal(s.session.meldeDateien([{ name: 'Größe.txt', data: Buffer.from('abcdef') }]), true);
   s.session.verarbeite(c.buildFormatDataRequest(c.FILE_GROUP_DESCRIPTOR));
   const descriptor = s.last().body;
   assert.equal(descriptor.length, 596);
   assert.equal(descriptor.readUInt32LE(0), 1);
-  assert.equal(descriptor.readUInt32LE(4), 0x44);
+  assert.equal(descriptor.readUInt32LE(4), 0x44 | 0x4000);
   assert.equal(descriptor.readUInt32LE(72), 6);
   assert.equal(descriptor.subarray(76, 94).toString('utf16le'), 'Größe.txt');
-  const request = (flags: number, offset: number, count: number, index = 0) => {
+  const request = async (flags: number, offset: number, count: number, index = 0) => {
     const b = Buffer.alloc(24);
     [77, index, flags, offset, 0, count].forEach((n, i) => b.writeUInt32LE(n, i * 4));
     s.session.verarbeite(c.buildCliprdrPdu(8, 0, b));
+    await new Promise((r) => setImmediate(r));
     assert.equal(s.last().body.readUInt32LE(0), 77);
     return s.last();
   };
-  assert.equal(request(1, 0, 8).body.readBigUInt64LE(4), 6n);
-  assert.equal(request(2, 2, 3).body.subarray(4).toString(), 'cde');
-  assert.equal(request(2, 6, 3).body.length, 4);
-  assert.equal(request(3, 0, 8).msgFlags, 2);
-  assert.equal(request(2, 0, 8, 9).msgFlags, 2);
+  assert.equal((await request(1, 0, 8)).body.readBigUInt64LE(4), 6n);
+  assert.equal((await request(2, 2, 3)).body.subarray(4).toString(), 'cde');
+  assert.equal((await request(2, 6, 3)).body.length, 4);
+  assert.equal((await request(3, 0, 8)).msgFlags, 2);
+  assert.equal((await request(2, 0, 8, 9)).msgFlags, 2);
   s.session.zuruecksetzen();
-  assert.equal(request(2, 0, 8).msgFlags, 2);
+  assert.equal((await request(2, 0, 8)).msgFlags, 2);
 });
 
 test('Dateien: Richtungsgrenze, Größenlimit, ungültige Namen und doppelte Namen', () => {

@@ -5,10 +5,48 @@ export interface RemoteClipboardEntry {
   name: string;
   directory: boolean;
   size?: number;
+  /** Aus FD_WRITESTIME; fehlt, wenn der Server keinen (gueltigen) Zeitstempel meldet. */
+  lastWriteTime?: Date;
 }
 export interface DownloadedClipboardEntry extends RemoteClipboardEntry { data: Buffer }
+
+/** Schreibziel einer einzelnen Datei. `close(error)` raeumt auf, wenn die Uebertragung scheitert. */
+export interface ClipboardFileWriter {
+  write(chunk: Buffer): void | Promise<void>;
+  close(error?: Error): void | Promise<void>;
+}
+/**
+ * Senke fuer einen Download: Die Eintraege kommen in Listenreihenfolge, die
+ * Daten blockweise. So liegt nie mehr als ein Block im Speicher.
+ */
+export interface ClipboardSink {
+  directory(entry: RemoteClipboardEntry): void | Promise<void>;
+  file(entry: RemoteClipboardEntry): ClipboardFileWriter | Promise<ClipboardFileWriter>;
+}
+
+/** Abstand zwischen 1601-01-01 (FILETIME) und 1970-01-01 in 100-ns-Schritten. */
+const FILETIME_EPOCH_OFFSET = 116444736000000000n;
+const FILETIME_MAX = 0xffffffffffffffffn;
+
+/** Date -> FILETIME (100-ns seit 1601); ausserhalb des darstellbaren Bereichs: 0. */
+export function dateZuFiletime(datum: Date): bigint {
+  const ms = datum.getTime();
+  if (!Number.isFinite(ms)) return 0n;
+  const wert = BigInt(Math.floor(ms)) * 10000n + FILETIME_EPOCH_OFFSET;
+  return wert < 0n || wert > FILETIME_MAX ? 0n : wert;
+}
+
+/** FILETIME -> Date; 0 und alles ausserhalb des Date-Bereichs ergibt `undefined`. */
+export function filetimeZuDate(filetime: bigint): Date | undefined {
+  if (filetime <= 0n) return undefined;
+  const ms = Number((filetime - FILETIME_EPOCH_OFFSET) / 10000n);
+  if (!Number.isFinite(ms) || Math.abs(ms) > 8.64e15) return undefined;
+  return new Date(ms);
+}
 const MAX_ENTRIES = 4096;
 const DESCRIPTOR_SIZE = 592;
+/** Groesse der Leseanfragen an den Server; kuerzere Antworten sind zulaessig. */
+const BLOCK_SIZE = 1024 * 1024;
 
 /** MS-RDPECLIP 2.2.5.2.3: FILEGROUPDESCRIPTORW, including relative folder paths. */
 export function parseRemoteFileList(body: Buffer): RemoteClipboardEntry[] {
@@ -37,7 +75,11 @@ export function parseRemoteFileList(body: Buffer): RemoteClipboardEntry[] {
     paths.set(key, directory);
     const size64 = flags & 0x40 ? (BigInt(body.readUInt32LE(offset + 64)) << 32n) | BigInt(body.readUInt32LE(offset + 68)) : undefined;
     if (size64 !== undefined && size64 > BigInt(Number.MAX_SAFE_INTEGER)) throw new RdpProtocolError('Clipboard-Datei ist zu groß.');
-    entries.push({ name, directory, size: directory ? 0 : size64 === undefined ? undefined : Number(size64) });
+    const lastWriteTime = flags & 0x20 ? filetimeZuDate(body.readBigUInt64LE(offset + 56)) : undefined;
+    entries.push({
+      name, directory, size: directory ? 0 : size64 === undefined ? undefined : Number(size64),
+      ...(lastWriteTime ? { lastWriteTime } : {}),
+    });
   }
   const spelling = new Map<string, string>();
   for (const entry of entries) {
@@ -111,9 +153,25 @@ export class ClipboardDownload {
     return this.wait(count, () => this.send(body), id);
   }
 
+  /** Wie `stream`, sammelt aber alles im Speicher - nur fuer kleine Mengen gedacht. */
   async run(requestList: () => void): Promise<DownloadedClipboardEntry[]> {
+    const result: DownloadedClipboardEntry[] = [];
+    await this.stream(requestList, {
+      directory: entry => { result.push({ ...entry, data: Buffer.alloc(0) }); },
+      file: entry => {
+        const teile: Buffer[] = [];
+        return {
+          write: chunk => { teile.push(chunk); },
+          close: error => { if (!error) result.push({ ...entry, data: Buffer.concat(teile) }); },
+        };
+      },
+    });
+    return result;
+  }
+
+  async stream(requestList: () => void, sink: ClipboardSink): Promise<void> {
     try {
-      if (!Number.isSafeInteger(this.maxBytes) || this.maxBytes < 1 || this.maxBytes > 256 * 1024 * 1024)
+      if (!Number.isSafeInteger(this.maxBytes) || this.maxBytes < 1)
         throw new Error('Ungültige Clipboard-Dateigrößenbegrenzung.');
       const list = await this.wait(4 + MAX_ENTRIES * DESCRIPTOR_SIZE, requestList);
       const entries = parseRemoteFileList(list);
@@ -129,19 +187,24 @@ export class ClipboardDownload {
         total += entry.size;
         if (total > this.maxBytes) throw new Error('Clipboard-Dateien überschreiten die Größenbegrenzung.');
       }
-      const result: DownloadedClipboardEntry[] = [];
       for (const [index, entry] of entries.entries()) {
-        const chunks: Buffer[] = [];
-        let offset = 0;
-        while (offset < (entry.size ?? 0)) {
-          const data = await this.request(index, false, offset, Math.min(64 * 1024, entry.size! - offset));
-          if (!data.length) throw new RdpProtocolError('Clipboard-Datei wurde vorzeitig beendet.');
-          chunks.push(data); offset += data.length;
-        }
         if (this.error) throw this.error;
-        result.push({ ...entry, data: Buffer.concat(chunks, offset) });
+        if (entry.directory) { await sink.directory(entry); continue; }
+        const writer = await sink.file(entry);
+        try {
+          let offset = 0;
+          while (offset < (entry.size ?? 0)) {
+            const data = await this.request(index, false, offset, Math.min(BLOCK_SIZE, entry.size! - offset));
+            if (!data.length) throw new RdpProtocolError('Clipboard-Datei wurde vorzeitig beendet.');
+            await writer.write(data); offset += data.length;
+          }
+          if (this.error) throw this.error;
+        } catch (error) {
+          await Promise.resolve(writer.close(error as Error)).catch(() => {});
+          throw error;
+        }
+        await writer.close();
       }
-      return result;
     } finally {
       this.signal?.removeEventListener('abort', this.onAbort);
       if (this.pending) clearTimeout(this.pending.timer);

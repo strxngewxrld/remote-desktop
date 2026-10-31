@@ -698,11 +698,12 @@ describe('CLIPRDR - Robustheit', () => {
     assert.ok(protokoll.some((z) => /0xff/.test(z)));
   });
 
-  test('Eine Dateianfrage wird abgelehnt, statt den Server warten zu lassen', () => {
+  test('Eine Dateianfrage wird abgelehnt, statt den Server warten zu lassen', async () => {
     const { sitzung, gesendet, protokoll } = neueSitzung();
     serverAuftakt(sitzung);
     gesendet.length = 0;
     sitzung.verarbeite(buildCliprdrPdu(0x0008, 0, Buffer.alloc(24)));
+    await new Promise((r) => setImmediate(r));
     assert.equal(parseCliprdrPdu(gesendet[0]).msgType, 0x0009);
     assert.equal(parseCliprdrPdu(gesendet[0]).msgFlags, CB_RESPONSE_FAIL);
     assert.ok(protokoll.some((z) => /Dateianfrage abgelehnt/.test(z)));

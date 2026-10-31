@@ -13,12 +13,16 @@ import * as path from 'node:path';
 import { once } from 'node:events';
 import { RdpClient } from '../src/client.js';
 import { MockRdpServer } from './mockServer.js';
+import { parseRemoteFileList, type ClipboardSink } from '../src/protocol/clipboardDownload.js';
 import {
   CB_CLIP_CAPS,
   CB_FILECONTENTS_REQUEST,
   CB_FILECONTENTS_RESPONSE,
   CB_FORMAT_DATA_RESPONSE,
   CB_FORMAT_LIST,
+  CB_FORMAT_LIST_RESPONSE,
+  CB_FORMAT_DATA_REQUEST,
+  CB_HUGE_FILE_SUPPORT_ENABLED,
   CB_RESPONSE_FAIL,
   CB_RESPONSE_OK,
   CB_STREAM_FILECLIP_ENABLED,
@@ -27,6 +31,10 @@ import {
   CLIPRDR_CHANNEL_NAME,
   CliprdrSession,
   buildClipboardCapabilities,
+  buildFormatList,
+  buildFileList,
+  buildFormatDataResponse,
+  type ClipboardFileSource,
   buildCliprdrPdu,
   buildFormatDataRequest,
   buildFormatListResponse,
@@ -59,6 +67,7 @@ async function warteAuf(pruefe: () => boolean, was: string, ms = 5000): Promise<
 }
 
 class ServerSeite {
+  beantworte?: (pdu: { msgType: number; body: Buffer }) => void;
   readonly empfangen: { msgType: number; msgFlags: number; body: Buffer }[] = [];
   constructor(private readonly server: MockRdpServer) {
     server.on('staticChannelData', (e: { name: string; data: Buffer }) => {
@@ -66,18 +75,19 @@ class ServerSeite {
       const pdu = parseCliprdrPdu(e.data);
       this.empfangen.push({ msgType: pdu.msgType, msgFlags: pdu.msgFlags, body: pdu.body });
       if (pdu.msgType === CB_FORMAT_LIST) this.sende(buildFormatListResponse(true));
+      this.beantworte?.(pdu);
     });
   }
   sende(d: Buffer): void { this.server.sendStaticChannelData(CLIPRDR_CHANNEL_NAME, d); }
   auftakt(dateien: boolean): void {
-    this.sende(buildClipboardCapabilities(CB_USE_LONG_FORMAT_NAMES | (dateien ? CB_STREAM_FILECLIP_ENABLED : 0)));
+    this.sende(buildClipboardCapabilities(CB_USE_LONG_FORMAT_NAMES | (dateien ? CB_STREAM_FILECLIP_ENABLED | CB_HUGE_FILE_SUPPORT_ENABLED : 0)));
     this.sende(buildMonitorReady());
   }
   anzahl(msgType: number): number { return this.empfangen.filter((p) => p.msgType === msgType).length; }
   letzte(msgType: number) { return this.empfangen.filter((p) => p.msgType === msgType).at(-1); }
-  dateiAnfrage(streamId: number, lindex: number, flags: number, offset: number, count: number): void {
+  dateiAnfrage(streamId: number, lindex: number, flags: number, offset: number, count: number, high = 0): void {
     const b = Buffer.alloc(24);
-    [streamId, lindex, flags, offset, 0, count].forEach((n, i) => b.writeUInt32LE(n, i * 4));
+    [streamId, lindex, flags, offset, high, count].forEach((n, i) => b.writeUInt32LE(n, i * 4));
     this.sende(buildCliprdrPdu(CB_FILECONTENTS_REQUEST, 0, b));
   }
   antwort(streamId: number) {
@@ -164,6 +174,61 @@ describe('Dateien zum Server über den Kanal cliprdr', () => {
     assert.equal(gegenseite.antwort(1)!.body.subarray(4).toString(), 'BBBB');
     assert.equal(gegenseite.antwort(2)!.msgFlags, CB_RESPONSE_FAIL);
     assert.equal(gegenseite.antwort(3)!.msgFlags, CB_RESPONSE_FAIL);
+  });
+
+  test('Ordner mit Zeitstempel und eine 5-GiB-Datei zum Server: Deskriptor und Bereich mit 64-Bit-Offset', async () => {
+    const { clip, gegenseite } = await sitzung();
+    const zeit = new Date('2024-06-07T08:09:10.000Z');
+    const GiB = 1024 ** 3;
+    const muster = (o: number, l: number) => Buffer.from(Array.from({ length: l }, (_, i) => (o + i) & 0xff));
+    const quellen: ClipboardFileSource[] = [
+      { name: 'Ordner', directory: true, size: 0, lastWriteTime: zeit, read: async () => Buffer.alloc(0) },
+      { name: 'Ordner/Leer', directory: true, size: 0, read: async () => Buffer.alloc(0) },
+      { name: 'Ordner/riesig.bin', size: 5 * GiB + 16, lastWriteTime: zeit, read: async (o, l) => muster(o, l) },
+    ];
+    assert.equal(clip.meldeDateien(quellen, 6 * GiB), true);
+    gegenseite.sende(buildFormatDataRequest(0xc001));
+    await warteAuf(() => gegenseite.anzahl(CB_FORMAT_DATA_RESPONSE) > 0, 'Dateiliste');
+    const liste = parseRemoteFileList(gegenseite.letzte(CB_FORMAT_DATA_RESPONSE)!.body);
+    assert.deepEqual(liste.map((e) => [e.name, e.directory, e.size]), [['Ordner', true, 0], ['Ordner/Leer', true, 0], ['Ordner/riesig.bin', false, 5 * GiB + 16]]);
+    assert.equal(liste[0].lastWriteTime?.getTime(), zeit.getTime());
+    assert.equal(liste[2].lastWriteTime?.getTime(), zeit.getTime());
+
+    gegenseite.dateiAnfrage(1, 2, 1, 0, 8);
+    await warteAuf(() => !!gegenseite.antwort(1), 'Groesse');
+    assert.equal(gegenseite.antwort(1)!.body.readBigUInt64LE(4), BigInt(5 * GiB + 16));
+    gegenseite.dateiAnfrage(2, 2, 2, 0, 16, 1); // Offset 4 GiB
+    await warteAuf(() => !!gegenseite.antwort(2), 'Bereich ueber 4 GiB');
+    assert.ok(gegenseite.antwort(2)!.body.subarray(4).equals(muster(4 * GiB, 16)));
+  });
+
+  test('Ordner mit Zeitstempel vom Server in eine Senke streamen', async () => {
+    const { clip, gegenseite } = await sitzung();
+    const zeit = new Date('2020-02-03T04:05:06.000Z');
+    const inhalt = Buffer.from('Inhalt der Datei im Unterordner');
+    const liste = buildFileList([
+      { name: 'Wurzel', directory: true, size: 0, lastWriteTime: zeit, read: async () => Buffer.alloc(0) },
+      { name: 'Wurzel/Leer', directory: true, size: 0, read: async () => Buffer.alloc(0) },
+      { name: 'Wurzel/a.txt', size: inhalt.length, lastWriteTime: zeit, read: async () => inhalt },
+    ]);
+    // Der Mock-Server antwortet auf Listen- und Inhaltsanfragen des Clients.
+    gegenseite.beantworte = (pdu) => {
+      if (pdu.msgType === CB_FORMAT_DATA_REQUEST) gegenseite.sende(buildFormatDataResponse(liste));
+      if (pdu.msgType === CB_FILECONTENTS_REQUEST) {
+        const o = pdu.body.readUInt32LE(12), n = pdu.body.readUInt32LE(20);
+        gegenseite.sende(buildCliprdrPdu(CB_FILECONTENTS_RESPONSE, CB_RESPONSE_OK, Buffer.concat([pdu.body.subarray(0, 4), inhalt.subarray(o, o + n)])));
+      }
+    };
+    gegenseite.sende(buildFormatList([{ formatId: 0xd001, name: 'FileGroupDescriptorW' }], { longFormatNames: true }));
+    await warteAuf(() => gegenseite.anzahl(CB_FORMAT_LIST_RESPONSE) > 0, 'Antwort auf Formatliste');
+    const ereignisse: string[] = []; const chunks: Buffer[] = [];
+    const sink: ClipboardSink = {
+      directory: (e) => { ereignisse.push(`dir ${e.name} ${e.lastWriteTime?.getTime()}`); },
+      file: (e) => ({ write: (ch) => { chunks.push(ch); }, close: () => { ereignisse.push(`file ${e.name} ${e.lastWriteTime?.getTime()}`); } }),
+    };
+    await clip.streamServerFiles(sink, 1024);
+    assert.deepEqual(ereignisse, [`dir Wurzel ${zeit.getTime()}`, 'dir Wurzel/Leer undefined', `file Wurzel/a.txt ${zeit.getTime()}`]);
+    assert.ok(Buffer.concat(chunks).equals(inhalt));
   });
 
   test('Kann der Server keine Dateien, wird nichts angekündigt', async () => {

@@ -37,7 +37,12 @@
  * CF_TEXT (1) und CF_UNICODETEXT (13) enden jede Zeile mit CR-LF, und ein
  * Nullzeichen beendet die Daten.
  */
-import { ClipboardDownload, type DownloadedClipboardEntry } from './clipboardDownload.js';
+import {
+  ClipboardDownload,
+  dateZuFiletime,
+  type ClipboardSink,
+  type DownloadedClipboardEntry,
+} from './clipboardDownload.js';
 import { BinaryReader, writer } from '../core/binary.js';
 import { RdpProtocolError } from '../core/errors.js';
 import {
@@ -165,20 +170,93 @@ export const CF_UNICODETEXT = 13;
 export const CF_LOCALE = 16;
 
 export const FILE_GROUP_DESCRIPTOR = 0xc001;
-export interface ClipboardFile { name: string; data: Buffer }
+/** Datei im Speicher - die einfache Form, siehe `dateiQuelle`. */
+export interface ClipboardFile { name: string; data: Buffer; lastWriteTime?: Date }
 
-export function buildFileList(files: readonly ClipboardFile[]): Buffer {
-  const body = Buffer.alloc(4 + files.length * 592);
-  body.writeUInt32LE(files.length, 0);
-  files.forEach((file, i) => {
-    if (!file.name || file.name.length > 259 || /[\\/\x00-\x1f:*?"<>|]/.test(file.name) || /[. ]$/.test(file.name)) {
+/**
+ * Quelle fuer eine Datei oder einen Ordner, der zum Server angeboten wird.
+ * Der Inhalt wird erst auf Anfrage gelesen, so passen auch Dateien ueber 4 GiB.
+ */
+export interface ClipboardFileSource {
+  /** Relativer Pfad, Segmente mit `/` getrennt. Elternordner stehen vor ihren Kindern. */
+  name: string;
+  directory?: boolean;
+  /** Groesse in Byte (bei Ordnern ignoriert). */
+  size: number;
+  lastWriteTime?: Date;
+  /** Liefert genau `length` Byte ab `offset`; weniger gilt als Fehler. */
+  read(offset: number, length: number): Promise<Buffer>;
+}
+
+/** Hoechstzahl an Eintraegen (Dateien und Ordner) je Kopiervorgang, wie beim Empfang. */
+export const MAX_CLIPBOARD_EINTRAEGE = 4096;
+/** Mehr liefern wir pro CB_FILECONTENTS_RESPONSE nicht - so bleibt der Speicher begrenzt. */
+export const MAX_DATEIANTWORT_BYTES = 8 * 1024 * 1024;
+
+/** Adapter: eine Datei im Speicher als Quelle. Die Daten werden kopiert. */
+export function dateiQuelle(file: ClipboardFile | ClipboardFileSource): ClipboardFileSource {
+  if ('read' in file) return file;
+  const data = Buffer.from(file.data);
+  return {
+    name: file.name,
+    size: data.length,
+    lastWriteTime: file.lastWriteTime,
+    read: async (offset, length) => data.subarray(offset, offset + length),
+  };
+}
+
+const FD_ATTRIBUTES = 0x4;
+const FD_FILESIZE = 0x40;
+const FD_WRITESTIME = 0x20;
+const FD_PROGRESSUI = 0x4000;
+const FILE_ATTRIBUTE_DIRECTORY = 0x10;
+const FILE_ATTRIBUTE_NORMAL = 0x80;
+
+function pruefeQuellname(name: string): void {
+  if (!name || name.length > 259) throw new RdpProtocolError('Ungültiger Clipboard-Dateiname');
+  for (const segment of name.split('/')) {
+    if (!segment || segment === '.' || segment === '..' || /[\\\x00-\x1f:*?"<>|]/.test(segment) || /[. ]$/.test(segment))
       throw new RdpProtocolError('Ungültiger Clipboard-Dateiname');
-    }
+  }
+}
+
+/** Prueft Namen, Eindeutigkeit und die Reihenfolge Elternordner vor Kind. */
+function pruefeQuellen(quellen: readonly ClipboardFileSource[]): void {
+  if (quellen.length > MAX_CLIPBOARD_EINTRAEGE) throw new RdpProtocolError('Zu viele Clipboard-Einträge');
+  const ordner = new Set<string>();
+  const alle = new Set<string>();
+  for (const q of quellen) {
+    pruefeQuellname(q.name);
+    const key = q.name.toLowerCase();
+    if (alle.has(key)) throw new RdpProtocolError('Doppelter Clipboard-Dateiname');
+    alle.add(key);
+    const segmente = key.split('/');
+    if (segmente.length > 1 && !ordner.has(segmente.slice(0, -1).join('/')))
+      throw new RdpProtocolError('Elternordner fehlt vor dem Clipboard-Eintrag');
+    if (q.directory) ordner.add(key);
+    else if (!Number.isSafeInteger(q.size) || q.size < 0) throw new RdpProtocolError('Ungültige Clipboard-Dateigröße');
+  }
+}
+
+/** FILEGROUPDESCRIPTORW (MS-RDPECLIP 2.2.5.2.3.1) mit Pfaden, 64-Bit-Groessen und Zeitstempeln. */
+export function buildFileList(files: readonly (ClipboardFile | ClipboardFileSource)[]): Buffer {
+  const quellen = files.map(dateiQuelle);
+  pruefeQuellen(quellen);
+  const body = Buffer.alloc(4 + quellen.length * 592);
+  body.writeUInt32LE(quellen.length, 0);
+  quellen.forEach((q, i) => {
     const offset = 4 + i * 592;
-    body.writeUInt32LE(0x44, offset); // FD_ATTRIBUTES | FD_FILESIZE
-    body.writeUInt32LE(0x80, offset + 36); // FILE_ATTRIBUTE_NORMAL
-    body.writeUInt32LE(file.data.length, offset + 68);
-    body.write(file.name, offset + 72, 518, 'utf16le');
+    let flags = FD_ATTRIBUTES | FD_PROGRESSUI;
+    body.writeUInt32LE(q.directory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL, offset + 36);
+    const zeit = q.lastWriteTime ? dateZuFiletime(q.lastWriteTime) : 0n;
+    if (zeit) { flags |= FD_WRITESTIME; body.writeBigUInt64LE(zeit, offset + 56); }
+    if (!q.directory) {
+      flags |= FD_FILESIZE;
+      body.writeUInt32LE(Math.floor(q.size / 0x100000000), offset + 64);
+      body.writeUInt32LE(q.size % 0x100000000, offset + 68);
+    }
+    body.writeUInt32LE(flags, offset);
+    body.write(q.name.replace(/\//g, '\\'), offset + 72, 518, 'utf16le');
   });
   return body;
 }
@@ -643,8 +721,11 @@ export const STANDARD_MAX_BYTES = 1024 * 1024;
  */
 export class CliprdrSession {
   /** Faehigkeiten, die wir selbst ankuendigen. */
-  private readonly eigeneFlags = CB_USE_LONG_FORMAT_NAMES | CB_STREAM_FILECLIP_ENABLED | CB_FILECLIP_NO_FILE_PATHS;
-  private dateien: ClipboardFile[] = [];
+  private readonly eigeneFlags = CB_USE_LONG_FORMAT_NAMES | CB_STREAM_FILECLIP_ENABLED | CB_FILECLIP_NO_FILE_PATHS | CB_HUGE_FILE_SUPPORT_ENABLED;
+  private dateien: ClipboardFileSource[] = [];
+  /** Zaehlt jede neue Dateiangebotsrunde; Antworten alter Runden werden nicht mehr geliefert. */
+  private dateiGeneration = 0;
+  private dateiKette: Promise<void> = Promise.resolve();
   private offeneAnfragen: { format: number; revision: number; download?: ClipboardDownload }[] = [];
   private download?: ClipboardDownload;
   private streamId = 0;
@@ -801,6 +882,11 @@ export class CliprdrSession {
         case CB_FILECONTENTS_REQUEST:
           this.behandleDateianfrage(pdu.body);
           break;
+        case CB_LOCK_CLIPDATA:
+        case CB_UNLOCK_CLIPDATA:
+          // Wir buchen kein Locking (CB_CAN_LOCK_CLIPDATA fehlt in unseren Faehigkeiten); tolerieren genuegt.
+          this.protokoll(`CLIPRDR: ${cliprdrPduName(pdu.msgType)} vom Server ignoriert`, 'debug');
+          break;
         default:
           this.protokoll(`CLIPRDR: PDU-Typ 0x${pdu.msgType.toString(16)} wird nicht behandelt`);
       }
@@ -949,6 +1035,7 @@ export class CliprdrSession {
     // naechste Aenderungspruefung ihn zurueck und der Server fragt wieder an.
     this.zuletztGemeldet = text;
     this.dateien = [];
+    this.verwerfeDateianfragen();
     this.protokoll(`CLIPRDR: ${pdu.body.length} Byte vom Server uebernommen (Format ${format})`);
     this.opts.onServerText?.(text);
   }
@@ -961,13 +1048,25 @@ export class CliprdrSession {
    * jede uebernommene Aenderung sofort wieder als eigene gilt.
    */
   async downloadServerFiles(maxBytes = 64 * 1024 * 1024, signal?: AbortSignal): Promise<DownloadedClipboardEntry[]> {
+    return this.starteDownload(maxBytes, signal, (download, anfrage) => download.run(anfrage));
+  }
+
+  /** Remote-Dateien blockweise in eine Senke schreiben; nur die Grenze `maxBytes` begrenzt die Menge. */
+  async streamServerFiles(sink: ClipboardSink, maxBytes: number, signal?: AbortSignal): Promise<void> {
+    await this.starteDownload(maxBytes, signal, (download, anfrage) => download.stream(anfrage, sink));
+  }
+
+  private async starteDownload<T>(
+    maxBytes: number, signal: AbortSignal | undefined,
+    lauf: (download: ClipboardDownload, anfrage: () => void) => Promise<T>,
+  ): Promise<T> {
     const format = this.serverFormate.find(f => f.name === 'FileGroupDescriptorW');
     if (!this.bereit || !this.darfLesen || !format || !(this.serverFlags & CB_STREAM_FILECLIP_ENABLED)) throw new Error('Keine Remote-Dateien in der Zwischenablage verfügbar.');
     if (this.download || this.offeneAnfragen.length >= 256) throw new Error('Eine Clipboard-Anfrage läuft bereits.');
     const download = new ClipboardDownload(body => this.sende(buildCliprdrPdu(CB_FILECONTENTS_REQUEST, 0, body)), () => this.streamId = (this.streamId + 1) >>> 0, maxBytes, signal);
     this.download = download;
     try {
-      return await download.run(() => {
+      return await lauf(download, () => {
         this.offeneAnfragen.push({ format: format.formatId, revision: this.lokaleRevision, download });
         this.sende(buildFormatDataRequest(format.formatId));
       });
@@ -986,6 +1085,7 @@ export class CliprdrSession {
     }
     this.zuletztGemeldet = text;
     this.dateien = [];
+    this.verwerfeDateianfragen();
     this.download?.cancel();
     this.lokaleRevision++;
     this.sendeFormatliste(text);
@@ -1015,12 +1115,25 @@ export class CliprdrSession {
     this.sende(buildFormatList(formate, { longFormatNames: this.langeFormatnamen }));
   }
 
-  meldeDateien(files: ClipboardFile[], maxBytes = 64 * 1024 * 1024): boolean {
+  /**
+   * Dateien und Ordner zum Server anbieten. Inhalte werden erst auf Anfrage
+   * gelesen; `maxBytes` begrenzt die Summe der Dateigroessen.
+   */
+  meldeDateien(files: readonly (ClipboardFile | ClipboardFileSource)[], maxBytes = 64 * 1024 * 1024): boolean {
     if (!this.bereit || !this.darfSchreiben || !(this.serverFlags & CB_STREAM_FILECLIP_ENABLED)) return false;
-    if (!files.length || files.length > 256 || files.reduce((sum, f) => sum + f.data.length, 0) > maxBytes) return false;
-    buildFileList(files); // Namen prüfen, bevor wir den Clipboard-Zustand wechseln.
-    if (new Set(files.map(f => f.name.toLowerCase())).size !== files.length) return false;
-    this.dateien = files.map(f => ({ name: f.name, data: Buffer.from(f.data) }));
+    if (!files.length || files.length > MAX_CLIPBOARD_EINTRAEGE) return false;
+    const quellen = files.map(dateiQuelle);
+    if (new Set(quellen.map(q => q.name.toLowerCase())).size !== quellen.length) return false;
+    // Namen und Ordnerreihenfolge pruefen, bevor wir den Zustand wechseln.
+    buildFileList(quellen);
+    const summe = quellen.reduce((sum, q) => sum + (q.directory ? 0 : q.size), 0);
+    if (summe > maxBytes) return false;
+    if (quellen.some(q => !q.directory && q.size > 0xffffffff) && !(this.serverFlags & CB_HUGE_FILE_SUPPORT_ENABLED)) {
+      this.protokoll('CLIPRDR: Dateien ueber 4 GiB - der Server meldet keine Unterstuetzung dafuer, nicht angeboten', 'warn');
+      return false;
+    }
+    this.dateien = quellen;
+    this.verwerfeDateianfragen();
     this.download?.cancel();
     this.lokaleRevision++;
     this.formatlisteUnbestaetigt = true;
@@ -1029,28 +1142,48 @@ export class CliprdrSession {
     return true;
   }
 
+  /** Neue Runde: laufende und wartende Dateianfragen der alten Runde werden mit FAIL beantwortet. */
+  private verwerfeDateianfragen(): void {
+    this.dateiGeneration++;
+  }
+
+  /** Anfragen laufen nacheinander: begrenzt Speicher und Plattenlast, die Antworten tragen die streamId. */
   private behandleDateianfrage(body: Buffer): void {
+    const generation = this.dateiGeneration;
+    this.dateiKette = this.dateiKette.then(() => this.beantworteDateianfrage(body, generation)).catch(() => {});
+  }
+
+  private async beantworteDateianfrage(body: Buffer, generation: number): Promise<void> {
     const stream = body.length >= 4 ? body.readUInt32LE(0) : 0;
-    const fail = () => {
-      this.protokoll('CLIPRDR: Dateianfrage abgelehnt (ungültige Anfrage oder keine angebotene Datei)');
+    const fail = (grund: string) => {
+      this.protokoll(`CLIPRDR: Dateianfrage abgelehnt (${grund})`);
       this.sende(buildCliprdrPdu(CB_FILECONTENTS_RESPONSE, CB_RESPONSE_FAIL, writer().uint32le(stream).toBuffer()));
     };
-    if (!this.darfSchreiben || body.length !== 24) { fail(); return; }
-    const file = this.dateien[body.readInt32LE(4)];
+    // 24 Byte, mit ausgehandeltem Locking haengt der Server noch eine clipDataId an.
+    if (!this.darfSchreiben || (body.length !== 24 && body.length !== 28)) { fail('ungültige Anfrage'); return; }
+    const index = body.readInt32LE(4);
     const flags = body.readUInt32LE(8);
-    const offset = body.readUInt32LE(12);
-    const high = body.readUInt32LE(16);
+    const offset = body.readUInt32LE(12) + body.readUInt32LE(16) * 0x100000000;
     const count = body.readUInt32LE(20);
-    if (!file || high !== 0 || (flags !== 1 && flags !== 2)) { fail(); return; }
+    const file = index >= 0 ? this.dateien[index] : undefined;
+    if (!file || file.directory || (flags !== 1 && flags !== 2)) { fail('keine angebotene Datei'); return; }
     let payload: Buffer;
-    if (flags === 1) {
-      if (offset !== 0 || count !== 8) { fail(); return; }
-      payload = Buffer.alloc(8);
-      payload.writeBigUInt64LE(BigInt(file.data.length));
-    } else {
-      if (offset > file.data.length || count > 4 * 1024 * 1024) { fail(); return; }
-      payload = file.data.subarray(offset, Math.min(offset + count, file.data.length));
+    try {
+      if (flags === 1) {
+        if (offset !== 0 || count !== 8) { fail('ungültige Größenanfrage'); return; }
+        payload = Buffer.alloc(8);
+        payload.writeBigUInt64LE(BigInt(file.size));
+      } else {
+        if (offset > file.size || !Number.isSafeInteger(offset)) { fail('Offset hinter dem Dateiende'); return; }
+        const laenge = Math.min(count, file.size - offset, MAX_DATEIANTWORT_BYTES);
+        payload = laenge > 0 ? await file.read(offset, laenge) : Buffer.alloc(0);
+        if (payload.length !== laenge) throw new Error('Datei hat sich während der Übertragung geändert');
+      }
+    } catch (err) {
+      fail(`Lesefehler: ${(err as Error).message}`);
+      return;
     }
+    if (generation !== this.dateiGeneration) { fail('Zwischenablage inzwischen ersetzt'); return; }
     this.sende(buildCliprdrPdu(CB_FILECONTENTS_RESPONSE, CB_RESPONSE_OK, Buffer.concat([writer().uint32le(stream).toBuffer(), payload])));
   }
 
@@ -1084,6 +1217,7 @@ export class CliprdrSession {
     this.offeneAnfragen = [];
     this.lokaleRevision = 0;
     this.dateien = [];
+    this.verwerfeDateianfragen();
     this.zuletztGemeldet = undefined;
     this.formatlisteUnbestaetigt = false;
     this.ausstehendeFormatlisten = 0;

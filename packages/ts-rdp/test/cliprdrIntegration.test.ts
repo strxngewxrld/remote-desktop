@@ -221,7 +221,7 @@ describe('Zwischenablage über den Kanal cliprdr', () => {
       gegenseite.empfangen.map((p) => p.msgType),
       [CB_CLIP_CAPS, CB_FORMAT_LIST],
     );
-    assert.equal(gegenseite.clientCapsFlags, 0x0e); // Lange Namen, Dateistreams, keine absoluten Pfade.
+    assert.equal(gegenseite.clientCapsFlags, 0x2e); // Lange Namen, Dateistreams, keine absoluten Pfade, 64-Bit-Dateien.
     assert.equal(clip.istBereit, true);
     assert.equal(clip.langeFormatnamen, true);
   });

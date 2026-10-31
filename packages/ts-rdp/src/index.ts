@@ -204,5 +204,10 @@ export { CredSspClient, encodeTsRequest, decodeTsRequest, encodeTsCredentials } 
 export { md4 } from './crypto/md4.js';
 export { Rc4, rc4 } from './crypto/rc4.js';
 
-export { parseRemoteFileList } from './protocol/clipboardDownload.js';
-export type { RemoteClipboardEntry, DownloadedClipboardEntry } from './protocol/clipboardDownload.js';
+export { parseRemoteFileList, dateZuFiletime, filetimeZuDate } from './protocol/clipboardDownload.js';
+export type {
+  RemoteClipboardEntry,
+  DownloadedClipboardEntry,
+  ClipboardSink,
+  ClipboardFileWriter,
+} from './protocol/clipboardDownload.js';

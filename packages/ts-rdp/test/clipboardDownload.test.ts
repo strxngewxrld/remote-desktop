@@ -40,7 +40,7 @@ test('Download negotiates server format ID and streams nested files in bounded r
     if (pdu.msgType === clip.CB_FILECONTENTS_REQUEST) {
       assert.equal(pdu.body.length, 24); assert.equal(pdu.body.readUInt32LE(4), 1);
       assert.equal(pdu.body.readUInt32LE(8), 2); assert.equal(pdu.body.readUInt32LE(16), 0);
-      const offset = pdu.body.readUInt32LE(12), count = pdu.body.readUInt32LE(20); assert.ok(count <= 65536);
+      const offset = pdu.body.readUInt32LE(12), count = pdu.body.readUInt32LE(20); assert.ok(count <= 1024 * 1024);
       queueMicrotask(() => session.verarbeite(clip.buildCliprdrPdu(clip.CB_FILECONTENTS_RESPONSE, clip.CB_RESPONSE_OK, Buffer.concat([pdu.body.subarray(0, 4), content.subarray(offset, offset + count)]))));
     }
   } });
@@ -49,7 +49,7 @@ test('Download negotiates server format ID and streams nested files in bounded r
   session.verarbeite(clip.buildFormatList([{ formatId: 0xd123, name: 'FileGroupDescriptorW' }], { longFormatNames: true }));
   const result = await session.downloadServerFiles(content.length);
   assert.deepEqual(result[1].data, content); assert.equal(result[2].directory, true); assert.equal(result[3].data.length, 0);
-  assert.equal(sent.filter(p => p.msgType === clip.CB_FILECONTENTS_REQUEST).length, 3);
+  assert.equal(sent.filter(p => p.msgType === clip.CB_FILECONTENTS_REQUEST).length, 1);
 });
 
 function receiver(entries: Parameters<typeof manifest>[0], handle: (r: ClipboardDownload, request: Buffer) => void, max = 100, signal?: AbortSignal) {
