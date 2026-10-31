@@ -1,13 +1,25 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, rm, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { DownloadedClipboardEntry } from 'ts-rdp';
+import type { ClipboardFileWriter, ClipboardSink, RemoteClipboardEntry } from 'ts-rdp';
 
 // A fixed script, never source text built from remote filenames. Paths arrive as JSON on stdin.
 const SCRIPT = `function run(argv) {
   ObjC.import('AppKit');
   const pasteboard = $.NSPasteboard.generalPasteboard;
+  if (argv[0] === 'list') {
+    // Lokale Datei-URLs der Pasteboard als JSON-Liste absoluter Pfade (nur lesen).
+    const items = pasteboard.pasteboardItems;
+    const paths = [];
+    for (let i = 0; i < Number(items.count); i++) {
+      const text = items.objectAtIndex(i).stringForType($('public.file-url'));
+      if (!text || text.isNil()) continue;
+      const url = $.NSURL.URLWithString(text);
+      if (url && !url.isNil() && url.isFileURL) paths.push(ObjC.unwrap(url.path));
+    }
+    return JSON.stringify(paths);
+  }
   if (argv[0] === 'snapshot') return String(pasteboard.changeCount);
   if (Number(argv[1]) !== Number(pasteboard.changeCount)) return 'changed';
   const input = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
@@ -30,7 +42,7 @@ const SCRIPT = `function run(argv) {
   return 'written';
 }`;
 
-type NativeRunner = (args: string[]) => Promise<string>;
+export type NativeRunner = (args: string[]) => Promise<string>;
 const native: NativeRunner = args => new Promise((resolve, reject) => {
   const child = execFile('/usr/bin/osascript', ['-l', 'JavaScript', '-e', SCRIPT, args[0], args[1] ?? ''],
     { timeout: 15000, maxBuffer: 1024 * 1024 }, (error, stdout) => error ? reject(error) : resolve(stdout.trim()));
@@ -46,33 +58,63 @@ export class MacFileClipboard {
   private publication: Promise<unknown> = Promise.resolve();
   constructor(private readonly run: NativeRunner = native, private readonly temporaryDirectory = tmpdir()) {}
 
-  async receive(load: () => Promise<DownloadedClipboardEntry[]>, signal: AbortSignal): Promise<void> {
+  /** Pfade der Dateien/Ordner, die gerade in der macOS-Pasteboard liegen (leer: keine). */
+  async localPaths(): Promise<string[]> {
+    const raw = JSON.parse(await this.run(['list']) || '[]') as unknown;
+    if (!Array.isArray(raw)) throw new Error('Unerwartete Antwort der macOS-Zwischenablage.');
+    return raw.filter((p): p is string => typeof p === 'string' && p.startsWith('/') && !p.includes('\0'));
+  }
+
+  /** `load` schreibt streamend in die Senke; veroeffentlicht wird erst, wenn alles angekommen ist. */
+  async receive(load: (sink: ClipboardSink) => Promise<void>, signal: AbortSignal): Promise<void> {
     const revision = ++this.revision;
     await this.publication.catch(() => {});
     signal.throwIfAborted();
     const stamp = await this.run(['snapshot']);
     if (!/^\d+$/.test(stamp)) throw new Error('macOS-Zwischenablage ist nicht verfügbar.');
     signal.throwIfAborted();
-    const entries = await load();
-    if (!entries.length) throw new Error('Keine Dateien in der Remote-Zwischenablage.');
-    signal.throwIfAborted();
-    if (revision !== this.revision) throw new Error('Ein neuerer Kopiervorgang ist bereits aktiv.');
     const root = await mkdtemp(join(this.temporaryDirectory, 'vscode-rdp-clipboard-'));
     let published = false;
     try {
       const top = new Set<string>();
-      for (const entry of entries) {
-        signal.throwIfAborted();
+      const directories: { path: string; depth: number; time: Date }[] = [];
+      const target = (entry: RemoteClipboardEntry) => {
         const segments = entry.name.split('/');
         // Defense in depth: this boundary must also be safe for library callers.
         if (segments.some(s => !s || s === '.' || s === '..' || /[\\\x00]/.test(s))) throw new Error('Ungültiger Clipboard-Dateipfad.');
         top.add(segments[0]);
-        const target = join(root, ...segments);
-        await mkdir(entry.directory ? target : dirname(target), { recursive: true, mode: 0o700 });
-        if (!entry.directory) await writeFile(target, entry.data, { flag: 'wx', mode: 0o600 });
-      }
+        return { path: join(root, ...segments), depth: segments.length };
+      };
+      const sink: ClipboardSink = {
+        directory: async entry => {
+          signal.throwIfAborted();
+          const { path, depth } = target(entry);
+          await mkdir(path, { recursive: true, mode: 0o700 });
+          // Der Zeitstempel kommt zum Schluss, sonst verschieben die Kinder ihn wieder.
+          if (entry.lastWriteTime) directories.push({ path, depth, time: entry.lastWriteTime });
+        },
+        file: async (entry): Promise<ClipboardFileWriter> => {
+          signal.throwIfAborted();
+          const { path } = target(entry);
+          await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+          const handle = await open(path, 'wx', 0o600);
+          return {
+            write: async chunk => {
+              signal.throwIfAborted();
+              for (let done = 0; done < chunk.length;) done += (await handle.write(chunk, done, chunk.length - done)).bytesWritten;
+            },
+            close: async error => {
+              try { if (!error && entry.lastWriteTime) await handle.utimes(entry.lastWriteTime, entry.lastWriteTime); }
+              finally { await handle.close(); }
+            },
+          };
+        },
+      };
+      await load(sink);
       signal.throwIfAborted();
       if (revision !== this.revision) throw new Error('Ein neuerer Kopiervorgang ist bereits aktiv.');
+      if (!top.size) throw new Error('Keine Dateien in der Remote-Zwischenablage.');
+      for (const dir of directories.sort((a, b) => b.depth - a.depth)) await utimes(dir.path, dir.time, dir.time);
       const publication = this.run(['publish', stamp, JSON.stringify([...top].map(name => join(root, name)))]);
       this.publication = publication;
       if (await publication !== 'written')

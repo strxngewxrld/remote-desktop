@@ -22,7 +22,7 @@ import {
   STANDARD_MAX_BYTES,
   type CliprdrLogStufe,
   type ZwischenablageRichtung,
-  type DownloadedClipboardEntry,
+  type ClipboardSink,
 } from 'ts-rdp';
 
 /** Schluessel der Einstellungen unterhalb von `rdp.`. */
@@ -150,7 +150,7 @@ export interface BrueckeOptions {
   warnzeitMs?: number;
   dateien?: {
     maxBytes: number;
-    empfangen(load: () => Promise<DownloadedClipboardEntry[]>, signal: AbortSignal): Promise<void>;
+    empfangen(load: (sink: ClipboardSink) => Promise<void>, signal: AbortSignal): Promise<void>;
   };
 }
 
@@ -230,7 +230,7 @@ export class Zwischenablagebruecke {
       try {
         controller.signal.throwIfAborted();
         await this.opts.dateien!.empfangen(
-          () => this.sitzung.downloadServerFiles(this.opts.dateien!.maxBytes, controller.signal), controller.signal);
+          sink => this.sitzung.streamServerFiles(sink, this.opts.dateien!.maxBytes, controller.signal), controller.signal);
         // The pasteboard now holds files. Do not announce its empty text representation.
         if (!controller.signal.aborted && !this.beendet) this.lokalerText = await this.opts.speicher.lesen();
       } catch (error) {
@@ -344,7 +344,12 @@ export class Zwischenablagebruecke {
     return naechste;
   }
 
-  async ausDateien(files: cliprdr.ClipboardFile[], maxBytes: number): Promise<boolean> {
+  /** Duerfen wir Dateien anbieten (Sitzung lebt, Schreiben erlaubt)? */
+  get darfDateienSenden(): boolean {
+    return !this.beendet && this.sitzung.darfSchreiben;
+  }
+
+  async ausDateien(files: readonly (cliprdr.ClipboardFile | cliprdr.ClipboardFileSource)[], maxBytes: number): Promise<boolean> {
     if (this.beendet || !this.sitzung.darfSchreiben || this.dateiAntwort || this.dateiEmpfang) return false;
     // Nicht mit einer noch offenen Textankündigung oder Lesung überlappen.
     await this.pruefeLokal();

@@ -603,10 +603,10 @@
         "rdp.clipboard.maxFileSizeMb": {
           "scope": "application",
           "type": "number",
-          "default": 64,
+          "default": 4096,
           "minimum": 1,
-          "maximum": 256,
-          "description": "Maximale Gesamtgröße der Dateien pro Kopiervorgang in MiB. Zum Server: Dateien im Sitzungsfenster einfügen. Vom Server auf macOS: im Remote-Explorer kopieren, Empfang abwarten und im Finder mit Cmd+V einfügen. Ordnerstrukturen bleiben erhalten."
+          "maximum": 102400,
+          "description": "Maximale Gesamtgröße der Dateien pro Kopiervorgang in MiB (bis 100 GiB). Dateien werden von und auf die Platte gestreamt, auch über 4 GiB. Zum Server: auf macOS Dateien und Ordner im Finder kopieren und im Sitzungsfenster einfügen; sonst einzelne Dateien bis 256 MiB über das Webview. Vom Server auf macOS: im Remote-Explorer kopieren, Empfang abwarten und im Finder mit Cmd+V einfügen. Ordnerstrukturen und Zeitstempel bleiben erhalten."
         },
         "rdp.connections": {
           "scope": "application",

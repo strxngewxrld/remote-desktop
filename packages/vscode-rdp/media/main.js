@@ -796,19 +796,27 @@
     });
   });
 
-  window.addEventListener('paste', async (event) => {
+  // Dateien des letzten Einfuegens: der Host prueft zuerst die lokale
+  // Zwischenablage (macOS: Dateien und Ordner aus dem Finder) und fordert diese
+  // hier nur an, wenn er selbst nichts findet.
+  let einfuegeDateien = [];
+  // Das Webview traegt Dateien als Base64 durch postMessage - das begrenzt es.
+  const WEBVIEW_DATEIGRENZE = 256 * 1024 * 1024;
+
+  window.addEventListener('paste', (event) => {
     if (!focused || !connected) return;
     const files = Array.from(event.clipboardData?.files || []);
     event.preventDefault();
     event.stopPropagation();
-    if (!files.length) {
-      releaseAllKeys();
-      const text = event.clipboardData?.getData('text/plain');
-      vscode.postMessage({ type: 'clipboardPaste', text: text || undefined });
-      return;
-    }
     releaseAllKeys();
-    if (files.length > 256 || files.reduce((sum, f) => sum + f.size, 0) > 256 * 1024 * 1024) {
+    einfuegeDateien = files;
+    const text = files.length ? undefined : event.clipboardData?.getData('text/plain');
+    vscode.postMessage({ type: 'clipboardPaste', text: text || undefined, dateien: files.length });
+  });
+
+  async function sendeEinfuegeDateien(files, grenze) {
+    const limit = Math.min(Number(grenze) || 0, WEBVIEW_DATEIGRENZE);
+    if (!files.length || files.length > 256 || files.reduce((sum, f) => sum + f.size, 0) > limit) {
       vscode.postMessage({ type: 'clipboardFiles', files: [{ name: '', base64: '' }] });
       return;
     }
@@ -821,13 +829,13 @@
           reader.onerror = reject;
           reader.readAsDataURL(file);
         });
-        payload.push({ name: file.name, base64 });
+        payload.push({ name: file.name, base64, lastModified: file.lastModified });
       }
       vscode.postMessage({ type: 'clipboardFiles', files: payload });
     } catch {
       vscode.postMessage({ type: 'clipboardFiles', files: [{ name: '', base64: '' }] });
     }
-  });
+  }
 
   window.addEventListener('keyup', (event) => {
     if (!focused || !connected) return;
@@ -854,6 +862,12 @@
   window.addEventListener('message', (event) => {
     const message = event.data;
     switch (message.type) {
+      case 'clipboardFilesAnfordern': {
+        const files = einfuegeDateien;
+        einfuegeDateien = [];
+        void sendeEinfuegeDateien(files, message.grenze);
+        break;
+      }
       case 'init':
         desktopWidth = message.width;
         desktopHeight = message.height;

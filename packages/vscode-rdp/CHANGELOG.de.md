@@ -2,6 +2,8 @@
 
 ## [Unveröffentlicht]
 
+- Dateien in der Zwischenablage: Ordner (rekursiv, auch leere) und Zeitstempel in beide Richtungen; Dateien über 64 MB und über 4 GiB werden von/auf die Platte gestreamt statt im Speicher gehalten. Unter macOS lassen sich im Finder kopierte Ordner in die Sitzung einfügen. `rdp.clipboard.maxFileSizeMb` hat jetzt den Vorgabewert 4096 und erlaubt bis zu 102400.
+
 - macOS: Dateien und Ordner im Remote-Explorer kopieren und im Finder mit Cmd+V einfügen; erhält verschachtelte und leere Ordner, mit Größenbegrenzung und Abbruch bei Änderungen.
 
 - Kerberos auf macOS/Linux über die integrierte TypeScript-Implementierung; explizite AD-Realm-/KDC-Einstellungen und Replay-Schutz bei unverändertem Windows-SSPI und strikten Rückfallregeln.

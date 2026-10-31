@@ -70,13 +70,17 @@ Mal. Passwörter liegen ausschließlich im SecretStorage.
 Dateien vom Arbeitsplatz lassen sich im Sitzungsfenster mit Cmd+V/Strg+V in den
 geöffneten Remote-Zielordner einfügen. Die Übertragung nutzt Dateiobjekte des
 nativen Paste-Ereignisses und funktioniert damit auch unabhängig vom Dateisystem
-des Extension-Hosts. Das Standardlimit ist insgesamt 64 MiB
-(`rdp.clipboard.maxFileSizeMb`). Auf einem lokalen macOS-Extension-Host lassen
-sich auch Dateien und Ordner vom Server übernehmen: im Remote-Explorer
-kopieren, die Statusmeldung „Dateien bereit“ abwarten und im Finder mit Cmd+V
-einfügen. Verschachtelte und leere Ordner bleiben erhalten. Ordner vom Client
-zum Server werden weiterhin nicht unterstützt. Text bleibt in beide
-Richtungen verfügbar.
+des Extension-Hosts. Auf einem lokalen macOS-Extension-Host lassen sich
+zusätzlich ganze Ordner aus dem Finder einfügen (Cmd+C im Finder, dann Cmd+V im
+Sitzungsfenster); sie werden rekursiv mit leeren Unterordnern, Zeitstempeln und
+Dateien auch über 4 GiB gestreamt, Symlinks werden übersprungen. Das Einfügen
+aus dem Browser-Ereignis (Rückfall) überträgt nur einzelne Dateien bis
+256 MiB. Das Limit ist insgesamt 4096 MiB (`rdp.clipboard.maxFileSizeMb`,
+höchstens 100 GiB). Umgekehrt lassen sich auf einem lokalen macOS-Extension-Host
+Dateien und Ordner vom Server übernehmen: im Remote-Explorer kopieren, die
+Statusmeldung „Dateien bereit“ abwarten und im Finder mit Cmd+V einfügen. Die
+Dateien werden direkt auf die Platte geschrieben; Ordner, leere Ordner und
+Zeitstempel bleiben erhalten. Text bleibt in beide Richtungen verfügbar.
 
 ## Repository unter Windows öffnen
 
@@ -177,6 +181,7 @@ Alle Schalter liegen unter `rdp.*`:
 | `rdp.performance.*` | – | Hintergrundbild (aus), Themes (an), Menüanimationen (aus), Fensterinhalt beim Ziehen (aus), Schriftglättung (an) |
 | `rdp.dynamicResolution` | `true` | Auflösung folgt der Panelgröße auch während der Sitzung |
 | `rdp.clipboard.enabled` / `.direction` | `true` / beide | Zwischenablage an und in welche Richtung |
+| `rdp.clipboard.maxFileSizeMb` | `4096` | Gesamtgröße der Dateien je Kopiervorgang in MiB (1 bis 102400) |
 | `rdp.driveRedirection.enabled` | `true` | Ordner des Arbeitsbereichs als Laufwerk freigeben |
 | `rdp.driveRedirection.access` | `readOnly` | `readWrite` erlaubt dem Server Anlegen, Ändern, Umbenennen und Löschen |
 | `rdp.driveRedirection.exclude` | `.git`, `.env`, Schlüssel … | Pfade, die der Server nicht sieht |

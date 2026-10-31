@@ -20,7 +20,7 @@ test('Remote file copy uses the receiver and does not echo the native clipboard 
       if (p.msgType === cliprdr.CB_FORMAT_DATA_REQUEST) queueMicrotask(() => bridge.verarbeite(cliprdr.buildFormatDataResponse(descriptor())));
       if (p.msgType === cliprdr.CB_FILECONTENTS_REQUEST) queueMicrotask(() => bridge.verarbeite(cliprdr.buildCliprdrPdu(cliprdr.CB_FILECONTENTS_RESPONSE, cliprdr.CB_RESPONSE_OK, Buffer.concat([p.body.subarray(0, 4), Buffer.from('abc')]))));
     },
-    dateien: { maxBytes: 100, empfangen: async load => { const files = await load(); assert.equal(files[0].data.toString(), 'abc'); local = ''; complete(); } },
+    dateien: { maxBytes: 100, empfangen: async load => { const chunks: Buffer[] = []; await load({ directory: () => {}, file: () => ({ write: c => { chunks.push(c); }, close: () => {} }) }); assert.equal(Buffer.concat(chunks).toString(), 'abc'); local = ''; complete(); } },
   });
   try {
     bridge.verarbeite(cliprdr.buildClipboardCapabilities(cliprdr.CB_USE_LONG_FORMAT_NAMES | cliprdr.CB_STREAM_FILECLIP_ENABLED));
@@ -37,7 +37,7 @@ test('Closing the session aborts an outstanding file receiver', async () => {
   const bridge = new Zwischenablagebruecke({
     einstellungen: { aktiv: true, richtung: 'nurLesen', maxBytes: 1024, abfrageIntervallMs: 0 },
     speicher: { lesen: async () => '', schreiben: async () => {} }, anWebview: () => {}, log: () => {}, send: () => {},
-    dateien: { maxBytes: 100, empfangen: async (load, value) => { signal = value; await load(); } },
+    dateien: { maxBytes: 100, empfangen: async (load, value) => { signal = value; await load({ directory: () => {}, file: () => ({ write: () => {}, close: () => {} }) }); } },
   });
   bridge.verarbeite(cliprdr.buildClipboardCapabilities(cliprdr.CB_USE_LONG_FORMAT_NAMES | cliprdr.CB_STREAM_FILECLIP_ENABLED));
   bridge.verarbeite(cliprdr.buildMonitorReady());

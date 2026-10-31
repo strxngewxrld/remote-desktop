@@ -14,8 +14,10 @@ werden unterstützt. Die Originaldateien auf dem Server bleiben erhalten.
 
 Die Zwischenablage muss aktiviert sein. Ihre Richtung muss **beide Richtungen**
 oder **Remote → lokal** erlauben. `rdp.clipboard.maxFileSizeMb` begrenzt die
-Gesamtgröße eines Kopiervorgangs; die Vorgabe beträgt 64 MiB, maximal 256 MiB.
-Die Übertragung unterstützt bis zu 4.096 Einträge einschließlich Ordnern.
+Gesamtgröße eines Kopiervorgangs; die Vorgabe beträgt 4096 MiB, maximal
+102400 MiB (100 GiB). Die Übertragung unterstützt bis zu 4.096 Einträge
+einschließlich Ordnern. Dateiinhalte (auch über 4 GiB) werden blockweise direkt
+auf die Platte geschrieben, Änderungszeiten bleiben erhalten.
 
 Während der Übertragung die Remote-Zwischenablage nicht ändern. Ein neuer
 Kopiervorgang oder eine unterbrochene Verbindung bricht den laufenden Empfang
@@ -24,7 +26,8 @@ mit den inzwischen eingetroffenen Dateien überschrieben; erneut kopieren.
 Fehler erscheinen als Meldung und im RDP-Ausgabeprotokoll.
 
 Die Dateien werden vor dem Einfügen in einem privaten temporären Verzeichnis
-auf dem Mac zwischengespeichert. Der Finder erhält lokale Dateiobjekte. Die
+(Rechte 0700/0600) auf dem Mac zwischengespeichert; bei einem Abbruch werden
+Teildateien entfernt. Der Finder erhält lokale Dateiobjekte. Die
 zuletzt empfangenen Dateien bleiben auch nach dem Schließen des RDP-Tabs
 verfügbar. Bei einem späteren Datei-Kopiervorgang werden ältere
 Zwischenspeicher nach 30 Minuten entfernt; nach einem Beenden von VS Code
@@ -34,9 +37,18 @@ Diese Finder-Anbindung setzt einen lokalen macOS-Extension-Host voraus.
 Bei Ausführung der Extension auf einem SSH-/Container-Host oder im Browser
 wird keine Datei-Zwischenablage auf dem Mac eingerichtet.
 
-Der vorhandene Branch `feat/clip-files` enthält ältere Vorarbeiten zur
-Gegenrichtung Client → Server. Der Empfang samt Finder-Anbindung liegt auf
-`feat/clipboard-downloads`, ausgehend vom aktuellen Kerberos-Stand auf `main`.
+## Gegenrichtung: Finder → Server
+
+Im Finder Dateien oder Ordner kopieren (Cmd+C), im Sitzungsfenster Cmd+V
+drücken. Die Extension liest die Datei-URLs der macOS-Zwischenablage (festes
+JXA-Skript über `osascript`), sammelt Ordner rekursiv ein (Symlinks und
+Sonderdateien werden übersprungen und gemeldet), bietet sie dem Server an und
+schickt Strg+V. Inhalte werden erst auf Anfrage aus der Datei gelesen, in
+Antworten von höchstens 8 MiB; Größen und Offsets sind 64 Bit. Der Server muss
+für Dateien über 4 GiB `CB_HUGE_FILE_SUPPORT_ENABLED` melden. Es gelten dieselben
+Grenzen (Gesamtgröße, 4.096 Einträge). Auf Remote-Hosts und anderen
+Plattformen bleibt der Browser-Weg: nur einzelne Dateien, höchstens 256 MiB
+(Base64 durch das Webview), ohne Ordner.
 
 ## Prüfung am 23.10.2026
 

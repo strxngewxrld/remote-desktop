@@ -6,6 +6,7 @@
  */
 import * as vscode from 'vscode';
 import { macFileClipboard } from './macFileClipboard.js';
+import { sammleLokaleDateien } from './macLokaleDateien.js';
 import {
   DecodedBitmap,
   KBDFLAGS_EXTENDED,
@@ -36,7 +37,7 @@ import {
   RdpdrSession,
   createLogger,
 } from 'ts-rdp';
-import type { RdpDiagnostics, EgfxVideoFrame, LogLevel } from 'ts-rdp';
+import type { RdpDiagnostics, EgfxVideoFrame, LogLevel, cliprdr } from 'ts-rdp';
 import { RdpConnection, secretKey, credentialSecretKey, parseUsername } from './connections.js';
 import { BandbreitenProfilName, berechnePerformanceFlags, istProfilName } from './bandbreite.js';
 import { FarbName, farbe as farbeZu, symbolDateiname } from './farben.js';
@@ -65,6 +66,14 @@ import { frageFreigabe, vscodeArbeitsbereichZugriff } from './arbeitsbereichZugr
 import { bereicheAusServer, schneidet, type Bereich } from './monitore.js';
 
 /** Ein Rastschritt des Mausrads, wie ihn Windows erwartet. */
+/** Obergrenze von `rdp.clipboard.maxFileSizeMb` in MiB (100 GiB). */
+export const MAX_CLIPBOARD_DATEI_MB = 102400;
+/** Gesamtgroesse der Dateien je Kopiervorgang in Byte, aus der Einstellung (1 MiB bis 100 GiB). */
+function dateiGrenzeBytes(): number {
+  const mb = vscode.workspace.getConfiguration('rdp').get<number>('clipboard.maxFileSizeMb', 4096);
+  return Math.min(MAX_CLIPBOARD_DATEI_MB, Math.max(1, Number.isFinite(mb) ? mb : 4096)) * 1024 * 1024;
+}
+
 const WHEEL_STEP = 120;
 
 /** Befehl, der das Diagnose-Overlay ein- und ausblendet. */
@@ -665,30 +674,31 @@ export class RdpSession {
         await this.zwischenablage?.ausRueckfallfeld(String(message.text ?? ''));
         break;
       case 'clipboardFiles': {
-        const limit = Math.min(256, Math.max(1, vscode.workspace.getConfiguration('rdp').get<number>('clipboard.maxFileSizeMb', 64))) * 1024 * 1024;
+        // Rueckfall: das Webview liefert Dateien (ohne Ordner) als Base64.
+        const limit = dateiGrenzeBytes();
         const raw = message.files;
         if (!Array.isArray(raw) || !raw.length || raw.length > 256) break;
         let encodedSize = 0;
         const valid = raw.every((f: any) => f && typeof f.name === 'string' && typeof f.base64 === 'string' && (encodedSize += f.base64.length) <= Math.ceil(limit / 3) * 4 + raw.length * 4);
         if (!valid) { vscode.window.showWarningMessage('Die Dateien überschreiten die Clipboard-Größenbegrenzung.'); break; }
-        const files = raw.map((f: any) => ({ name: f.name, data: Buffer.from(f.base64, 'base64') }));
-        const ok = await this.zwischenablage?.ausDateien(files, limit);
-        if (ok && this.client) {
-          this.client.sendKeyScancode(0x1d, true);
-          this.client.sendKeyScancode(0x2f, true);
-          this.client.sendKeyScancode(0x2f, false);
-          this.client.sendKeyScancode(0x1d, false);
-        } else vscode.window.showWarningMessage('Dateien konnten nicht bereitgestellt werden. Bitte erneut einfügen; Clipboard muss zum Server freigegeben sein.');
+        const files = raw.map((f: any) => ({
+          name: f.name, data: Buffer.from(f.base64, 'base64'),
+          lastWriteTime: Number.isFinite(f.lastModified) && f.lastModified > 0 ? new Date(f.lastModified) : undefined,
+        }));
+        await this.reicheDateienEin(files, limit);
         break;
       }
       case 'clipboardPaste': {
-        const ok = this.zwischenablage ? await this.zwischenablage.ausEinfuegen(typeof message.text === 'string' ? message.text : undefined) : true;
-        if (ok && this.client) {
-          this.client.sendKeyScancode(0x1d, true);
-          this.client.sendKeyScancode(0x2f, true);
-          this.client.sendKeyScancode(0x2f, false);
-          this.client.sendKeyScancode(0x1d, false);
+        // macOS lokal: Dateien und Ordner aus dem Finder gehen vor dem Webview-Weg.
+        const lokal = await this.lokaleMacDateien();
+        if (lokal === 'angeboten') break;
+        if (lokal === 'keine' && Number(message.dateien) > 0) {
+          this.post({ type: 'clipboardFilesAnfordern', grenze: dateiGrenzeBytes() });
+          break;
         }
+        if (lokal === 'fehler') break;
+        const ok = this.zwischenablage ? await this.zwischenablage.ausEinfuegen(typeof message.text === 'string' ? message.text : undefined) : true;
+        if (ok) this.sendeStrgV();
         break;
       }
       case 'screenshot':
@@ -1280,7 +1290,7 @@ export class RdpSession {
         }
       },
       dateien: process.platform === 'darwin' && !vscode.env.remoteName ? {
-        maxBytes: Math.min(256, Math.max(1, config.get<number>('clipboard.maxFileSizeMb', 64))) * 1024 * 1024,
+        maxBytes: dateiGrenzeBytes(),
         empfangen: async (load, signal) => {
           if (!this.panel.active) return;
           const progress = vscode.window.setStatusBarMessage('RDP: Dateien und Ordner werden vom Server empfangen …');
@@ -2042,6 +2052,44 @@ export class RdpSession {
   }
 
   // ----------------------------------------------------------------- Intern
+
+  private sendeStrgV(): void {
+    if (!this.client) return;
+    this.client.sendKeyScancode(0x1d, true);
+    this.client.sendKeyScancode(0x2f, true);
+    this.client.sendKeyScancode(0x2f, false);
+    this.client.sendKeyScancode(0x1d, false);
+  }
+
+  /** Dateien zum Server anbieten und danach Strg+V schicken. */
+  private async reicheDateienEin(files: readonly (cliprdr.ClipboardFile | cliprdr.ClipboardFileSource)[], limit: number): Promise<void> {
+    const ok = await this.zwischenablage?.ausDateien(files, limit);
+    if (ok && this.client) this.sendeStrgV();
+    else vscode.window.showWarningMessage('Dateien konnten nicht bereitgestellt werden. Bitte erneut einfügen; Clipboard muss zum Server freigegeben sein.');
+  }
+
+  /**
+   * macOS (nicht unter Remote): liegen Dateien oder Ordner in der lokalen
+   * Pasteboard, werden sie rekursiv eingesammelt und lazy angeboten.
+   * `keine`: nichts Lokales, der Aufrufer nimmt den Webview-Weg.
+   */
+  private async lokaleMacDateien(): Promise<'angeboten' | 'keine' | 'fehler'> {
+    if (process.platform !== 'darwin' || vscode.env.remoteName || !this.zwischenablage?.darfDateienSenden) return 'keine';
+    try {
+      const pfade = await macFileClipboard.localPaths();
+      if (!pfade.length) return 'keine';
+      const limit = dateiGrenzeBytes();
+      const sammlung = await sammleLokaleDateien(pfade, { maxBytes: limit });
+      if (sammlung.uebersprungen.length)
+        void vscode.window.showWarningMessage(`${sammlung.uebersprungen.length} Eintrag/Einträge (Symlinks oder Sonderdateien) wurden nicht übertragen.`);
+      if (!sammlung.quellen.length) return 'fehler';
+      await this.reicheDateienEin(sammlung.quellen, limit);
+      return 'angeboten';
+    } catch (error) {
+      void vscode.window.showWarningMessage(`Dateien konnten nicht übertragen werden: ${(error as Error).message}`);
+      return 'fehler';
+    }
+  }
 
   private post(message: unknown): void {
     if (this.disposed) return;

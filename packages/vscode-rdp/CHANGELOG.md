@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Clipboard files: folders (recursive, including empty ones) and timestamps in both directions; files above 64 MB and above 4 GiB stream from/to disk instead of memory. On macOS, folders copied in Finder can be pasted into the session. `rdp.clipboard.maxFileSizeMb` now defaults to 4096 and allows up to 102400.
+
 - macOS: copy files and folders in the remote Explorer and paste them into Finder with Cmd+V; preserves nested and empty folders, with bounded transfers and cancellation.
 
 - Kerberos on macOS/Linux through the built-in TypeScript provider; explicit AD realm/KDC settings and replay protection, retaining Windows SSPI and strict fallback rules.
