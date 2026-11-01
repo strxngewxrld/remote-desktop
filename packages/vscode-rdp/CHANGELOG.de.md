@@ -2,6 +2,8 @@
 
 ## [Unveröffentlicht]
 
+## [1.1.0]
+
 - macOS: `Ctrl+Option+Umschalt+Löschen` sendet Strg+Alt+Entf, wie in der Windows App von Microsoft; `Strg+Alt+Ende` funktioniert weiterhin.
 
 - Übertragung: Datei-Downloads lesen bis zu vier 1-MiB-Bereiche parallel mit geordneter Ausgabe und begrenztem Vorlauf. Kanalfragmente werden in TCP-/TLS-Schreibvorgängen gebündelt; fragmentierte Empfangspakete wachsen mit reserviertem Puffer. Bitmap-Anzeige und Webview-Versand vermeiden zusätzliche Pixelkopien. Die 15-s-Frist der Übertragung zählt ab der letzten Antwort, damit wartende Parallelbereiche langsame Verbindungen nicht abbrechen. Eine abgelehnte Anmeldung wird ohne Stacktrace protokolliert.

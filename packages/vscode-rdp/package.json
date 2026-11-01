@@ -2,7 +2,7 @@
   "name": "vscode-rdp",
   "displayName": "Remote Desktop (RDP)",
   "description": "%extension.description%",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "license": "MIT",
   "author": "Tom Knüppel",
   "repository": {
@@ -982,11 +982,22 @@
           "default": [],
           "items": {
             "type": "object",
-            "required": ["host", "port"],
+            "required": [
+              "host",
+              "port"
+            ],
             "additionalProperties": false,
             "properties": {
-              "host": { "type": "string", "minLength": 1 },
-              "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 88 }
+              "host": {
+                "type": "string",
+                "minLength": 1
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535,
+                "default": 88
+              }
             }
           },
           "markdownDescription": "Optionale KDC-Adressen für Kerberos auf macOS/Linux, z. B. [{\"host\":\"dc.ad.example.de\",\"port\":88}]. Leer: AD-DNS-SRV-Ermittlung verwenden. Hilfreich bei Testtunneln oder fehlender AD-DNS-Auflösung."
