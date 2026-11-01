@@ -74,10 +74,13 @@ describe('Verbindungsueberwachung', () => {
   });
 
   test('Fliessen Daten, gibt es weder Probe noch Ereignis', async () => {
-    const { s, c, proben } = await aufbau({ liveness: { idleMs: 80, probeTimeoutMs: 40, tickMs: 10 } });
+    // Grenze reichlich ueber dem Sendeabstand: unter Last verspaeten sich Timer,
+    // und eine knappe Grenze loeste dann eine Probe aus. Der Lauf dauert
+    // trotzdem mehr als dreimal so lange wie die Grenze.
+    const { s, c, proben } = await aufbau({ liveness: { idleMs: 150, probeTimeoutMs: 40, tickMs: 10 } });
     let ereignis = false;
     c.on('unresponsive', () => (ereignis = true));
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 25; i++) {
       s.sendFastpathUpdate(FASTPATH_UPDATETYPE_BITMAP, bitmap());
       await warte(20);
     }

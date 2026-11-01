@@ -45,7 +45,7 @@ export function renderWebview(webview: vscode.Webview, extensionUri: vscode.Uri,
   <div id="rahmen" hidden aria-hidden="true"></div>
 
   <div id="hint" hidden>
-    Tastatur aktiv · Strg+Alt+Ende sendet Strg+Alt+Entf
+    Tastatur aktiv · Strg+Alt+Ende (Mac auch Ctrl+Option+Umschalt+⌫) sendet Strg+Alt+Entf
   </div>
 
   <!-- Diagnose-Overlay: liegt ueber der Zeichenflaeche, faengt aber nichts ab

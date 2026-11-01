@@ -178,7 +178,7 @@ erfolgreicher Anmeldung und nur, wenn Sie es merken lassen.
 | `RDP: Verbinden mit…` | Einmalige Verbindung ohne zu speichern |
 | `RDP: Verbindung hinzufügen` | Verbindung dauerhaft anlegen |
 | `RDP: Sitzung trennen` | Laufende Sitzung beenden |
-| `RDP: Strg+Alt+Entf senden` | Tastenkombination, die der Browser nicht durchlässt (`Strg+Alt+Ende`) |
+| `RDP: Strg+Alt+Entf senden` | Tastenkombination, die der Browser nicht durchlässt (`Strg+Alt+Ende`, auf dem Mac auch `Ctrl+Option+Umschalt+Löschen`) |
 | `RDP: Bildschirm neu anfordern` | Vollbild vom Server neu übertragen lassen |
 | `RDP: Skalierung umschalten` | Zwischen Einpassen und Originalgröße wechseln |
 | `RDP: Gespeichertes Passwort löschen` | Zugangsdaten aus dem sicheren Speicher entfernen |

@@ -561,6 +561,11 @@
         "when": "rdp.sessionFocused"
       },
       {
+        "command": "rdp.sendCtrlAltDel",
+        "key": "ctrl+alt+shift+backspace",
+        "when": "rdp.sessionFocused && isMac"
+      },
+      {
         "command": "rdp.toggleClipboardPanel",
         "key": "ctrl+alt+v",
         "mac": "cmd+alt+v",

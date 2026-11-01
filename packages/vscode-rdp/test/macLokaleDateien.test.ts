@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { mkdir, mkdtemp, rm, symlink, utimes, writeFile, truncate } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { cliprdr } from 'ts-rdp';
 import { sammleLokaleDateien } from '../src/macLokaleDateien.js';
 
@@ -45,12 +45,13 @@ test('Symlinks werden nicht verfolgt, sondern uebersprungen - auch auf Ordner un
     await symlink(join(wurzel, 'echt'), join(wurzel, 'alias'));
     const ergebnis = await sammleLokaleDateien([join(wurzel, 'echt'), join(wurzel, 'alias')], { maxBytes: 1000 });
     assert.deepEqual(ergebnis.quellen.map(q => q.name), ['echt', 'echt/f.txt']);
-    assert.deepEqual(ergebnis.uebersprungen.map(p => p.slice(wurzel.length)), ['/echt/link.txt', '/echt/schleife', '/alias']);
+    assert.deepEqual(ergebnis.uebersprungen.map(p => p.slice(wurzel.length).split(sep).join('/')), ['/echt/link.txt', '/echt/schleife', '/alias']);
     assert.equal(ergebnis.gesamtBytes, 1);
   });
 });
 
-test('Lesen folgt keinem Symlink, der die Datei nach dem Einsammeln ersetzt', async () => {
+// O_NOFOLLOW gibt es unter Windows nicht; das Modul laeuft ohnehin nur auf macOS.
+test('Lesen folgt keinem Symlink, der die Datei nach dem Einsammeln ersetzt', { skip: process.platform === 'win32' }, async () => {
   await mitBaum(async wurzel => {
     await writeFile(join(wurzel, 'a.txt'), 'abc');
     const { quellen } = await sammleLokaleDateien([join(wurzel, 'a.txt')], { maxBytes: 10 });

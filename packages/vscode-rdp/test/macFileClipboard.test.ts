@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import type { ClipboardSink } from 'ts-rdp';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { MacFileClipboard } from '../src/macFileClipboard.js';
 
 type Eintrag = { name: string; directory: boolean; data: Buffer; lastWriteTime?: Date };
@@ -70,7 +70,7 @@ test('A later session copy prevents an older download replacing the pasteboard',
     const old = mac.receive(async sink => { await delayed; await fuettere(sink, [entry]); }, new AbortController().signal);
     await mac.receive(laden([{ name: 'new', directory: false, data: Buffer.from('new') }]), new AbortController().signal);
     const rejection = assert.rejects(old, /neuerer/); complete(); await rejection;
-    assert.equal(names.length, 1); assert.ok(names[0][0].endsWith('/new'));
+    assert.equal(names.length, 1); assert.equal(basename(names[0][0]), 'new');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

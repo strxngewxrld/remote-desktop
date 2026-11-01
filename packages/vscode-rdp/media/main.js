@@ -33,6 +33,10 @@
       undefined,
   });
 
+  /** Nur fuer Kuerzel, die VS Code allein auf dem Mac belegt (siehe package.json). */
+  const IST_MAC = typeof navigator !== 'undefined' &&
+    /mac/i.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '');
+
   let desktopWidth = canvas.width;
   let desktopHeight = canvas.height;
   /**
@@ -799,6 +803,10 @@
     // darf nicht zusaetzlich in der RDP-Sitzung ankommen.
     if (event.ctrlKey && event.altKey && !event.shiftKey &&
         (event.code === 'KeyV' || event.code === 'End')) return true;
+    // Ctrl+Option+Umschalt+Loeschtaste: das Mac-Gegenstueck zu Strg+Alt+Entf
+    // (wie in der Windows App von Microsoft).
+    if (IST_MAC && event.ctrlKey && event.altKey && event.shiftKey &&
+        event.code === 'Backspace') return true;
     if (!event.metaKey) return false;
     // Die Befehlspalette auf macOS.
     if (event.shiftKey && event.code === 'KeyP') return true;

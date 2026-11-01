@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- macOS: `Ctrl+Option+Shift+Delete` sends Ctrl+Alt+Del, as in Microsoft's Windows App; `Ctrl+Alt+End` keeps working.
+
 - Transfers: file downloads read up to four 1-MiB ranges concurrently, preserving output order and bounded read-ahead. Channel fragments share TCP/TLS writes; fragmented incoming frames use reserved buffer capacity. Bitmap rendering and webview delivery avoid additional pixel copies. The 15 s transfer timeout counts from the last response, so queued parallel ranges no longer abort slow links. A rejected sign-in is logged without a stack trace.
 
 - macOS keyboard: synthetic input modifier flags work without separate modifier key events. The extension host releases held keys on focus loss and monitor-window closure if the webview no longer delivers key-up events.
