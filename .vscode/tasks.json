@@ -33,22 +33,15 @@
       "problemMatcher": []
     },
     {
-      "label": "RDP: Veröffentlichen (GitHub Packages)",
-      "detail": "Version anheben, bauen, testen, VSIX packen und als @<owner>/vscode-rdp hochladen",
+      "label": "RDP: Release erstellen",
+      "detail": "Version anheben, Changelog umstellen, prüfen, taggen und pushen; GitHub Actions erstellt das Release",
       "type": "shell",
       "command": "node",
       "args": [
-        "tools/publish-github.mjs",
-        "--owner",
-        "${input:githubOwner}",
+        "tools/release.mjs",
         "--bump",
         "${input:versionBump}"
       ],
-      "options": {
-        "env": {
-          "NODE_AUTH_TOKEN": "${input:githubToken}"
-        }
-      },
       "problemMatcher": [],
       "presentation": {
         "panel": "dedicated",
@@ -56,16 +49,14 @@
       }
     },
     {
-      "label": "RDP: Veröffentlichen – Probelauf",
-      "detail": "Wie Veröffentlichen, aber ohne Versionssprung und ohne Upload",
+      "label": "RDP: Release – Probelauf",
+      "detail": "Wie Release erstellen, aber ohne Änderungen, Commit oder Push",
       "type": "shell",
       "command": "node",
       "args": [
-        "tools/publish-github.mjs",
-        "--owner",
-        "${input:githubOwner}",
+        "tools/release.mjs",
         "--bump",
-        "none",
+        "${input:versionBump}",
         "--dry-run"
       ],
       "problemMatcher": [],
@@ -77,28 +68,15 @@
   ],
   "inputs": [
     {
-      "id": "githubOwner",
-      "type": "promptString",
-      "description": "GitHub-Benutzer oder -Organisation, unter der das Paket liegt",
-      "default": "strxngewxrld"
-    },
-    {
       "id": "versionBump",
       "type": "pickString",
       "description": "Versionssprung",
       "options": [
         "patch",
         "minor",
-        "major",
-        "none"
+        "major"
       ],
       "default": "patch"
-    },
-    {
-      "id": "githubToken",
-      "type": "promptString",
-      "description": "Personal Access Token mit write:packages (wird nicht gespeichert)",
-      "password": true
     }
   ]
 }

@@ -20,9 +20,7 @@ laufende RDP-Sitzungen werden nicht automatisch neu gestartet.
 
 In Remote-SSH-, WSL- und Container-Fenstern gibt es nur **Release öffnen**:
 Die VSIX herunterladen und über **Extensions: Install from VSIX…** im richtigen
-Fenster installieren. Marketplace-Installationen können auch die normale
-Updateverwaltung von VS Code verwenden. Ein GitHub-Releaseentwurf muss erst
-veröffentlicht werden, bevor die Updateprüfung ihn sehen kann.
+Fenster installieren.
 
 **RDP: Lizenzhinweise öffnen** zeigt die offline mitgelieferten Notices.
 Diese werden beim Build aus den tatsächlichen Bundle-Inputs mit vollständigen

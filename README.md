@@ -257,38 +257,16 @@ Ehrlich benannt, statt später zu überraschen:
 
 ## Veröffentlichen
 
-Der [Release-Leitfaden](docs/RELEASING.md) beschreibt CI, GitHub-Releaseentwürfe,
-optionales Marketplace-Publishing und den Umstieg von Entwicklungsinstallationen.
+Vertrieben wird ausschließlich über **GitHub Releases**; die Updateprüfung der
+Extension liest das neueste Release. Der [Release-Leitfaden](docs/RELEASING.md)
+beschreibt den Ablauf. Kurz: Changelog unter „Unveröffentlicht“ pflegen, dann in
+VS Code **Terminal → Task ausführen… → RDP: Release erstellen**. Der Task hebt
+die Version an, prüft lokal, taggt und pusht; GitHub Actions testet auf Windows,
+Linux und macOS und veröffentlicht das Release mit dem VSIX.
+
 `npm run package` baut frisch nach `artifacts/` und prüft den VSIX-Inhalt.
 `npm run typecheck`, `npm run check:docs` und `npm run check:package` sind auch
-einzeln ausführbar. CI führt die Tests unter Windows, Linux und macOS aus und stellt
-geprüfte VSIX-Artefakte bereit.
-
-Zusätzlich kann die Extension von Hand in die **GitHub Package Registry** gestellt werden. In
-VS Code **Terminal → Task ausführen…** und dann:
-
-- **RDP: Veröffentlichen – Probelauf**: baut, testet und packt alles, ohne die
-  Version anzuheben und ohne hochzuladen.
-- **RDP: Veröffentlichen (GitHub Packages)**: fragt nach GitHub-Owner,
-  Versionssprung und einem Personal Access Token mit `write:packages`, hebt
-  die Version an, baut, testet, packt das VSIX und lädt es als npm-Paket
-  `@<owner>/vscode-rdp` hoch.
-- **RDP: VSIX bauen**: frisch gebautes und geprüftes VSIX, lokal unter `artifacts/`.
-
-GitHub Packages kennt kein VSIX-Format. Das npm-Paket ist deshalb nur eine
-Hülle um die VSIX-Datei; das Manifest der Extension bleibt unverändert. Das
-Skript dazu ist [`tools/publish-github.mjs`](tools/publish-github.mjs). Es
-lehnt ein Arbeitsverzeichnis mit offenen Änderungen ab, und das Token kommt nur
-über die Umgebung (`NODE_AUTH_TOKEN`), nie in eine Datei. Danach die neue
-Versionsnummer committen und taggen.
-
-Installieren auf einem Rechner, dessen npm bei GitHub angemeldet ist:
-
-```sh
-npm pack @<owner>/vscode-rdp --registry https://npm.pkg.github.com
-tar -xzf <owner>-vscode-rdp-<version>.tgz
-code --install-extension package/vscode-rdp-<version>.vsix
-```
+einzeln ausführbar.
 
 ## Lizenz
 

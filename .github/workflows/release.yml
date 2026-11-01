@@ -1,12 +1,11 @@
 name: Release
 
+# Gestartet durch den Tag aus tools/release.mjs. Erneut anstossen laesst sich
+# ein Lauf ueber workflow_dispatch auf demselben Tag.
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
-    inputs:
-      marketplace:
-        description: Publish the verified VSIX to Visual Studio Marketplace
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -25,7 +24,7 @@ jobs:
     needs: version
     uses: ./.github/workflows/ci.yml
 
-  draft:
+  release:
     needs: checks
     runs-on: ubuntu-latest
     permissions:
@@ -43,32 +42,22 @@ jobs:
             const pkg = JSON.parse(fs.readFileSync('packages/vscode-rdp/package.json', 'utf8'));
             const name = `${pkg.name}-${pkg.version}.vsix`;
             const data = fs.readFileSync(`artifacts/${name}`);
+            // Release-Text ist die Sektion dieser Version aus dem Changelog.
+            const changelog = fs.readFileSync('packages/vscode-rdp/CHANGELOG.md', 'utf8');
+            const head = `## [${pkg.version}]`;
+            const start = changelog.indexOf(head);
+            if (start < 0) throw new Error(`CHANGELOG.md has no section ${head}`);
+            const rest = changelog.slice(start + head.length);
+            const next = rest.indexOf('\n## [');
+            const body = (next < 0 ? rest : rest.slice(0, next)).trim();
             const {data: release} = await github.rest.repos.createRelease({
               ...context.repo, tag_name: `v${pkg.version}`, name: `Remote Desktop ${pkg.version}`,
-              draft: true, generate_release_notes: true
+              body, draft: true
             });
             await github.rest.repos.uploadReleaseAsset({
               ...context.repo, release_id: release.id, name, data,
               headers: {'content-type': 'application/octet-stream', 'content-length': data.length}
             });
-
-  marketplace:
-    if: inputs.marketplace
-    needs: [checks, draft]
-    runs-on: ubuntu-latest
-    environment: marketplace
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - uses: actions/download-artifact@v4
-        with:
-          name: vscode-rdp-Linux
-          path: artifacts
-      - name: Publish the tested artifact
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx --no-install vsce publish --packagePath artifacts/*.vsix
+            // Erst mit angehaengtem VSIX veroeffentlichen: die Updatepruefung
+            // sieht nur veroeffentlichte Releases und braucht die Datei.
+            await github.rest.repos.updateRelease({ ...context.repo, release_id: release.id, draft: false, make_latest: 'true' });

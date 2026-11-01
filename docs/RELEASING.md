@@ -39,9 +39,9 @@ Es gibt keine automatische Secret-Migration.
 
 ## GitHub Release
 
-Die Extension prüft das neueste veröffentlichte stabile GitHub-Release.
-Ein Entwurf genügt dafür nicht. Das Release muss die Datei
-`vscode-rdp-<version>.vsix` unter dem passenden Tag `v<version>` enthalten.
+Releases auf GitHub sind der einzige Vertriebsweg. Die Extension prüft das
+neueste veröffentlichte stabile Release; es muss die Datei
+`vscode-rdp-<version>.vsix` unter dem Tag `v<version>` enthalten.
 **RDP: Nach Updates suchen** erlaubt eine manuelle Prüfung; die automatische
 Startprüfung lässt sich mit `rdp.checkForUpdates` abschalten. Download und Installation
 erfordern eine Auswahl durch den Anwender. In entfernten Fenstern führt die
@@ -52,37 +52,23 @@ gebündeltes Fremdpaket benötigt eine Lizenzdatei im Paket; ohne Lizenztext
 schlägt der Build fehl. Der Paketcheck vergleicht die archivierten Notices mit
 den tatsächlich ermittelten Lizenztexten. `npm run test:tooling` prüft diesen Ablauf.
 
-1. Versionsnummer in `packages/vscode-rdp/package.json` und Lockfile aktualisieren
-   (`npm version <version> --no-git-tag-version -w vscode-rdp`) und eine passende
-   Sektion in `packages/vscode-rdp/CHANGELOG.md` ergänzen.
-2. Änderungen committen und CI auf dem Commit erfolgreich abschließen lassen.
-3. Tag `v<version>` auf diesen Commit setzen und pushen.
-4. Workflow **Release** manuell auf diesem Tag starten. Standardmäßig wird
-   ein GitHub-Releaseentwurf mit geprüftem VSIX erstellt. Der Entwurf kann
-   anschließend geprüft und veröffentlicht werden.
+### Ablauf
 
-## Visual Studio Marketplace
+1. Änderungen laufend unter `## [Unreleased]` in `packages/vscode-rdp/CHANGELOG.md`
+   und `## [Unveröffentlicht]` in `CHANGELOG.de.md` eintragen.
+2. Auf `main` mit sauberem Arbeitsverzeichnis den VS-Code-Task
+   **RDP: Release erstellen** starten (oder `npm run release -- --bump minor`).
+   [`tools/release.mjs`](../tools/release.mjs) hebt die Version an, macht aus
+   „Unveröffentlicht“ die Versionssektion (mit neuer, leerer Sektion darüber),
+   führt Typecheck, Tests und Paketprüfung aus, committet `chore(release): v<version>`,
+   setzt den Tag und pusht `main` und Tag gemeinsam.
+3. Der Tag startet den Workflow **Release**: Er prüft, dass Tag und
+   Paketversion passen, führt die komplette CI (Windows, Linux, macOS) aus und
+   veröffentlicht das Release mit dem geprüften VSIX. Der Release-Text ist die
+   Changelog-Sektion der Version. Ist `gh` angemeldet, wartet das Skript auf
+   den Lauf und gibt am Ende den Link aus.
 
-Beim manuellen Release-Workflow `marketplace` nur bewusst aktivieren.
-Repository-Environment `marketplace` mit geeignetem Schutz und einem
-Publisher-berechtigten Secret `VSCE_PAT` konfigurieren. Der Workflow veröffentlicht
-das zuvor gebaute VSIX, ohne nochmals zu bauen oder eine Version anzuheben.
-Der Publisher `Tom-Knueppel` muss dem verwendeten Konto gehören.
-Bei PAT-Nutzung ein organisationsgebundenes Token mit Marketplace-Manage-Recht
-verwenden; keine globalen PATs. Für längerfristige Automatisierung Entra-ID-basierte
-Authentifizierung gemäß der [offiziellen Publishing-Dokumentation](https://code.visualstudio.com/api/working-with-extensions/publishing-extension)
-einrichten. Secret- und Publisher-Berechtigungen werden nicht durch das Repository angelegt.
-
-## GitHub Packages
-
-Der bestehende Weg bleibt verfügbar und verwendet denselben Paket-Build:
-
-```sh
-npm run publish:github -- --owner strxngewxrld --bump none --dry-run
-```
-
-Für den echten Upload `--dry-run` entfernen und `NODE_AUTH_TOKEN` mit
-`write:packages` setzen. Ohne `--bump none` ist `patch` die Vorgabe;
-Changelog vorher für diese Zielversion vorbereiten. Echte Uploads verlangen
-einen sauberen Git-Stand. Das Paket `@<owner>/vscode-rdp` enthält das VSIX;
-es ist kein Marketplace-Listing. Zugangstoken werden nur über die Umgebung übergeben.
+**RDP: Release – Probelauf** prüft Changelog und Tests, ohne etwas zu ändern
+oder zu pushen. Scheitert der Workflow, den Fehler beheben und den Lauf über
+**Actions → Release → Run workflow** auf demselben Tag erneut starten; liegt der
+Fehler im getaggten Code, ihn beheben und ein neues Patch-Release erstellen.

@@ -24,7 +24,7 @@
     "typecheck": "npm run typecheck --workspaces",
     "check:docs": "node tools/check-docs.mjs",
     "check:package": "node tools/check-package.mjs",
-    "publish:github": "node tools/publish-github.mjs",
+    "release": "node tools/release.mjs",
     "test:tooling": "node --test tools/test/*.test.mjs"
   },
   "devDependencies": {

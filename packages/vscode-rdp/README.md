@@ -75,8 +75,7 @@ are ignored; a matching VSIX is checked against GitHub's SHA-256 digest when sup
 Private repositories requiring authentication are not supported by this check.
 
 In Remote-SSH, WSL and containers, use Open Release and install the downloaded
-VSIX in the intended VS Code window. Marketplace updates remain available
-through VS Code's extension management.
+VSIX in the intended VS Code window.
 
 ## Support and license
 
