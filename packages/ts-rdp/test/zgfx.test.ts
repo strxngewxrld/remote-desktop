@@ -140,3 +140,21 @@ describe('ZGFX - Huffman-kodierte Segmente', () => {
     );
   });
 });
+
+describe('ZGFX - Dekompressionsbomben', () => {
+  test('Ein Match ueber Gigabytes aus 13 Byte Eingabe wird sofort abgelehnt', () => {
+    // Literal 'A', dann Match Distanz 1 mit Laengenkodierung bis ~2^31.
+    const bits = '0' + '01000001' + '10001' + '00001' + '1' + '1'.repeat(28) + '0' + '1'.repeat(30);
+    const start = Date.now();
+    assert.throws(() => new ZgfxDecompressor().decompress(comprimiert(bits)), /65535 Byte/);
+    assert.ok(Date.now() - start < 1000, 'die Ablehnung muss vor dem Kopieren kommen');
+  });
+
+  test('Ein Mehrteiler darf nicht mehr ankuendigen, als seine Segmente liefern koennen', () => {
+    const kopf = Buffer.alloc(7);
+    kopf[0] = SEGMENTED_MULTIPART;
+    kopf.writeUInt16LE(1, 1);
+    kopf.writeUInt32LE(0xffffffff, 3);
+    assert.throws(() => new ZgfxDecompressor().decompress(kopf), /unzulaessig/);
+  });
+});

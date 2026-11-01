@@ -71,7 +71,20 @@ export function parseBitmapUpdate(r: BinaryReader): BitmapRectangle[] {
 }
 
 /** Dekomprimiert eine Bitmap und wandelt sie nach RGBA. */
+/**
+ * Obergrenze fuer eine einzelne Bitmap. Breite und Hoehe sind 16-Bit-Felder;
+ * ohne Grenze liesse ein Server mit wenigen Byte RLE-Daten Gigabytes anlegen.
+ */
+const MAX_BITMAP_PIXEL = 8192 * 8192;
+
+function pruefeBitmapGroesse(width: number, height: number): void {
+  if (width * height > MAX_BITMAP_PIXEL) {
+    throw new RdpProtocolError(`Bitmap mit unplausibler Groesse ${width}x${height}`);
+  }
+}
+
 export function decodeBitmap(rect: BitmapRectangle, palette?: Buffer): DecodedBitmap {
+  pruefeBitmapGroesse(rect.width, rect.height);
   const bpp = rect.bitsPerPixel as SourceFormat;
   const bytes = bytesPerPixel(bpp);
 
@@ -298,6 +311,7 @@ export function parseSurfaceCommands(r: BinaryReader): SurfaceBits[] {
  * Bits liegen - wie klassische Bitmaps - von unten nach oben vor.
  */
 export function decodeSurfaceBits(bits: SurfaceBits): DecodedBitmap {
+  pruefeBitmapGroesse(bits.width, bits.height);
   if (bits.codecId === RDP_CODEC_ID_PLANAR) {
     return {
       x: bits.destLeft,

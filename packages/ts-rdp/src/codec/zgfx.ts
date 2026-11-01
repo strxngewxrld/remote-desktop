@@ -33,6 +33,14 @@ export const PACKET_COMPR_TYPE_RDP8 = 0x04;
 
 /** Groesse des Verlaufspuffers laut Spezifikation. */
 const HISTORY_SIZE = 2500000;
+/**
+ * MS-RDPEGFX 2.2.5.3: ein Segment entpackt zu hoechstens 65535 Byte. Ohne
+ * diese Grenze kodiert ein Match mit 13 Byte Eingabe Gigabytes Ausgabe und
+ * blockiert den Extension-Host.
+ */
+const MAX_SEGMENT_AUSGABE = 65535;
+/** Obergrenze fuer eine ganze Mehrteiler-Nachricht - so viel wie ein DVC-Fragment. */
+const MAX_MEHRTEILER_AUSGABE = 16 * 1024 * 1024;
 
 interface Token {
   /** Anzahl Bits des Praefixes. */
@@ -128,14 +136,22 @@ export class ZgfxDecompressor {
       if (data.length < 7) throw new ZgfxError('Mehrteiler ohne vollstaendigen Kopf');
       const segmentCount = data.readUInt16LE(1);
       const uncompressedSize = data.readUInt32LE(3);
+      // Jedes Segment liefert hoechstens 65535 Byte; mehr anzukuendigen ist unmoeglich.
+      if (uncompressedSize > segmentCount * MAX_SEGMENT_AUSGABE || uncompressedSize > MAX_MEHRTEILER_AUSGABE) {
+        throw new ZgfxError(`angekuendigte Laenge ${uncompressedSize} bei ${segmentCount} Segment(en) ist unzulaessig`);
+      }
       const teile: Buffer[] = [];
+      let summe = 0;
       let offset = 7;
       for (let i = 0; i < segmentCount; i++) {
         if (offset + 4 > data.length) throw new ZgfxError(`Segment ${i} reicht ueber das Ende hinaus`);
         const size = data.readUInt32LE(offset);
         offset += 4;
         if (offset + size > data.length) throw new ZgfxError(`Segment ${i} ist unvollstaendig`);
-        teile.push(this.segment(data.subarray(offset, offset + size)));
+        const teil = this.segment(data.subarray(offset, offset + size));
+        summe += teil.length;
+        if (summe > uncompressedSize) throw new ZgfxError(`entpackte Laenge ueberschreitet die angekuendigten ${uncompressedSize} Byte`);
+        teile.push(teil);
         offset += size;
       }
       const ergebnis = Buffer.concat(teile);
@@ -215,6 +231,7 @@ export class ZgfxDecompressor {
 
       if (token.tokenType === 0) {
         const byte = (token.valueBase + this.getBits(token.valueBits)) & 0xff;
+        if (this.output.length >= MAX_SEGMENT_AUSGABE) throw new ZgfxError('Segment entpackt zu mehr als 65535 Byte');
         this.pushHistory(byte);
         this.output.push(byte);
         continue;
@@ -225,6 +242,7 @@ export class ZgfxDecompressor {
       if (distance === 0) {
         // Sonderfall: es folgen unkodierte Bytes direkt aus dem Strom.
         let count = this.getBits(15);
+        if (this.output.length + count > MAX_SEGMENT_AUSGABE) throw new ZgfxError('Segment entpackt zu mehr als 65535 Byte');
         this.bitsRemaining -= this.bitCount;
         this.bitCount = 0;
         this.bitBuffer = 0;
@@ -253,6 +271,8 @@ export class ZgfxDecompressor {
         count += this.getBits(extra);
       }
 
+      if (distance > HISTORY_SIZE) throw new ZgfxError(`Match-Distanz ${distance} ueber den Verlaufspuffer hinaus`);
+      if (this.output.length + count > MAX_SEGMENT_AUSGABE) throw new ZgfxError('Segment entpackt zu mehr als 65535 Byte');
       let prevIndex = (this.historyIndex + HISTORY_SIZE - distance) % HISTORY_SIZE;
       while (count-- > 0) {
         const byte = this.history[prevIndex];

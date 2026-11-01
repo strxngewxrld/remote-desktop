@@ -786,3 +786,50 @@ describe('Graphics Pipeline - Frame ohne Abschluss', () => {
     assert.match(m.auf('warn'), /obwohl der vorige Frame nie mit ENDFRAME geschlossen wurde - 2 bereits fertige Kachel/);
   });
 });
+
+describe('Graphics Pipeline - Speichergrenzen gegen boeswillige Server', () => {
+  function solidFill(surfaceId: number, rect: number[]): Buffer {
+    const [left, top, right, bottom] = rect;
+    return pdu(
+      egfx.RDPGFX_CMDID_SOLIDFILL,
+      new BinaryWriter().uint16le(surfaceId).uint32le(0xff336699).uint16le(1)
+        .uint16le(left).uint16le(top).uint16le(right).uint16le(bottom).toBuffer(),
+    );
+  }
+
+  test('Eine riesige Surface wird abgelehnt statt Gigabytes anzulegen', () => {
+    const m = baueSitzung();
+    assert.throws(() => m.sitzung.handle(createSurface(1, 65535, 65535, egfx.PIXEL_FORMAT_XRGB_8888)), /Speichergrenze/);
+  });
+
+  test('Viele grosse Surfaces sprengen das Gesamtbudget nicht', () => {
+    const m = baueSitzung();
+    // 8192x8192 sind je 256 MiB; das Budget von 1 GiB reicht fuer vier.
+    for (let id = 1; id <= 4; id++) m.sitzung.handle(createSurface(id, 8192, 8192, egfx.PIXEL_FORMAT_XRGB_8888));
+    assert.throws(() => m.sitzung.handle(createSurface(5, 8192, 8192, egfx.PIXEL_FORMAT_XRGB_8888)), /Speichergrenze/);
+    // Freigeben macht wieder Platz, und dieselbe ID zweimal zaehlt nur einmal.
+    m.sitzung.handle(pdu(egfx.RDPGFX_CMDID_DELETESURFACE, new BinaryWriter().uint16le(4).toBuffer()));
+    m.sitzung.handle(createSurface(5, 8192, 8192, egfx.PIXEL_FORMAT_XRGB_8888));
+    m.sitzung.handle(createSurface(5, 8192, 8192, egfx.PIXEL_FORMAT_XRGB_8888));
+  });
+
+  test('Der Bitmapcache bleibt unter 100 MiB und nimmt nur gueltige Slots', () => {
+    const m = baueSitzung();
+    m.sitzung.handle(createSurface(1, 2048, 2048, egfx.PIXEL_FORMAT_XRGB_8888));
+    m.sitzung.handle(solidFill(1, [0, 0, 2048, 2048]));
+    assert.throws(() => m.sitzung.handle(surfaceToCache(1, 0, [0, 0, 16, 16])), /unzulaessigen Slot 0/);
+    // Je Eintrag 16 MiB: sechs passen, der siebte nicht.
+    for (let slot = 1; slot <= 6; slot++) m.sitzung.handle(surfaceToCache(1, slot, [0, 0, 2048, 2048]));
+    assert.throws(() => m.sitzung.handle(surfaceToCache(1, 7, [0, 0, 2048, 2048])), /Cachegrenze/);
+    // Ueberschreiben desselben Slots und Verdraengen geben den Platz zurueck.
+    m.sitzung.handle(surfaceToCache(1, 6, [0, 0, 2048, 2048]));
+    m.sitzung.handle(evictCacheEntry(6));
+    m.sitzung.handle(surfaceToCache(1, 7, [0, 0, 2048, 2048]));
+  });
+
+  test('RESETGRAPHICS ueber 32766 Pixel Kantenlaenge wird abgelehnt', () => {
+    const m = baueSitzung();
+    const body = new BinaryWriter().uint32le(100000).uint32le(1080).uint32le(0).bytes(Buffer.alloc(328)).toBuffer();
+    assert.throws(() => m.sitzung.handle(pdu(egfx.RDPGFX_CMDID_RESETGRAPHICS, body)), /unzulaessiger Groesse/);
+  });
+});

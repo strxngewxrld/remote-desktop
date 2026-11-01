@@ -938,7 +938,9 @@ export class RdpSession {
         // dass es sich zwischen Pruefung und Verbindung nicht geaendert hat.
         verifyCertificate: (cert) => {
           const fingerprint = formatFingerprint(cert.fingerprint256);
-          if (policy !== 'ignore' && fingerprint && fingerprint !== expectedFingerprint) {
+          // Ohne Fingerabdruck (kein Zertifikat) gibt es nichts zu vergleichen -
+          // das ist kein Freibrief, sondern genau der Fall, der abbrechen muss.
+          if (policy !== 'ignore' && fingerprint !== formatFingerprint(expectedFingerprint)) {
             throw new Error('Das Serverzertifikat hat sich zwischen Prüfung und Verbindung geändert.');
           }
         },

@@ -18,6 +18,30 @@ import { ProgressiveDecoder } from '../codec/progressive.js';
 import * as avc from '../codec/avcMeta.js';
 import { analysiereBitstrom, AvcBitstromAnalyse, AvcSurfaceLage } from '../codec/avcFrame.js';
 import * as egfx from './egfx.js';
+import { RdpProtocolError } from '../core/errors.js';
+
+/**
+ * Speichergrenzen gegen einen boeswilligen oder kaputten Server.
+ *
+ * Breite und Hoehe einer Surface sind 16-Bit-Felder; ohne Grenze darf ein
+ * Server beliebig viele 65535x65535-Flaechen anlegen (je 16 GiB) und sie per
+ * SOLIDFILL beschreiben - das reisst den Extension-Host samt aller anderen
+ * Erweiterungen mit. 8192x8192 deckt jeden realen Monitor ab; die Summe
+ * reicht fuer 16 Monitore in 4K.
+ */
+const MAX_SURFACE_PIXEL = 8192 * 8192;
+const MAX_SURFACE_BYTES_GESAMT = 1024 * 1024 * 1024;
+/**
+ * Bitmapcache (MS-RDPEGFX 3.3.1.4/2.2.3.1): hoechstens 25600 Slots, mit
+ * RDPGFX_CAPS_FLAG_SMALL_CACHE 4096; 100 MB bzw. 16 MB Gesamtgroesse.
+ * Wir rechnen mit der grossen Variante - der Server haelt sich an die
+ * kleinere, wenn er sie gewaehlt hat, und mehr als das grosse Budget ist
+ * nie legitim.
+ */
+const MAX_CACHE_SLOTS = 25600;
+const MAX_CACHE_BYTES = 100 * 1024 * 1024;
+/** RESETGRAPHICS (2.2.2.14): Breite und Hoehe hoechstens 32766. */
+const MAX_DESKTOP_KANTE = 32766;
 
 /** Eine Surface: Zeichenflaeche des Servers, RGBA von oben nach unten. */
 interface Surface {
@@ -188,6 +212,9 @@ export class EgfxSession {
     number,
     { width: number; height: number; rgba: Uint8ClampedArray }
   >();
+  /** Summe der Puffergroessen aller Cacheeintraege bzw. Surfaces in Byte. */
+  private cacheBytes = 0;
+  private surfaceBytes = 0;
   /** Kacheln des laufenden Frames, gebuendelt bis zum ENDFRAME. */
   private pending: DecodedBitmap[] = [];
   private framesDecoded = 0;
@@ -319,11 +346,24 @@ export class EgfxSession {
         break;
 
       case egfx.RDPGFX_CMDID_RESETGRAPHICS:
+        if (!pdu.width || !pdu.height || pdu.width > MAX_DESKTOP_KANTE || pdu.height > MAX_DESKTOP_KANTE) {
+          throw new RdpProtocolError(`EGFX: RESETGRAPHICS mit unzulaessiger Groesse ${pdu.width}x${pdu.height}`);
+        }
         this.opts.log.info(`Graphics Pipeline: Desktop ${pdu.width}x${pdu.height}`);
         this.opts.onResize({ width: pdu.width, height: pdu.height, monitors: pdu.monitors });
         break;
 
-      case egfx.RDPGFX_CMDID_CREATESURFACE:
+      case egfx.RDPGFX_CMDID_CREATESURFACE: {
+        const bytes = pdu.width * pdu.height * 4;
+        const vorher = this.surfaces.get(pdu.surfaceId);
+        const belegt = this.surfaceBytes - (vorher ? vorher.rgba.length : 0);
+        if (pdu.width * pdu.height > MAX_SURFACE_PIXEL || belegt + bytes > MAX_SURFACE_BYTES_GESAMT) {
+          throw new RdpProtocolError(
+            `EGFX: CREATESURFACE ${pdu.width}x${pdu.height} ueberschreitet die Speichergrenze ` +
+              `(${this.surfaces.size} Surface(s) mit ${Math.round(belegt / 2 ** 20)} MiB belegt)`,
+          );
+        }
+        this.surfaceBytes = belegt + bytes;
         this.surfaces.set(pdu.surfaceId, {
           width: pdu.width,
           height: pdu.height,
@@ -333,8 +373,10 @@ export class EgfxSession {
           avcBeschrieben: false,
         });
         break;
+      }
 
       case egfx.RDPGFX_CMDID_DELETESURFACE:
+        this.surfaceBytes -= this.surfaces.get(pdu.surfaceId)?.rgba.length ?? 0;
         this.surfaces.delete(pdu.surfaceId);
         this.progressive.reset(pdu.surfaceId);
         break;
@@ -984,7 +1026,18 @@ export class EgfxSession {
     }
   }
 
+  /** Cacheeintrag entfernen und die Byte-Summe mitfuehren. */
+  private cacheEntfernen(slot: number): boolean {
+    const alt = this.cache.get(slot);
+    if (!alt) return false;
+    this.cacheBytes -= alt.rgba.length;
+    return this.cache.delete(slot);
+  }
+
   private surfaceToCache(pdu: egfx.EgfxSurfaceToCache): void {
+    if (pdu.cacheSlot < 1 || pdu.cacheSlot > MAX_CACHE_SLOTS) {
+      throw new RdpProtocolError(`EGFX: SURFACETOCACHE auf unzulaessigen Slot ${pdu.cacheSlot}`);
+    }
     const surface = this.surfaces.get(pdu.surfaceId);
     if (!surface) {
       this.meldeEinmal(
@@ -1006,7 +1059,7 @@ export class EgfxSession {
           `fuellen, deren Puffer hier ${surface.avcBeschrieben ? 'H.264-Inhalt nicht kennt' : 'noch unbemalt ist'} - ` +
           'der Slot bleibt leer statt schwarz.',
       );
-      this.cache.delete(pdu.cacheSlot);
+      this.cacheEntfernen(pdu.cacheSlot);
       return;
     }
 
@@ -1018,7 +1071,7 @@ export class EgfxSession {
           `${pdu.surfaceId} (${surface.width}x${surface.height}) - davon liegt nichts in der Surface, ` +
           `Slot ${pdu.cacheSlot} bleibt leer.`,
       );
-      this.cache.delete(pdu.cacheSlot);
+      this.cacheEntfernen(pdu.cacheSlot);
       return;
     }
     if (q.beschnitten) {
@@ -1032,6 +1085,14 @@ export class EgfxSession {
 
     const width = q.right - q.left;
     const height = q.bottom - q.top;
+    this.cacheEntfernen(pdu.cacheSlot);
+    if (this.cacheBytes + width * height * 4 > MAX_CACHE_BYTES) {
+      throw new RdpProtocolError(
+        `EGFX: SURFACETOCACHE ueberschreitet die Cachegrenze von ${MAX_CACHE_BYTES / 2 ** 20} MiB ` +
+          `(${this.cache.size} Eintraege belegt)`,
+      );
+    }
+    this.cacheBytes += width * height * 4;
     this.cache.set(pdu.cacheSlot, {
       width,
       height,
@@ -1084,7 +1145,7 @@ export class EgfxSession {
    * haette. FreeRDP gibt den Eintrag hier frei (gdi_EvictCacheEntry).
    */
   private evictCacheEntry(pdu: egfx.EgfxEvictCacheEntry): void {
-    if (!this.cache.delete(pdu.cacheSlot)) {
+    if (!this.cacheEntfernen(pdu.cacheSlot)) {
       this.meldeEinmal(
         'evict-unbekannt',
         `Graphics Pipeline: EVICTCACHEENTRY auf Slot ${pdu.cacheSlot}, der hier nicht belegt ist. ` +

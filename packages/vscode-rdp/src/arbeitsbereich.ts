@@ -164,13 +164,27 @@ export function leseEinstellungen(
  * waere `.GIT` derselbe Ordner, und ein Ausschluss, den man durch
  * Grossschreibung umgeht, ist keiner.
  */
+/**
+ * Name fuer den Ausschlussvergleich kanonisieren.
+ *
+ * APFS (macOS) vergleicht Namen normalisierungs- und Unicode-faltungsfrei:
+ * "x.\u212Aey" (KELVIN SIGN) oeffnet dort `x.key`, "a\u0308" dasselbe wie
+ * "ä". Ein Regex mit Flag `i` sieht das nicht - der Server haette damit jeden
+ * Ausschluss umgehen koennen. NFKC plus Gross-/Kleinwandlung bildet all diese
+ * Schreibweisen auf eine ab; schliesst es einmal zu viel aus, ist das der
+ * sichere Fehler.
+ */
+export function ausschlussSchluessel(name: string): string {
+  return name.normalize('NFKC').toUpperCase().toLowerCase().normalize('NFKC');
+}
+
 export function baueAusschluss(muster: readonly string[]): (segmente: readonly string[]) => boolean {
   const proSegment: ((name: string) => boolean)[] = [];
   const proPfad: ((pfad: string) => boolean)[] = [];
   for (const m of muster) {
     // Rueckstriche wie Schraegstriche behandeln und ein fuehrendes "./"
     // wegnehmen - beides schreibt man beim Konfigurieren leicht hin.
-    const wert = m.replace(/\\/g, '/').replace(/^\.\//, '');
+    const wert = ausschlussSchluessel(m.replace(/\\/g, '/').replace(/^\.\//, ''));
     if (wert === '') continue;
     if (wert.includes('/')) {
       proPfad.push(musterPasst(wert));
@@ -178,7 +192,8 @@ export function baueAusschluss(muster: readonly string[]): (segmente: readonly s
       proSegment.push(musterPasst(wert));
     }
   }
-  return (segmente: readonly string[]): boolean => {
+  return (roh: readonly string[]): boolean => {
+    const segmente = roh.map(ausschlussSchluessel);
     for (const segment of segmente) {
       for (const passt of proSegment) {
         if (passt(segment)) return true;
@@ -205,13 +220,13 @@ export function baueAusschluss(muster: readonly string[]): (segmente: readonly s
 export function baueVorfahrenPruefung(muster: readonly string[]): (segmente: readonly string[]) => boolean {
   const pfadMuster: ((name: string) => boolean)[][] = [];
   for (const m of muster) {
-    const wert = m.replace(/\\/g, '/').replace(/^\.\//, '');
+    const wert = ausschlussSchluessel(m.replace(/\\/g, '/').replace(/^\.\//, ''));
     if (!wert.includes('/')) continue;
     pfadMuster.push(wert.split('/').filter((t) => t !== '').map((t) => musterPasst(t)));
   }
   return (segmente: readonly string[]): boolean =>
     pfadMuster.some(
-      (teile) => teile.length > segmente.length && segmente.every((segment, i) => teile[i]!(segment)),
+      (teile) => teile.length > segmente.length && segmente.every((segment, i) => teile[i]!(ausschlussSchluessel(segment))),
     );
 }
 

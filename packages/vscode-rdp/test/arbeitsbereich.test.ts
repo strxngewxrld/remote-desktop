@@ -267,6 +267,17 @@ describe('Arbeitsbereich - Ausschlussmuster', () => {
     assert.equal(passt(['SERVER.KEY']), true);
   });
 
+  test('Unicode-Schreibweisen, die APFS auf dieselbe Datei abbildet, umgehen den Ausschluss nicht', () => {
+    // KELVIN SIGN und langes s faltet macOS auf k bzw. s - "x.\u212Aey" oeffnet dort x.key.
+    assert.equal(passt(['server.\u212Aey']), true);
+    assert.equal(passt(['.\u017Fsh', 'id_rsa']), true);
+    // Vollbreite Zeichen und NFD-Zerlegung ebenso.
+    assert.equal(passt(['\uFF0Eenv']), true);
+    const eigen = baueAusschluss(['geheimnis-\u00e4', 'doku/\u00fcbersicht']);
+    assert.equal(eigen(['geheimnis-a\u0308']), true);
+    assert.equal(eigen(['doku', 'u\u0308bersicht']), true);
+  });
+
   test('Ein Muster mit Schraegstrich trifft den ganzen Pfad', () => {
     const eigen = baueAusschluss(['doku/geheim', 'src/*.snap']);
     assert.equal(eigen(['doku', 'geheim']), true);

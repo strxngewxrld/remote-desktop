@@ -98,7 +98,9 @@ export function bytesPerPixel(bitsPerPixel: SourceFormat): number {
 /** Dreht die Zeilenreihenfolge um - unkomprimierte RDP-Bitmaps kommen von unten nach oben. */
 export function flipVertical(src: Buffer, width: number, height: number, bpp: number): Buffer {
   const stride = width * bpp;
-  const out = Buffer.allocUnsafe(stride * height);
+  // Nicht allocUnsafe: ist `src` kuerzer als angekuendigt, bliebe sonst
+  // uninitialisierter Heap-Speicher im Bild stehen.
+  const out = Buffer.alloc(stride * height);
   for (let y = 0; y < height; y++) {
     src.copy(out, y * stride, (height - 1 - y) * stride, (height - y) * stride);
   }
