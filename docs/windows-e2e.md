@@ -125,7 +125,7 @@ Erneut über Windows MCP im Extension Development Host mit frischem Profil
 (`.vscode-test/e2e-click`), danach mit dem installierten VSIX
 (`packages/vscode-rdp/.vscode-test/windows-e2e-click.vsix`) im selben Profil
 ohne Development-Argumente. Gegenstellen: der echte Windows-Server
-(`<server>.<labdomäne>`, Kerberos) und der lokale TLS/NLA-Testserver.
+(`<server>.<labdomÃ¤ne>`, Kerberos) und der lokale TLS/NLA-Testserver.
 
 Ergebnis danach: 745 Protokolltests, 515 Extension-Tests (15 neu) und
 10 Tests im echten VS-Code-Host bestanden; Build und Typprüfung bestanden.
@@ -187,9 +187,9 @@ Auflösung, weitere Monitore und Laufwerksumleitung wurden deshalb in dieser
 Runde nicht erneut gegen Windows geklickt; die vorherigen Nachweise stehen in
 [ad-kerberos.md](ad-kerberos.md).
 
-Auffällig dabei: Port 3389 dieses Domänencontrollers ist über die öffentliche
-Adresse erreichbar; während der Prüfung bestanden mehrere Verbindungen von
-fremden Adressen.
+Hinweis: Einen Lab-Server nicht mit offenem Port 3389 im Internet betreiben,
+sondern per Firewall auf bekannte Adressen beschränken oder über VPN bzw.
+SSH-Tunnel anbinden.
 
 ## Ursprünglich offene Abnahme gegen einen echten Server
 

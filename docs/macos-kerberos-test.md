@@ -41,10 +41,10 @@ separate from the live AD evidence below.
 ## Live environment and results
 
 - Client: macOS, Node.js 24.22.0.
-- Server: `<öffentliche-Server-IP>`, `<server>.<labdomäne>`.
-- Existing domain: `rdp.test`, NetBIOS `RDPTEST`.
+- Server: `<Ã¶ffentliche-Server-IP>`, `<server>.<labdomÃ¤ne>`.
+- Existing domain: `<labdomÃ¤ne>`, NetBIOS `<NETBIOS>`.
 - AD DS, KDC, DNS and AD Web Services were already configured and running.
-- Dedicated non-administrator test account: `<mac-testkonto>@rdp.test`.
+- Dedicated non-administrator test account: `<mac-testkonto>@<labdomÃ¤ne>`.
   It received Remote Desktop Users membership and its own RDP logon right.
 - The original branch (`f6411c5`) was tested first in an isolated worktree;
   the current main implementation was then tested independently.
@@ -59,7 +59,7 @@ Windows independently recorded successful events 4768 (TGT), 4769 (service
 ticket, status `0x0`, encryption type `0x12`) and 4624 (network logon type 3,
 authentication package `Kerberos`) for the dedicated account during the
 initial live tests. The service principal was
-`TERMSRV/<server>.<labdomäne>`.
+`TERMSRV/<server>.<labdomÃ¤ne>`.
 
 Before the server repair, full-session tests with both implementations
 reached license PDU `0xff`
@@ -126,7 +126,7 @@ application workflow test.
 The administrator password was read from macOS Keychain and held in memory
 for SSH authentication. The generated test password is in Keychain under
 service `remote-desktop-kerberos-macos-test`, account
-`<mac-testkonto>@rdp.test`. Neither password was written into repository files,
+`<mac-testkonto>@<labdomÃ¤ne>`. Neither password was written into repository files,
 command-line arguments or logs. The temporary account was disabled after
 testing; the server confirmed `Enabled: false`, and test session 2 was
 logged off. Its password remains in Keychain for a follow-up test.

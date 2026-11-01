@@ -4,7 +4,7 @@ Ergebnis nach dem genehmigten Neustart am 22.10.2026:
 
 - Rechner: `<SERVERNAME>`, Windows Server 2025, ursprünglich WORKGROUP.
 - AD-DS-Rolle und Verwaltungswerkzeuge erfolgreich installiert.
-- `Test-ADDSForestInstallation` für `rdp.test` / `RDPTEST` erfolgreich.
+- `Test-ADDSForestInstallation` für `<labdomÃ¤ne>` / `<NETBIOS>` erfolgreich.
 - `Install-ADDSForest` erfolgreich, Neustart erforderlich und angesetzt.
 - Neustart abgeschlossen. Der Rechner ist Domänencontroller von `rdp.test`;
   AD DS, KDC, DNS, SQL Express und Business Central laufen.
@@ -65,12 +65,13 @@ Die neuen Domänencontroller-Richtlinien verhinderten zunächst den lokalen
 Prozessstart der vorhandenen Konten `CodexSandboxOffline` und
 `CodexSandboxOnline` (Fehler 1385). Nach ausdrücklicher Benutzerfreigabe wurde
 gezielt diesen beiden Konten `SeInteractiveLogonRight` gegeben. Ein normaler
-Sandbox-Aufruf meldet wieder `rdptest\<sandbox-konto>`. Administrator- und
+Sandbox-Aufruf meldet wieder `<NETBIOS>\<sandbox-konto>`. Administrator- und
 RDP-Rechte wurden diesen Konten nicht hinzugefügt.
 
-Das Nicht-Administrator-Testkonto `rdp-e2e-test` ist bis 22.10.2026, 13:13 Uhr
-(Europe/Berlin) gültig. Das isolierte Testprofil enthält sein Passwort im
-VS-Code-SecretStorage; im Repository liegt es nur DPAPI-geschützt vor.
+Das Nicht-Administrator-Testkonto `<testkonto>` ist befristet. Das isolierte
+Testprofil enthält sein Passwort im VS-Code-SecretStorage; auf dem Lab-Server
+liegt es zusätzlich DPAPI-geschützt im nicht versionierten Ordner
+`.vscode-test/ad-lab/`.
 
 ## Kerberos-Pfad in der Extension
 
@@ -78,7 +79,7 @@ Folgetest der automatischen Auswahl am 22.10.2026:
 
 - 745 Protokolltests, 500 Extension-Tests und 10 Tests im echten VS-Code-Host
   bestanden (1.255 insgesamt); Build und Typecheck erfolgreich.
-- `auto` gegen `<server>.<labdomäne>`: Kerberos, 812 dekodierte Kacheln.
+- `auto` gegen `<server>.<labdomÃ¤ne>`: Kerberos, 812 dekodierte Kacheln.
 - `auto` gegen `127.0.0.1`: NTLMv2, 244 dekodierte Kacheln.
 - Installierte VSIX im isolierten VS-Code-Profil ohne gesetzte
   `rdp.nlaMechanism`-Option: Kerberos, echter Windows-Desktop sichtbar.
@@ -138,7 +139,7 @@ Die einmalige SYSTEM-Aufgabe `RdpAdLab-VerifyAfterReboot`:
 1. wartet auf AD und erfasst Domäne, Konten und Dienstzustände;
 2. richtet den vorherigen DNS-Resolver als Forwarder ein;
 3. prüft eindeutige `TERMSRV`-SPNs für Rechnername und FQDN;
-4. erstellt/aktualisiert den Nicht-Administrator `rdp-e2e-test`, begrenzt ihn
+4. erstellt/aktualisiert den Nicht-Administrator `<testkonto>`, begrenzt ihn
    auf vier Stunden und gewährt diesem SID gezielt Remote-Interactive-Logon;
 5. aktiviert lokale erfolgreiche/fehlgeschlagene Logon- und
    Kerberos-Service-Ticket-Audits und sichert die vorherige Auditkonfiguration;
